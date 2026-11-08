@@ -9,6 +9,13 @@ static HWND childEdit=nullptr;
 static HIMC childContext=nullptr;
 static HWND policyCanvas=nullptr,policyDialog=nullptr,policyDialogView=nullptr;
 static HIMC policyCanvasContext=nullptr,policyDialogContext=nullptr,policyForeignContext=nullptr;
+static bool canvasSawContext=false;
+// The window procedure stands in for PS: it must observe the restored HIMC
+// while handling the very click that enters canvas text editing.
+static LRESULT CALLBACK canvasProcedure(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
+    if(message==WM_LBUTTONDOWN)canvasSawContext=associated(window)!=nullptr;
+    return DefWindowProcW(window,message,wParam,lParam);
+}
 static PROCESS_INFORMATION fixtureChild{};
 static void closeChild() {
     if(!fixtureChild.hProcess)return;
@@ -101,6 +108,7 @@ int main(int argc,char** argv) {
         WNDCLASSW floatClass{};floatClass.lpfnWndProc=DefWindowProcW;floatClass.hInstance=module;floatClass.lpszClassName=L"PSFloatC";
         check(RegisterClassW(&floatClass)!=0,"policy dialog class");
         policyCanvas=CreateWindowW(L"PSViewC",L"",WS_CHILD|WS_VISIBLE,160,0,60,60,fixture,nullptr,module,nullptr);
+        if(policyCanvas)SetWindowLongPtrW(policyCanvas,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(canvasProcedure));
         policyDialog=CreateWindowExW(WS_EX_TOOLWINDOW,L"PSFloatC",L"Policy dialog fixture",WS_OVERLAPPEDWINDOW,420,0,180,120,fixture,nullptr,module,nullptr);
         policyDialogView=CreateWindowW(L"PSViewC",L"",WS_CHILD|WS_VISIBLE,0,0,60,40,policyDialog,nullptr,module,nullptr);
         check(policyCanvas && policyDialog && policyDialogView,"policy focus fixtures");
@@ -276,6 +284,63 @@ int main(int argc,char** argv) {
         SetFocus(policyCanvas);check(associated(policyCanvas)==nullptr,"policy off precondition");
         check((policy(0)&0x300)==0 && !focusPolicy && focusCount==0 && associated(policyCanvas)==policyForeignContext,"policy disable did not confirm restoration");
         check((policy(1)&0x100) && associated(policyCanvas)==nullptr,"policy re-enable persistence");
+        // Canvas text editing: type-tool click, double-click, and Enter restore
+        // before PS handles the message; Esc/Ctrl+Enter/numpad Enter post the
+        // disable; a composition keeps the first Esc local; UXP corrections are
+        // timestamped so late evidence cannot hit a later round.
+        const auto canvasPump=[&](){MSG queued{};while(PeekMessageW(&queued,nullptr,0,0,PM_REMOVE)){TranslateMessage(&queued);DispatchMessageW(&queued);}};
+        const auto canvasPush=[&](UINT operation,LPARAM value){return SendMessageW(control,controlMessage,(12345<<8)|operation,value);};
+        const auto canvasStatus=[&](){return SendMessageW(control,controlMessage,(12345<<8)|1,reinterpret_cast<LPARAM>(policyCanvas));};
+        check((canvasPush(6,1)>>33&1) && (canvasPush(6,1)>>34&1),"type tool push not visible in state");
+        canvasSawContext=false;
+        SendMessageW(policyCanvas,WM_LBUTTONDOWN,0,0);
+        check(canvasSawContext && associated(policyCanvas)==policyForeignContext && canvasTextEditing && focusCount==0,
+              "type-tool click did not restore before PS handled it");
+        check((canvasStatus()>>32&1) && (canvasStatus()>>35&1)==0,"canvas editing state bits");
+        compositionActive=true;
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_ESCAPE,0);canvasPump();
+        check(canvasTextEditing && associated(policyCanvas)==policyForeignContext,"Esc with an active composition left editing");
+        compositionActive=false;
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_ESCAPE,0);canvasPump();
+        check(!canvasTextEditing && focusCount==1 && associated(policyCanvas)==nullptr,"Esc without a composition did not re-disable");
+        check(GetPropW(control,canvasExitTriggerProperty)==reinterpret_cast<HANDLE>(ULONG_PTR(CanvasEsc)),"Esc exit trigger not published");
+        canvasPush(6,0);
+        SendMessageW(policyCanvas,WM_LBUTTONDOWN,0,0);
+        check(!canvasTextEditing && focusCount==1 && associated(policyCanvas)==nullptr,"non-type single click restored protection");
+        SendMessageW(policyCanvas,WM_LBUTTONDBLCLK,0,0);
+        check(canvasTextEditing && associated(policyCanvas)==policyForeignContext,"any-tool double click did not restore");
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_ESCAPE,0);canvasPump();
+        check(!canvasTextEditing && focusCount==1,"double-click round did not exit");
+        canvasPush(6,1);
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_RETURN,0);
+        check(canvasTextEditing && associated(policyCanvas)==policyForeignContext,"type-tool Enter did not restore");
+        check(GetPropW(control,canvasEntryTriggerProperty)==reinterpret_cast<HANDLE>(ULONG_PTR(CanvasEnterText)),"Enter entry trigger not published");
+        testCtrlHeld=1;SendMessageW(policyCanvas,WM_KEYDOWN,VK_RETURN,0);testCtrlHeld=-1;canvasPump();
+        check(!canvasTextEditing && focusCount==1 && associated(policyCanvas)==nullptr,"Ctrl+Enter did not re-disable");
+        check(GetPropW(control,canvasExitTriggerProperty)==reinterpret_cast<HANDLE>(ULONG_PTR(CanvasCtrlEnter)),"Ctrl+Enter exit trigger not published");
+        canvasPush(6,0);
+        SendMessageW(policyCanvas,WM_LBUTTONDBLCLK,0,0);
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_RETURN,1<<24);canvasPump();
+        check(!canvasTextEditing && focusCount==1,"numpad Enter did not re-disable");
+        check(GetPropW(control,canvasExitTriggerProperty)==reinterpret_cast<HANDLE>(ULONG_PTR(CanvasNumpadEnter)),"numpad Enter exit trigger not published");
+        canvasPush(6,1);SendMessageW(policyCanvas,WM_LBUTTONDOWN,0,0);
+        check(canvasTextEditing,"correction fixture entry");
+        canvasPush(8,static_cast<LPARAM>(((wallMilliseconds()+1)<<1)|0));
+        check(!canvasTextEditing && focusCount==1,"async not-entered correction did not roll back");
+        check(GetPropW(control,canvasCorrectionsProperty)==reinterpret_cast<HANDLE>(ULONG_PTR(1)),"correction count not published");
+        SendMessageW(policyCanvas,WM_LBUTTONDOWN,0,0);
+        check(canvasTextEditing,"stale correction fixture entry");
+        canvasPush(8,static_cast<LPARAM>(((canvasEntryWallMs-10000)<<1)|0));
+        check(canvasTextEditing,"late correction hit a newer canvas round");
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_ESCAPE,0);canvasPump();
+        check(!canvasTextEditing && focusCount==1,"stale-correction round did not exit");
+        const ULONGLONG correctionEnter=wallMilliseconds();
+        canvasPush(8,static_cast<LPARAM>(((correctionEnter+1)<<1)|1));
+        check(canvasTextEditing && associated(policyCanvas)==policyForeignContext && focusCount==0,"missed-entry correction did not restore");
+        SendMessageW(policyCanvas,WM_KEYDOWN,VK_ESCAPE,0);canvasPump();
+        check(!canvasTextEditing && focusCount==1,"correction-entry round did not exit");
+        check(GetPropW(control,policyTraceCountProperty)!=nullptr,"policy trace was not published");
+        check(GetPropW(control,canvasEpochProperty)!=nullptr,"canvas epoch was not published");
         HANDLE exited=CreateEventW(nullptr,TRUE,TRUE,nullptr);check(exited!=nullptr,"policy owner exit event");
         HANDLE previousOwner=owner;owner=exited;if(previousOwner)CloseHandle(previousOwner);
         SendMessageW(control,WM_TIMER,1,0);
@@ -286,6 +351,6 @@ int main(int argc,char** argv) {
         if(control)DestroyWindow(control);
         DestroyWindow(policyDialog);DestroyWindow(policyForeign);DestroyWindow(fixture);
         ImmDestroyContext(policyCanvasContext);ImmDestroyContext(policyDialogContext);ImmDestroyContext(policyForeignContext);ImmDestroyContext(rootContext);ImmDestroyContext(context);
-        std::puts("PS-thread context: nonce, real association, focus/mouse/profile restore, IMM reassociation, TSF event reset/context replacement without timer or renew, 50 cross-process menu returns with independent menu IME, 20 subscription lifecycles, lease expiry, original context and unchanged HKL passed; focus policy sync canvas/root disable, Edit restore, PSFloatC exclusion, mouse/edit-key/lease immunity, input-language reapply, foreground return, PS replacement protection, owner exit restoration passed");return 0;
+        std::puts("PS-thread context: nonce, real association, focus/mouse/profile restore, IMM reassociation, TSF event reset/context replacement without timer or renew, 50 cross-process menu returns with independent menu IME, 20 subscription lifecycles, lease expiry, original context and unchanged HKL passed; focus policy sync canvas/root disable, Edit restore, PSFloatC exclusion, mouse/edit-key/lease immunity, input-language reapply, foreground return, PS replacement protection, owner exit restoration passed; canvas text editing type-tool click/double-click/Enter restore-before-window-procedure, non-type click stays disabled, composition-aware Esc, Ctrl/numpad Enter posted exit, timestamped async corrections and trigger/trace diagnostics passed");return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());LockSetForegroundWindow(LSFW_UNLOCK);if(initialForeground)SetForegroundWindow(initialForeground);closeChild();return 1;}
 }

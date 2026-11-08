@@ -19,7 +19,7 @@ const inputTool=(()=>{
          typeof request.id!=='string' || !/^[0-9a-f]{32}$/.test(request.id) || request.id===lastId ||
          !Number.isFinite(request.expires_at_ms) || request.expires_at_ms>now+2000)return;
       lastId=request.id;
-      const response={schema:1,id:request.id,session,token};
+      const response={schema:1,id:request.id,session,token},observedAt=Date.now(),observation=++inputToolObservationSequence;
       try {
         if(request.expires_at_ms<now)throw Error('expired-before-read');
         const tool=await core.getActiveTool();
@@ -31,15 +31,54 @@ const inputTool=(()=>{
         Object.assign(response,{phase:'completed',classID,isModal:tool.isModal});
       }catch(error){response.phase='failed';response.error=String(error).slice(0,240);}
       response.completed_at_ms=Date.now();
+      if(response.phase==='completed')await publishInputToolState({classID:response.classID,isModal:response.isModal},observedAt,observation);
       pendingReceipt=response;
       await record(folder,'input-tool-response.json',pendingReceipt);pendingReceipt=null;
     } finally {reading=false;}
   };
 })();
+// The backend needs the current tool and modal flag before a canvas click so
+// InputContext can restore the canvas HIMC synchronously. Only a changed state
+// is written; this is a read-only local file and never enters modal execution.
+let inputToolStateSequence=0,inputToolStateWriting=false,inputToolStatePending=null,lastInputToolStateKey='';
+let inputToolObservationSequence=0,lastInputToolObservation=0;
+async function publishInputToolState(tool,observedAt=Date.now(),observation=++inputToolObservationSequence) {
+  if(!heartbeatFolder)return;
+  let value=tool;
+  if(!value) {
+    try {value=await require('photoshop').core.getActiveTool();} catch(_) {return;}
+  }
+  const classID=value?.classID ?? value?.classId;
+  if(typeof classID!=='string' || !/^[A-Za-z_][A-Za-z0-9_]{0,79}$/.test(classID) || typeof value.isModal!=='boolean')return;
+  // A host read may finish after a newer read has already published its tool.
+  if(observation<lastInputToolObservation)return;
+  lastInputToolObservation=observation;
+  const key=classID+'|'+value.isModal;
+  if(key===lastInputToolStateKey && !inputToolStatePending)return;
+  inputToolStatePending={schema:1,session,token,sequence:++inputToolStateSequence,tool:classID,
+    isModal:value.isModal,created_at_ms:observedAt};
+  if(inputToolStateWriting)return;
+  inputToolStateWriting=true;
+  try {
+    while(inputToolStatePending) {
+      const written=inputToolStatePending;
+      await record(heartbeatFolder,'input-tool-state.json',written);
+      lastInputToolStateKey=written.tool+'|'+written.isModal;
+      if(inputToolStatePending===written)inputToolStatePending=null;
+    }
+  } catch(error) {
+    lastInputToolStateKey='';
+    console.log('Input tool state unavailable',String(error));
+  } finally {inputToolStateWriting=false;}
+}
 let inputToolEventSequence=0,inputToolEventWriting=false,inputToolEventPending=null;
-async function inputToolEvent(state) {
-  if(!heartbeatFolder || !['enter','exit'].includes(state))return;
-  inputToolEventPending={schema:1,session,token,sequence:++inputToolEventSequence,state,created_at_ms:Date.now()};
+async function inputToolEvent(event,descriptor) {
+  const state=descriptor?.state?._value;
+  // Q10: Move Tool mouse modals and Alert dialogs also emit enter/exit.
+  if(!heartbeatFolder || event!=='toolModalStateChanged' || descriptor?.tool?.ID!=='txBx' ||
+     descriptor?.kind?._value!=='tool' || !['enter','exit'].includes(state))return;
+  inputToolEventPending={schema:1,session,token,sequence:++inputToolEventSequence,state,
+    tool:'txBx',kind:'tool',created_at_ms:Date.now()};
   if(inputToolEventWriting)return;
   inputToolEventWriting=true;
   try {
@@ -362,7 +401,7 @@ async function probe(reason) {
     if (!heartbeatValue) {
       heartbeatValue={
         ...await metadata(),
-        probe_version: '0.3.92', session, transport: 'plugin-data-files',
+        probe_version: '0.3.96', session, transport: 'plugin-data-files',
         photoshop_version: hostVersion,
         extended_label_colors:labels.extendedLabelColors,
         uxp_version: optional(() => uxp.versions.uxp),
@@ -438,7 +477,7 @@ async function probe(reason) {
       lastRequest=request.id;return;
     }
     seen.add(request.id); // Consume before any write; never retry after an uncertain response.
-    const response = {schema:1,session,id: request.id, probe_version: '0.3.92', operation: request.operation,
+    const response = {schema:1,session,id: request.id, probe_version: '0.3.96', operation: request.operation,
       transport: 'plugin-data-files',
       completed_at_ms: Date.now(), phase: 'completed'};
     const timingStarted=Date.now(),timings={};
@@ -592,7 +631,7 @@ observation.notifications={state:'pending',received:0};
 Promise.resolve().then(()=>require('photoshop').action.addNotificationListener(
   ['select','make','delete','set','undo','redo','open','close','toolModalStateChanged','modalStateChanged'],(event,descriptor)=>{
     if(event==='toolModalStateChanged' || event==='modalStateChanged') {
-      inputToolEvent(descriptor?.state?._value).catch(error=>console.log('Input tool event unavailable',String(error)));
+      inputToolEvent(event,descriptor).catch(error=>console.log('Input tool event unavailable',String(error)));
       return;
     }
     if(event==='set') {
@@ -617,6 +656,11 @@ setInterval(() => {
   if(heartbeatFolder)inputTool(heartbeatFolder).catch(error=>console.log('Input tool observation unavailable',String(error)));
   return probe('poll');
 }, 16);
+// Tool selection has no action notification; a low-rate read catches it before
+// the next canvas click. Only a changed classID/isModal is written.
+setInterval(() => {
+  if(heartbeatFolder)publishInputToolState().catch(error=>console.log('Input tool state unavailable',String(error)));
+}, 250);
 setInterval(executionPulse,1000);
 // A pending asynchronous Photoshop call leaves JS responsive. Renew only the
 // transport lease; metadata, selection and original execution evidence keep

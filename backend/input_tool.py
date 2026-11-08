@@ -147,19 +147,51 @@ class ToolObservation:
                                    'original_republished':False,'retired_at_ms':round(time.time()*1000)}
         return True
 
-    def event(self):
+    def event_detail(self):
         try:
             folder,heartbeat=self.transport.observe()
             path=folder/'input-tool-event.json'
-            if path.stat().st_size>2048:return
+            if path.stat().st_size>2048:return None
             value=json.loads(path.read_text('utf-8'))
             token=json.loads(self.transport.config.read_text('utf-8-sig'))['token']
             stamp=value.get('created_at_ms')
             if (type(value.get('schema')) is int and value['schema']==1 and value.get('session')==heartbeat['session'] and value.get('token')==token and
                 type(value.get('sequence')) is int and value['sequence']>0 and value.get('state') in ('enter','exit') and
+                value.get('tool')=='txBx' and value.get('kind')=='tool' and
                 type(stamp) in (int,float) and math.isfinite(stamp) and 0<=time.time()*1000-stamp<=2000):
-                return value['session'],value['sequence'],value['state']
+                return {'session':value['session'],'sequence':value['sequence'],'state':value['state'],
+                        'created_at_ms':stamp}
         except (RuntimeError,OSError,ValueError,TypeError,AttributeError):pass
+
+    def event(self):
+        value=self.event_detail()
+        if value:return value['session'],value['sequence'],value['state']
+
+    def state(self):
+        """Latest authenticated tool/modal snapshot; local file cache only."""
+        try:
+            folder,heartbeat=self.transport.observe()
+            path=folder/'input-tool-state.json'
+            info=path.stat()
+            if info.st_size>2048:return None
+            key=(str(path),info.st_mtime_ns,info.st_size)
+            if getattr(self,'_state_key',None)!=key:
+                self._state_key=None
+                self._state_value=json.loads(path.read_text('utf-8'))
+                self._state_key=key
+            value=self._state_value
+            token=json.loads(self.transport.config.read_text('utf-8-sig'))['token']
+            stamp=value.get('created_at_ms')
+            tool=value.get('tool')
+            valid=(type(value.get('schema')) is int and value['schema']==1 and value.get('session')==heartbeat['session'] and
+                   value.get('token')==token and type(value.get('sequence')) is int and value['sequence']>0 and
+                   isinstance(tool,str) and tool.isascii() and tool.isidentifier() and 1<=len(tool)<=80 and
+                   type(value.get('isModal')) is bool and type(stamp) in (int,float) and math.isfinite(stamp) and
+                   -2000<=time.time()*1000-stamp<=24*60*60*1000)
+            return ({'classID':tool,'isModal':value['isModal'],'sequence':value['sequence'],
+                     'created_at_ms':stamp} if valid else None)
+        except (RuntimeError,OSError,ValueError,TypeError,AttributeError):
+            return None
 
     def reconcile(self):
         if self.path.exists():

@@ -6,7 +6,7 @@ const original={layerID:11,name:'mixed',layerKind:3,layerLocking:{protectAll:fal
  paragraphStyleRange:[{_obj:'paragraphStyleRange',from:0,to:5,paragraphStyle:{align:'left'}},{_obj:'paragraphStyleRange',from:5,to:9,paragraphStyle:{align:'center'}}],
  antiAlias:{_value:'antiAliasCrisp'},textClickPoint:{x:1,y:2},orientation:'horizontal',textShape:[{char:{_value:'paint'},transform:{xx:1,yy:1}}],warp:{style:'none'},kerningRange:[]}};
 let row=clone(original),target={session:'s',document_id:1,active_layer_id:11,layer_ids:[11]},before,history=0,commits=0,writes=0,failWrite=false,wrongStyle=false,rollbackFail=false,materializeParagraphs=false,wrongXmp=false,fallbackGlyph=false;
-const ps={app:{activeDocument:{resolution:72}},core:{executeAsModal:async fn=>fn({isCancelled:false,hostControl:{suspendHistory:async()=>{history++;before=clone(row);return 'h';},resumeHistory:async(_,commit)=>{if(commit)commits++;else{if(rollbackFail)throw Error('rollback');row=before;}}}})},action:{batchPlay:async commands=>commands.map(c=>{
+const ps={app:{activeDocument:{resolution:72}},core:{getActiveTool:async()=>({classID:"moveTool",isModal:false}),executeAsModal:async fn=>fn({isCancelled:false,hostControl:{suspendHistory:async()=>{history++;before=clone(row);return 'h';},resumeHistory:async(_,commit)=>{if(commit)commits++;else{if(rollbackFail)throw Error('rollback');row=before;}}}})},action:{batchPlay:async commands=>commands.map(c=>{
  assert.equal(c._options.dialogOptions,'silent');
  if(c._obj==='multiGet')return clone(row);
  if(c._obj==='get'&&c._target[0]._property==='XMPMetadataAsUTF8')return {XMPMetadataAsUTF8:row.XMPMetadataAsUTF8||''};
@@ -68,5 +68,20 @@ async function request(find,replacement){const read=await tools.read();return {t
  read=await tools.read();tagged.text.revision=read.revision;tagged.text.list_xmp='new';row.XMPMetadataAsUTF8='externally changed';const staleWrites=writes;await assert.rejects(tools.replace(tagged),/样式已改变/);assert.equal(writes,staleWrites);
  read=await tools.read();tagged.text.revision=read.revision;wrongXmp=true;const prior=clone(row);await assert.rejects(tools.replace(tagged),/列表标记读回/);assert.deepEqual(row,prior);wrongXmp=false;
  read=await tools.read();tagged.text.revision=read.revision;tagged.text.list_xmp='x'.repeat(131073);await assert.rejects(tools.replace(tagged),/标记数据无效/);
+ row=clone(original);req=await request('猫','x');let nativeCommits=0;
+ ps.core.getActiveTool=async()=>({classId:'typeCreateOrEditTool',isModal:nativeCommits===0});
+ ps.core.endModalToolState=async commit=>{assert.equal(commit,true);nativeCommits++;};
+ await tools.replace(req);assert.equal(nativeCommits,1);assert.equal(row.textKey.textKey,'Ax😀\rBCx');
+ row=clone(original);req=await request('猫','x');nativeCommits=0;
+ ps.core.getActiveTool=async()=>({classID:'moveTool',isModal:true});const protectedWrites=writes;
+ await assert.rejects(tools.replace(req),/结束当前PS工具/);assert.equal(nativeCommits,0);assert.equal(writes,protectedWrites);
+ ps.core.getActiveTool=async()=>({classID:'typeVerticalCreateOrEditTool',isModal:nativeCommits===0});
+ row=clone(original);req=await request('猫','x');row.textKey.textStyleRange[0].textStyle.size=30;
+ await assert.rejects(tools.replace(req),/样式已改变/);assert.equal(nativeCommits,0);
+ row=clone(original);req=await request('猫','x');ps.core.endModalToolState=async()=>{nativeCommits++;row.name='latest native edit';};
+ await assert.rejects(tools.replace(req),/最新内容已保留/);assert.equal(row.name,'latest native edit');assert.equal(writes,protectedWrites);
+ row=clone(original);req=await request('猫','x');nativeCommits=0;let toolReads=0;ps.core.getActiveTool=async()=>({classID:++toolReads===1?'typeCreateOrEditTool':'moveTool',isModal:true});await assert.rejects(tools.replace(req),/状态已改变/);assert.equal(nativeCommits,0);ps.core.getActiveTool=async()=>({classID:'typeVerticalCreateOrEditTool',isModal:true});
+ row=clone(original);req=await request('猫','x');nativeCommits=0;ps.core.endModalToolState=async()=>{throw Error('unconfirmed');};
+ await assert.rejects(tools.replace(req),error=>error.resultUnknown===true);assert.equal(writes,protectedWrites);
  console.log('Text tools: mixed styles, UTF-16, paragraph ranges, no-op, stale target, missing fonts, rollback and unknown passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

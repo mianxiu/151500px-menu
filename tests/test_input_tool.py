@@ -155,13 +155,48 @@ class ToolObservationTests(unittest.TestCase):
 
     def test_edit_events_authenticate_and_never_publish_or_settle_requests(self):
         original=self.pending();path=self.folder/'input-tool-event.json'
-        event={'schema':1,'session':'owned-session','token':'private-test-token','sequence':2,'state':'exit','created_at_ms':time.time()*1000}
+        event={'schema':1,'session':'owned-session','token':'private-test-token','sequence':2,'state':'exit',
+               'tool':'txBx','kind':'tool','created_at_ms':time.time()*1000}
         atomic_json(path,event)
         self.assertEqual(self.reader.event(),('owned-session',2,'exit'))
-        for changes in ({'schema':True},{'token':'other'},{'session':'old'},{'sequence':True},{'state':'unknown'},{'created_at_ms':time.time()*1000-3000},{'created_at_ms':float('nan')}):
+        detail=self.reader.event_detail()
+        self.assertEqual(detail['sequence'],2);self.assertEqual(detail['state'],'exit')
+        self.assertAlmostEqual(detail['created_at_ms'],event['created_at_ms'],places=3)
+        for changes in ({'schema':True},{'token':'other'},{'session':'old'},{'sequence':True},{'state':'unknown'},
+                        {'tool':'arwT'},{'tool':None},{'kind':'mouse'},{'kind':None},
+                        {'created_at_ms':time.time()*1000-3000},{'created_at_ms':float('nan')}):
             atomic_json(path,{**event,**changes});self.assertIsNone(self.reader.event())
         self.assertEqual(json.loads(self.reader.path.read_text()),original)
         self.assertFalse((self.folder/'input-tool-request.json').exists())
+
+    def test_tool_state_is_authenticated_fresh_and_cached_by_file_version(self):
+        path=self.folder/'input-tool-state.json'
+        state={'schema':1,'session':'owned-session','token':'private-test-token','sequence':4,
+               'tool':'typeCreateOrEditTool','isModal':False,'created_at_ms':time.time()*1000}
+        atomic_json(path,state)
+        self.assertEqual(self.reader.state(),{'classID':'typeCreateOrEditTool','isModal':False,
+                                               'sequence':4,'created_at_ms':state['created_at_ms']})
+        writes=path.stat().st_mtime_ns
+        self.assertEqual(self.reader.state()['sequence'],4);self.assertEqual(path.stat().st_mtime_ns,writes)
+        self.heartbeat['session']='new-session'
+        self.assertIsNone(self.reader.state())
+        self.heartbeat['session']='owned-session'
+        atomic_json(self.reader.transport.config,{'token':'rotated-token'})
+        self.assertIsNone(self.reader.state())
+        atomic_json(self.reader.transport.config,{'token':'private-test-token'})
+        with patch('backend.input_tool.time.time',return_value=time.time()+25*60*60):
+            self.assertIsNone(self.reader.state())
+        for change in ({'session':'other'},{'token':'other'},{'isModal':'false'},{'tool':''},
+                       {'sequence':0},{'created_at_ms':time.time()*1000-25*60*60*1000}):
+            time.sleep(.002)
+            atomic_json(path,{**state,**change,'created_at_ms':change.get('created_at_ms',time.time()*1000)})
+            self.assertIsNone(self.reader.state(),change)
+        time.sleep(.002)
+        atomic_json(path,{**state,'sequence':6,'created_at_ms':time.time()*1000-5000})
+        self.assertEqual(self.reader.state()['sequence'],6)  # durable until the tool changes
+        time.sleep(.002)
+        atomic_json(path,{**state,'sequence':5,'isModal':True,'created_at_ms':time.time()*1000})
+        self.assertEqual(self.reader.state()['sequence'],5);self.assertTrue(self.reader.state()['isModal'])
 
     def reply(self,request,**changes):
         atomic_json(self.folder/'input-tool-response.json',{

@@ -188,3 +188,23 @@ class InputFocusTests(unittest.TestCase):
         self.assertFalse(guard.menu_return({'root':10,'focus':11,'state':'unknown'},guard.snapshot()[0]))
         guard.publish('non-input',{'root':10,'focus':11},guard.snapshot()[0]);guard.menu_open('split')
         self.assertFalse(guard.menu_return({'root':10,'focus':11,'state':'unknown'},guard.snapshot()[0]))
+
+    def test_search_return_publishes_before_a_late_worker_and_keeps_input_protection(self):
+        desktop=SimpleNamespace(_is_photoshop=lambda hwnd:hwnd==10,_is_menu_window=lambda hwnd:False)
+        guard=InputFocus(desktop)
+        guard.native_sample=Mock(return_value={'root':10,'focus':11,'state':'unknown'})
+        guard.publish('non-input',{'root':10,'focus':11},0);guard.menu_open('search')
+        guard.publish('unknown',{},0)
+        guard.focus_changed(10,0)
+        self.assertEqual(guard.shortcut_context(),{'state':'non-input','root':10,'focus':11,'epoch':0})
+        guard.publish('unknown',{},0)
+        self.assertEqual(guard.shortcut_context()['state'],'non-input')
+        guard.native_sample.return_value={'root':10,'focus':11,'state':'input'}
+        guard.publish('unknown',{},guard.snapshot()[0]);guard.focus_changed(10,0)
+        self.assertEqual(guard.shortcut_context()['state'],'unknown')
+        guard.native_sample.return_value={'root':10,'focus':12,'state':'unknown'}
+        guard.focus_changed(10,0)
+        self.assertEqual(guard.shortcut_context()['state'],'unknown')
+        guard.native_sample.return_value={'root':10,'focus':11,'state':'unknown'}
+        guard.focus_changed(10,1)
+        self.assertEqual(guard.shortcut_context()['state'],'unknown')

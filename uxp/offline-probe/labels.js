@@ -2433,9 +2433,26 @@ function createTextTools(ps,session,capture,readTree) {
     if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8};
     return {target,revision,text:row.textKey.textKey,name:row.name,list_xmp:row.XMPMetadataAsUTF8,list_paragraphs:paragraphLayout(row.textKey)};
   }
+  async function finishEditing(request,saved) {
+    const tool=await ps.core.getActiveTool(),kind=tool?.classID??tool?.classId;
+    if(tool?.isModal===false)return;
+    if(tool?.isModal!==true||!['typeCreateOrEditTool','typeVerticalCreateOrEditTool'].includes(kind))throw Error('请先结束当前PS工具操作，再写回文字');
+    if(Date.now()>request.expires_at_ms)throw Error('文本操作已取消');
+    if(!same(await descriptor(request.target),saved.row))throw Error('文字内容或样式已改变，请重新读取');
+    const current=await ps.core.getActiveTool();
+    if(Date.now()>request.expires_at_ms)throw Error('文本操作已取消');
+    if(current?.isModal!==true||(current.classID??current.classId)!==kind)throw Error('PS工具编辑状态已改变，本次未写回');
+    // Commit the user's native edit before requesting our own modal scope.
+    try {
+      await ps.core.endModalToolState(true);
+      if((await ps.core.getActiveTool())?.isModal!==false||!sameTarget(await capture(),request.target))throw Error('文字编辑退出或目标待核对');
+    } catch(error) {error.resultUnknown=true;throw error;}
+    if(!same(await descriptor(request.target),saved.row))throw Error('PS文字编辑已确认，最新内容已保留；请重新读取后写回');
+  }
   async function prepareObject(request,params){
     const saved=snapshot;
     if(!saved||params?.revision!==saved.revision||!sameTarget(saved.target,request.target)||Date.now()-saved.time>1800000)throw Error('文字对象读取已过期');
+    await finishEditing(request,saved);
     const row=await descriptor(request.target,true);if(!same(row,saved.row))throw Error('文字或对象已改变，请重新读取');
     const existing=row.layerKind===5,raw=existing?params.object_source?.layer?.text:row.textKey;
     if(!raw||existing&&(!params.object_source||!/^[0-9a-f]{64}$/.test(params.object_render)))throw Error('文字对象源或显示校验缺失');
@@ -2464,6 +2481,7 @@ function createTextTools(ps,session,capture,readTree) {
     const tagging=Object.prototype.hasOwnProperty.call(params,'list_xmp');
     if(tagging&&(typeof params.list_xmp!=='string'||params.list_xmp.length>131072||params.list_xmp.includes('\0')))throw Error('列表标记数据无效');
     if(wanted.value.textKey===saved.row.textKey.textKey&&!params.list_layout&&(!tagging||params.list_xmp===(saved.row.XMPMetadataAsUTF8||'')))return {verified:true,count:0};
+    await finishEditing(request,saved);
     let uncertain=false;
     try {return await ps.core.executeAsModal(async context=>{
       if(context.isCancelled||Date.now()>request.expires_at_ms)throw Error('文本操作已取消');
@@ -2513,6 +2531,7 @@ function createTextTools(ps,session,capture,readTree) {
         (shape.columnCount??1)!==1||(shape.rowCount??1)!==1||shape.char._value==='box'&&raw.orientation?._value!=='horizontal'||
         shape.transform&&(['xx','yy'].some(key=>shape.transform[key]!==1)||['xy','yx'].some(key=>shape.transform[key]!==0))||
         ['xx','xy','yx','yy'].some(key=>!Number.isFinite(matrix[key]))||Math.abs(matrix.xx*matrix.yy-matrix.xy*matrix.yx)<.000001)throw Error('此文字的路径或变形暂不能安全拆分');
+    await finishEditing(request,saved);
     let uncertain=false;
     try {return await ps.core.executeAsModal(async context=>{
       if(context.isCancelled||Date.now()>request.expires_at_ms)throw Error('文本操作已取消');

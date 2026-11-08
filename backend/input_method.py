@@ -15,6 +15,14 @@ def ime_target(value):
     return value.get('identity'),value.get('ime'),value.get('layout'),value.get('context_nonce')
 
 
+TYPE_TOOLS=frozenset({'typeCreateOrEditTool','typeVerticalCreateOrEditTool',
+                      'typeMaskTool','typeVerticalMaskTool'})
+
+
+def type_tool(classID):
+    return isinstance(classID,str) and classID in TYPE_TOOLS
+
+
 class ImePolicy:
     def __init__(self):
         self.owned=None;self.pending=None;self.attempted=None
@@ -111,6 +119,10 @@ class InputMethod(InputLanguage):
         self.edit_refresh_until=0
         self.verification=None;self.ready={}
         self.focus_policy=False;self.policy_window=0;self.policy_identity=None;self.policy_failures=0
+        self.canvas_tool=None;self.canvas_focus=0;self.canvas_state=False
+        self.canvas_entry_at=None;self.canvas_entry_wall_ms=0;self.canvas_modal_seen=False;self.canvas_modal_state=False
+        self.canvas_entry_tool_seq=0;self.canvas_last_seq=None;self.canvas_last_correct_enter=None
+        self.modal_events_seen=0;self.canvas_timeouts=0
         self.report={'state':'unknown','scope':'photoshop-temporary-ime','layout_requests':0,
                      'disable_requests':0,'restore_requests':0,'focus_policy':False,'policy_windows':0,
                      'policy_reason':0,'policy_residual':False,'policy_age_ms':None}
@@ -248,6 +260,79 @@ class InputMethod(InputLanguage):
         sample['policy_age_ms']=max(0,self.tick()-tick) if tick else None
         return sample
 
+    def push_type_tool(self,tool):
+        """Publish the current type-tool flag; one send per actual change."""
+        if not self.focus_policy or not self.policy_window or not isinstance(tool,dict):return
+        classID=tool.get('classID')
+        if not isinstance(classID,str):return
+        active=type_tool(classID)
+        if active==self.canvas_tool:return
+        try:
+            self.ime.set_canvas_tool(self.policy_window,active)
+            self.canvas_tool=active
+            self.report.pop('canvas_push_error',None)
+        except Exception as error:self.report['canvas_push_error']=type(error).__name__
+
+    def canvas_event(self,detail,sample):
+        """UXP modal enter/exit: one timestamped correction, ordered by sequence."""
+        if not detail or not self.focus_policy or not self.policy_window:return
+        sequence=detail['sequence']
+        if self.canvas_last_seq is not None and detail['session']==self.canvas_last_seq[0] and sequence<=self.canvas_last_seq[1]:return
+        self.canvas_last_seq=(detail['session'],sequence)
+        self.modal_events_seen+=1
+        enter=detail['state']=='enter'
+        self.canvas_modal_state=enter
+        if enter:self.canvas_modal_seen=True
+        try:self.ime.canvas_correct(self.policy_window,enter,detail['created_at_ms'])
+        except Exception as error:self.report['canvas_correction_error']=type(error).__name__
+        if not enter:self.canvas_entry_at=None
+
+    def canvas_tick(self,sample,tool_state):
+        """Require a newer non-modal snapshot before reclaiming a pending entry."""
+        if not self.focus_policy or not self.policy_window:return sample
+        editing=bool(sample.get('canvas_text_editing'))
+        if editing:
+            if self.canvas_state is not True:
+                self.canvas_state=True;self.canvas_entry_at=time.monotonic()
+                self.canvas_entry_wall_ms=time.time()*1000
+                self.canvas_modal_seen=self.canvas_modal_state
+                self.canvas_entry_tool_seq=tool_state.get('sequence',0) if tool_state else 0
+            if tool_state and tool_state.get('sequence',0)>self.canvas_entry_tool_seq and tool_state.get('isModal'):
+                self.canvas_modal_seen=True
+            if (sample.get('canvas_entry_pending') and not self.canvas_modal_seen and
+                    tool_state and tool_state.get('sequence',0)>self.canvas_entry_tool_seq and
+                    tool_state.get('created_at_ms',0)>self.canvas_entry_wall_ms and
+                    tool_state.get('isModal') is False and self.canvas_entry_at is not None and
+                    time.monotonic()-self.canvas_entry_at>=.8):
+                try:
+                    self.ime.canvas_correct(self.policy_window,False,time.time()*1000)
+                    self.canvas_timeouts+=1
+                except Exception as error:self.report['canvas_correction_error']=type(error).__name__
+                self.canvas_entry_at=None
+        else:
+            self.canvas_state=False;self.canvas_entry_at=None;self.canvas_modal_seen=False
+        # A modal text edit with the canvas still disabled is a missed entry.
+        if (tool_state and tool_state.get('isModal') and self.canvas_modal_state and not editing and
+                type_tool(tool_state.get('classID')) and
+                self.canvas_last_correct_enter!=tool_state.get('sequence')):
+            try:
+                self.ime.canvas_correct(self.policy_window,True,tool_state['created_at_ms'])
+                self.canvas_last_correct_enter=tool_state.get('sequence')
+            except Exception as error:self.report['canvas_correction_error']=type(error).__name__
+        self.report.update(canvas_text_editing=editing,canvas_entry_pending=bool(sample.get('canvas_entry_pending')),
+                           type_tool_active=bool(sample.get('type_tool_active')),type_tool_known=bool(sample.get('type_tool_known')),
+                           modal_events=self.modal_events_seen,canvas_timeouts=self.canvas_timeouts)
+        return sample
+
+    def canvas_diagnostics(self):
+        if not self.focus_policy or not self.policy_window:return {'available':False,'state':'policy-off'}
+        try:
+            status=self.ime.command(self.policy_window,1,self.canvas_focus,timeout=250)
+            row=self.ime.canvas_diagnostics(self.policy_window,status,self.canvas_focus)
+            row['timeouts']=self.canvas_timeouts;row['modal_events']=self.modal_events_seen
+            return row
+        except Exception as error:return {'available':False,'error_type':type(error).__name__}
+
     def stop_focus_policy(self):
         """Restore every saved association and confirm the native policy is off."""
         if not self.policy_window:
@@ -265,6 +350,8 @@ class InputMethod(InputLanguage):
             self.report['policy_error']='restore-unconfirmed'
             return False
         self.focus_policy=False;self.policy_window=0;self.policy_identity=None
+        self.canvas_tool=None;self.canvas_state=False;self.canvas_modal_state=False
+        self.canvas_entry_at=None
         self.report.pop('policy_error',None)
         self.report.update(focus_policy=False,policy_windows=0,policy_residual=False,
                            **{key:fields[key] for key in ('policy_reason','policy_tick')})
@@ -296,6 +383,8 @@ class InputMethod(InputLanguage):
             if type(status) is int and status&1 and status&0x100 and not status&8 and not status&0x200:
                 self.focus_policy=True;self.policy_window=window;self.policy_identity=identity
                 self.policy_failures=0
+                self.canvas_tool=None;self.canvas_state=False;self.canvas_modal_state=False
+                self.canvas_last_seq=None;self.modal_events_seen=0;self.canvas_entry_at=None
                 self.policy_fields(sample,status)
             else:
                 self.policy_failures+=1
@@ -358,10 +447,20 @@ class InputMethod(InputLanguage):
                                             'tsf_disabled','native_events','native_menu_held'):
                                     if key in early:sample[key]=early[key]
                         except Exception as error:self.report['policy_error']=type(error).__name__
+                    state_reader=getattr(self.desktop,'input_tool_state',None)
+                    tool_state=state_reader() if sample.get('root') and state_reader else None
+                    self.push_type_tool(tool_state)
+                    detail_reader=getattr(self.desktop,'input_tool_event_detail',None)
+                    detail=detail_reader() if sample.get('root') and detail_reader else None
                     event_reader=getattr(self.desktop,'input_tool_event',None)
-                    event=event_reader() if sample.get('root') and event_reader else None
+                    event=(detail['session'],detail['sequence'],detail['state']) if detail else (
+                        event_reader() if sample.get('root') and event_reader else None)
+                    if event and detail is None:
+                        detail={'session':event[0],'sequence':event[1],'state':event[2],
+                                'created_at_ms':time.time()*1000}
                     if event and event!=tool_event:
                         tool_event=event
+                        self.canvas_event(detail,sample)
                         self.protect() if event[2]=='enter' else self.edit_end()
                         self.report['tool_events']=self.report.get('tool_events',0)+1
                         continue
@@ -393,12 +492,15 @@ class InputMethod(InputLanguage):
                         examined=context;tool=self.read_tool(sample);next_tool_check=time.monotonic()+1;sample=self.sample()
                     same=(tuple(sample.get('identity',[])),sample.get('focus'),self.snapshot()[0],sample.get('layout'))==context
                     evidence=tool if same and examined==context else None
+                    if not tool_state and isinstance(tool,dict):self.push_type_tool(tool)
                     if sample.get('root'):
                         protected=protected and not (isinstance(evidence,dict) and evidence.get('isModal') is False)
                         sample['state']='input' if protected else self.focus_state(sample,evidence)
                         if blocked:sample['state']='unknown'
                         sample=self.ime.read(sample)
+                        self.canvas_focus=sample.get('focus') or 0
                         self.sync_focus_policy(sample,old_context)
+                        self.canvas_tick(sample,tool_state)
                     elif self.policy.owned or self.policy.pending:
                         sample=self.ime.observe_owned(self.policy.pending or self.policy.owned)
                     revision=(scope,sample.get('ime'),sample.get('context_nonce'),sample.get('context_revision'))

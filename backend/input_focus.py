@@ -98,7 +98,19 @@ class InputFocus(InputLanguage):
     def focus_changed(self,hwnd,epoch=None):
         self.reconcile_epoch(epoch)
         if not self.desktop._is_photoshop(hwnd) and not self.desktop._is_menu_window(hwnd):self.invalidate()
-        else:self.refresh()
+        else:
+            try:
+                serial=self.snapshot()[0];sample=self.native_sample()
+                with self.lock:origin=self.menu_origin
+                if self.menu_return(sample,serial):
+                    with self.lock:
+                        if self.serial==serial and self.menu_origin==origin:
+                            self.serial+=1;serial=self.serial
+                            self.menu_origin=(self.menu_origin[0],serial)
+                        else:serial=None
+                    if serial is not None:self.publish('non-input',sample,serial)
+            except Exception:pass  # A failed native sample leaves the normal worker to recheck.
+            self.refresh()
 
     def publish(self,state,sample,serial):
         with self.lock:

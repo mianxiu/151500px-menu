@@ -59,11 +59,11 @@ class NativeImeContext:
         if not window or not win32gui.IsWindow(window) or win32gui.GetClassName(window)!='PhotoshopMenu.InputContext.v1' or list(win32process.GetWindowThreadProcessId(window))!=[thread,pid] or self.user.GetPropW(window,'PhotoshopMenu.InputContext.Owner.v1')!=os.getpid():raise RuntimeError('PS线程内输入保护未就绪或由另一服务持有')
         self.controls[identity]=window;return window
 
-    def command(self,window,operation,focus):
+    def command(self,window,operation,focus,timeout=1000):
         import win32gui
         nonce=self.user.GetPropW(window,'PhotoshopMenu.InputContext.Nonce.v1')
         if not nonce:raise RuntimeError('PS输入保护身份已失效')
-        return win32gui.SendMessageTimeout(window,self.message,(nonce<<8)|operation,focus,2,1000)[1]
+        return win32gui.SendMessageTimeout(window,self.message,(nonce<<8)|operation,focus,2,timeout)[1]
 
     def read(self,sample):
         value={**sample,'ime':None,'ime_open':None}
@@ -77,8 +77,56 @@ class NativeImeContext:
                      native_menu_held=bool(status&128),context_nonce=self.user.GetPropW(window,'PhotoshopMenu.InputContext.Nonce.v1'),
                      context_revision=self.user.GetPropW(window,'PhotoshopMenu.InputContext.Revision.v1') or 0,
                      focus_policy=bool(status&0x100),policy_residual=bool(status&0x200),
-                     policy_windows=(status>>16)&0xff,policy_reason=(status>>24)&0xff,policy_tick=tick)
+                     policy_windows=(status>>16)&0xff,policy_reason=(status>>24)&0xff,policy_tick=tick,
+                     canvas_text_editing=bool(status>>32&1),type_tool_active=bool(status>>33&1),
+                     type_tool_known=bool(status>>34&1),canvas_composition=bool(status>>35&1),
+                     canvas_entry_pending=bool(status>>36&1))
         return value
+
+    def set_canvas_tool(self,window,active):
+        import win32gui
+        nonce=self.user.GetPropW(window,'PhotoshopMenu.InputContext.Nonce.v1')
+        if not nonce:raise RuntimeError('PS输入保护身份已失效')
+        status=win32gui.SendMessageTimeout(window,self.message,(nonce<<8)|6,1 if active else 0,2,250)[1]
+        if type(status) is not int or not status&1:raise RuntimeError('工具状态推送未确认')
+        return status
+
+    def canvas_correct(self,window,enter,stamp_ms):
+        import win32gui
+        nonce=self.user.GetPropW(window,'PhotoshopMenu.InputContext.Nonce.v1')
+        if not nonce:raise RuntimeError('PS输入保护身份已失效')
+        packed=(int(stamp_ms)<<1)|(1 if enter else 0)
+        status=win32gui.SendMessageTimeout(window,self.message,(nonce<<8)|8,packed,2,250)[1]
+        if type(status) is not int or not status&1:raise RuntimeError('画布文字校正未确认')
+        return status
+
+    def canvas_diagnostics(self,window,status,focus):
+        import win32gui
+        if type(status) is not int or not status&1:return {'available':False}
+        def prop(name):
+            value=self.user.GetPropW(window,name) or 0
+            return int(value)
+        row={'available':True,'canvas_text_editing':bool(status>>32&1),'type_tool_active':bool(status>>33&1),
+             'type_tool_known':bool(status>>34&1),'composition_active':bool(status>>35&1),
+             'entry_pending':bool(status>>36&1),
+             'entry_tick_ms':prop('PhotoshopMenu.InputContext.Canvas.EntryTick.v1'),
+             'entry_trigger':prop('PhotoshopMenu.InputContext.Canvas.EntryTrigger.v1'),
+             'exit_tick_ms':prop('PhotoshopMenu.InputContext.Canvas.ExitTick.v1'),
+             'exit_trigger':prop('PhotoshopMenu.InputContext.Canvas.ExitTrigger.v1'),
+             'corrections':prop('PhotoshopMenu.InputContext.Canvas.Corrections.v1'),
+             'epoch':prop('PhotoshopMenu.InputContext.Canvas.Epoch.v1'),
+             'focus':focus}
+        count=prop('PhotoshopMenu.InputContext.PolicyTrace.Count.v1')
+        row['policy_trace_count']=count
+        row['policy_trace']=[]
+        head=count%20
+        for offset in range(min(count,20)):
+            index=(head+offset)%20
+            packed=prop('PhotoshopMenu.InputContext.PolicyTrace.%d.v1'%index)
+            if not packed:continue
+            row['policy_trace'].append({'tick_ms':packed>>24,'window_kind':(packed>>20)&0xf,
+                                        'reason':(packed>>8)&0xff,'action':packed&0xff})
+        return row
 
     def set_policy(self,window,enabled):
         import win32gui

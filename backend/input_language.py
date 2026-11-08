@@ -147,13 +147,27 @@ class InputLanguage:
         self.policy.owned=None;self.policy.attempted=None;self.policy.restore_attempt=None
         self.report['retired_exited_owners']=self.report.get('retired_exited_owners',0)+1
 
-    def sample(self,include_accessibility=True):
+    def foreground_identity(self,foreground):
+        """Reuse the verified foreground process while its HWND/PID is unchanged.
+
+        The held handle proves the same process is alive (a recycled PID closes
+        the old object). Only a foreground change reopens/queries the process.
+        """
         import win32gui,win32process,win32api
-        from .photoshop_windows import workspace_root
-        gui=win32gui;foreground=gui.GetForegroundWindow()
-        if not foreground or not gui.IsWindowVisible(foreground) or gui.IsIconic(foreground):return {'state':'outside'}
         thread,pid=win32process.GetWindowThreadProcessId(foreground)
+        cached=getattr(self,'_foreground_identity',None)
+        # A live window cannot outlive its process, and the held handle keeps
+        # that process object (and its PID) from being recycled. Same HWND,
+        # thread and PID therefore reuse the earlier executable verdict.
+        if cached and cached['hwnd']==foreground and cached['thread']==thread and cached['pid']==pid:
+            return cached
+        if cached and cached.get('handle'):
+            try:cached['handle'].Close()
+            except Exception:pass
+        self._foreground_identity=None
+        if not pid:return None
         handle=win32api.OpenProcess(0x1000,False,pid)
+        if not handle:return None
         try:
             kernel=ctypes.WinDLL('kernel32',use_last_error=True)
             kernel.QueryFullProcessImageNameW.argtypes=[W.HANDLE,W.DWORD,W.LPWSTR,ctypes.POINTER(W.DWORD)]
@@ -161,9 +175,25 @@ class InputLanguage:
             image=ctypes.create_unicode_buffer(32768);length=W.DWORD(len(image))
             if not kernel.QueryFullProcessImageNameW(int(handle),0,image,ctypes.byref(length)):
                 raise ctypes.WinError(ctypes.get_last_error())
-            if image.value.rsplit('\\',1)[-1].casefold()!='photoshop.exe':return {'state':'outside'}
+            name=image.value.rsplit('\\',1)[-1].casefold()
             created=str(win32process.GetProcessTimes(handle)['CreationTime'])
-        finally:handle.Close()
+        except OSError:
+            handle.Close();raise
+        except Exception:
+            handle.Close();return None
+        cached={'hwnd':foreground,'thread':thread,'pid':pid,'handle':handle,'created':created,
+                'photoshop':name=='photoshop.exe'}
+        self._foreground_identity=cached
+        return cached
+
+    def sample(self,include_accessibility=True):
+        import win32gui,win32process
+        from .photoshop_windows import workspace_root
+        gui=win32gui;foreground=gui.GetForegroundWindow()
+        if not foreground or not gui.IsWindow(foreground) or not gui.IsWindowVisible(foreground) or gui.IsIconic(foreground):return {'state':'outside'}
+        identity=self.foreground_identity(foreground)
+        if not identity or not identity['photoshop']:return {'state':'outside'}
+        thread,pid,created=identity['thread'],identity['pid'],identity['created']
         workspace=workspace_root(gui,foreground)
         root=workspace or gui.GetAncestor(foreground,3) or foreground
         if win32process.GetWindowThreadProcessId(root)[1]!=pid:return {'state':'unknown'}

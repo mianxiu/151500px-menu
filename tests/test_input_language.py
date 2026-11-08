@@ -356,7 +356,7 @@ class LanguageWorkerTests(unittest.TestCase):
 
 
 class LanguageSamplingTests(unittest.TestCase):
-    def sample(self,pair=list,foreign=None,caret=False,caret_visible=True,image='C:\\Adobe\\Photoshop.exe',query_ok=True):
+    def sample(self,pair=list,foreign=None,caret=False,caret_visible=True,image='C:\\Adobe\\Photoshop.exe',query_ok=True,calls=1,expect_close=False):
         controller=InputLanguage(SimpleNamespace(visible=False))
         controller.accessibility=SimpleNamespace(read=Mock(return_value=FocusAccessibilityTests().row(50033)))
         def gui_info(thread,pointer):
@@ -379,20 +379,26 @@ class LanguageSamplingTests(unittest.TestCase):
             opened=stack.enter_context(patch.object(win32api,'OpenProcess',return_value=handle_type()))
             stack.enter_context(patch('backend.input_language.ctypes.WinDLL',return_value=kernel))
             stack.enter_context(patch('backend.photoshop_windows.workspace_root',return_value=1))
-            value=controller.sample()
-            opened.assert_called_once_with(0x1000,False,2);handle.Close.assert_called_once()
+            for _ in range(calls):value=controller.sample()
+            opened.assert_called_once_with(0x1000,False,2)
+            if expect_close:handle.Close.assert_called_once()
+            else:handle.Close.assert_not_called()
         return value,controller.accessibility.read
 
     def test_image_query_failure_and_foreign_executable_never_grant_input_permission(self):
         value,reader=self.sample(image='C:\\Other\\Editor.exe')
         self.assertEqual(value,{'state':'outside'});reader.assert_not_called()
-        with self.assertRaises(OSError):self.sample(query_ok=False)
+        with self.assertRaises(OSError):self.sample(query_ok=False,expect_close=True)
 
     def test_real_sampling_accepts_pywin32_list_as_well_as_tuple_pairs(self):
         for pair in (list,tuple):
             value,reader=self.sample(pair)
             self.assertEqual(value['identity'],[1,2,'created',3]);self.assertEqual(value['focus'],10)
             self.assertEqual(value['accessibility'][30003],50033);reader.assert_called_once()
+
+    def test_same_foreground_reuses_identity_without_reopening_the_process(self):
+        value,_=self.sample(calls=5)
+        self.assertEqual(value['identity'],[1,2,'created',3])
 
     def test_foreign_focus_process_or_thread_still_cannot_grant_permission(self):
         for foreign in ((3,99),(99,2)):

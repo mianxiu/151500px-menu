@@ -317,7 +317,7 @@ static float scale=1;
 static bool capsDividerAt(int i,POINT point) {
     const int first=i>=9?9:i>=7?7:panelKind==2 && i>=5?5:0;
     const int last=i>=9?10:i>=7?8:panelKind==2 && i>=5?6:capsBottomCount()-1;
-    return (i>first && point.x<capsRows[i].left+scale) ||
+    return ((i>first || panelKind==2 && i==5) && point.x<capsRows[i].left+scale) ||
            (i<last && point.x>=capsRows[i].right-scale);
 }
 
@@ -695,7 +695,7 @@ static int holdActionAt(POINT point) {
     if (panelKind==4 && recentReady && !pieAnimating) for (size_t i=0;i<recentRows.size();++i)
         if(shownPresets[i].available && PtInRect(&recentRows[i],point))return recentActionBase+static_cast<int>(i);
     for (int i=0;i<4;++i) if (rowVisible(i) && rowEnabled(i) && PtInRect(&holdRows[i],point)) {
-        if(i>=2 && (std::abs(point.x-pieCenter.x)<scale))return -1;
+        if(i==2 && point.x>=holdRows[2].right-scale || i==3 && (point.x<holdRows[3].left+scale || panelKind==2 && capsReady && layerAware && point.x>=holdRows[3].right-scale))return -1;
         return i==1?-1:i;
     }
     // Only visible cards/swatches commit. Blank radial sectors are neutral.
@@ -1201,7 +1201,7 @@ static int tipFamily(int action) {
     if(action==49 || action==50)return 49;
     if(action>=200+shapeModeTipBase)return 200+shapeModeTipBase;
     if(action>=200)return action==213 || action==214?213:200;
-    if(panelKind==2 && action>=45 && action<47)return 45;
+    if(panelKind==2 && action>=45 && action<47)return 2;
     if(panelKind==2 && (action==2 || action==3))return 2;
     if(action>=40 && action<49)return 40;
     if(action>=32)return 32;
@@ -1212,7 +1212,7 @@ static RECT tipGroupRect(int action) {
     if(action==49 || action==50)return {capsRows[9].left,capsRows[9].top,capsRows[10].right,capsRows[10].bottom};
     if(action>=200+shapeModeTipBase)return shapeModeBounds;
     if(action>=200)return action==213 || action==214?shapeEditor.maskBounds:shapeEditor.bounds;
-    if(panelKind==2 && capsReady && layerAware && tipFamily(action)==2)return {holdRows[2].left,holdRows[2].top,holdRows[3].right,holdRows[3].bottom};
+    if(panelKind==2 && capsReady && layerAware && tipFamily(action)==2)return {holdRows[2].left,holdRows[2].top,capsRows[6].right?capsRows[6].right:holdRows[3].right,holdRows[3].bottom};
     if(action>=47 && action<49)return {capsRows[7].left,capsRows[7].top,capsRows[8].right,capsRows[8].bottom};
     if(action>=40 && action<49){
         const int first=panelKind==2 && action>=45?5:0;
@@ -1473,14 +1473,16 @@ static void drawCapsBar() {
     drawGroup(0,capsBottomCount()-1,0,pieCenter.y+(107+(rowVisible(1)?(labelRowCount()-2)*21.f:0))*scale);
     if(individualSmartReady && panelKind!=3 && layerCount && layerKind)
         drawGroup(9,10,pieCenter.x+65*scale,pieCenter.y+((layerKind==4 && layerCount==1)?15.f:-15.f)*scale);
-    if(panelKind==2 && documentSortReady)drawGroup(7,8,0,holdRows[2].top-h-menuControlPadding*scale);
     if(panelKind==2 && rowVisible(3)){
-        float x=pieCenter.x+65*scale;
+        float x=float(holdRows[3].right);
         for(int i:{5,6}){
             const float width=menuFont(MenuTextRole::Control)->CalcTextSizeA(basicLabelSize(),FLT_MAX,0,capsKeys[i]).x+basicTextOffset()+figmaBasicRightPadding*scale;
-            capsRows[i]={LONG(x),LONG(pieCenter.y-(15+menuControlHeight+quickGroupGap)*scale),LONG(x+width),LONG(pieCenter.y-(15+quickGroupGap)*scale)};x+=width;
+            capsRows[i]={LONG(std::lround(x)),holdRows[2].top,LONG(std::lround(x+width)),holdRows[2].bottom};x+=width;
         }
+        const LONG shift=LONG(std::lround((holdRows[2].left+capsRows[6].right)*.5f-pieCenter.x));
+        for(auto* row:{&holdRows[2],&holdRows[3],&capsRows[5],&capsRows[6]}){row->left-=shift;row->right-=shift;}
     }
+    if(panelKind==2 && documentSortReady)drawGroup(7,8,0,holdRows[2].top-h-menuControlPadding*scale);
 }
 static void drawToolBar() {
     toolRow={};
@@ -1538,7 +1540,7 @@ static void drawPie() {
         return;
     }
     if(toolEnabled(0) && !shapePanelVisible() && !shapeEyedropActive && !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput &&
-        !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeySuper &&
+        ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeySuper &&
         !(GetAsyncKeyState(VK_CAPITAL)&0x8000) && ImGui::IsKeyPressed(ImGuiKey_F,false))menuTools.open("search");
     // Blender 5.2 defaults: 20-unit widgets, pie rows 1.5 widgets high,
     // 100-unit radius to the inner edge, roundness .4 of a widget.
@@ -1674,8 +1676,7 @@ static void drawPie() {
         }
         MenuControls::outline(draw,{float(group.left),float(group.top)},{float(group.right),float(group.bottom)},scale);
         };
-        drawSortGroup(0,1,tipGroupRect(2));
-        drawSortGroup(2,3,{capsRows[5].left,capsRows[5].top,capsRows[6].right,capsRows[6].bottom});
+        drawSortGroup(0,3,tipGroupRect(2));
     }
     else if(!editing && rowVisible(2) && rowVisible(3)) {
         const auto left=holdRows[2],right=holdRows[3];
@@ -2452,7 +2453,7 @@ int main() {
                     throw std::runtime_error("Footer overlaps actions, clips or commits a gesture");
                 if(std::abs((holdRows[1].left+holdRows[1].right)*.5f-pieCenter.x)>scale || holdRows[1].top<=pieCenter.y+19*scale ||
                    holdRows[2].top!=holdRows[3].top || holdRows[2].right!=holdRows[3].left || holdRows[3].bottom>=pieCenter.y-19*scale ||
-                   std::abs((holdRows[2].left+holdRows[3].right)*.5f-pieCenter.x)>scale)
+                   std::abs((holdRows[2].left+(panelKind==2 && capsReady && layerAware?capsRows[6].right:holdRows[3].right))*.5f-pieCenter.x)>scale)
                     throw std::runtime_error("Palette below ring; two distinct sort buttons aligned above");
                 for (const auto& entry:std::array<std::pair<POINT,int>,11>{{{point(-110,0),0},{point(45,0),-1},{point(110,0),-1},{point(-50,-80),2},{point(50,-80),3},{point(0,-80),-1},{point(0,80),10},{point(0,0),-1},{point(20,10),-1},{point(150,150),-1},{{-100,-100},-1}}})
                     if (holdActionAt(entry.first)!=entry.second) throw std::runtime_error("Pie direction/dead-zone hit test failed");
@@ -3828,14 +3829,14 @@ int main() {
                 for(int i=0;i<7;++i){
                     const auto r=capsRows[i];POINT centre={(r.left+r.right)/2,(r.top+r.bottom)/2};
                     if(r.right<=r.left || holdActionAt(centre)!=40+i || !actionTipText(40+i))throw std::runtime_error("Caps bar geometry/hit/tooltip mismatch");
-                    if(i!=0 && i!=5 && holdActionAt({r.left,centre.y})!=-1)throw std::runtime_error("Caps separator gained a hit");
+                    if(i!=0 && holdActionAt({r.left,centre.y})!=-1)throw std::runtime_error("Caps separator gained a hit");
                 }
-                if(capsRows[5].top!=LONG(pieCenter.y-(15+menuControlHeight+quickGroupGap)*scale) || capsRows[5].left!=LONG(pieCenter.x+65*scale) || capsRows[6].left!=capsRows[5].right || capsRows[4].top<=capsRows[5].bottom ||
+                if(capsRows[5].top!=holdRows[2].top || capsRows[5].bottom!=holdRows[2].bottom || capsRows[5].left!=holdRows[3].right || capsRows[6].left!=capsRows[5].right || capsRows[4].top<=capsRows[5].bottom ||
                    std::abs((capsRows[5].bottom-capsRows[5].top)-menuControlHeight*scale)>1)
-                    throw std::runtime_error("Layer step controls must replace the original right-side creation row");
-                if(tipFamily(40)==tipFamily(45) || tipGroupRect(45).top!=capsRows[5].top || tipFamily(45)==tipFamily(2) ||
+                    throw std::runtime_error("Top/bottom and step controls must share one contiguous row");
+                if(tipFamily(40)==tipFamily(45) || tipGroupRect(45).top!=capsRows[5].top || tipFamily(45)!=tipFamily(2) || tipGroupRect(45).right!=capsRows[6].right ||
                    tipGroupRect(40).right!=capsRows[4].right)
-                    throw std::runtime_error("Relocated step tooltip retained old bottom geometry");
+                    throw std::runtime_error("Sorting tooltip must share the four-segment row");
                 for(int i:{5,6}){
                     const auto r=capsRows[i];const auto before=testedActions.size();
                     renderedHit=40+i;holdFinished=false;
@@ -3950,6 +3951,14 @@ int main() {
                     panelKind=2;layerAware=true;layerKind=4;layerCount=1;layerLocked=false;
                     layerSearchReady=textSplitReady=capsReady=capable=allowed=true;taskHasResult=false;taskRecovery.clear();
                     shapeEditor.prepare(Json{{"available",false}});setHoldMode(true);holdMoved=true;
+                    ImGui::ClearActiveID();numberFrame(ImGuiKey_None,false);
+                    numberFrame(ImGuiKey_F,true);
+                    if(menuToolsVisible())throw std::runtime_error("Bare F must not open layer search");
+                    numberFrame(ImGuiKey_F,false);io.AddKeyEvent(ImGuiMod_Ctrl,true);numberFrame(ImGuiKey_None,false);
+                    numberFrame(ImGuiKey_F,true);
+                    if(!menuToolsVisible() || menuTools.mode!="search")throw std::runtime_error("Ctrl+F must open layer search from the menu");
+                    numberFrame(ImGuiKey_F,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);menuTools.reset();numberFrame(ImGuiKey_None,false);
+                    setHoldMode(true);holdMoved=true;
                     for(int kind:{0,1,2,3,4}){
                         panelKind=kind;layerKind=2;numberFrame(ImGuiKey_None,false);
                         if(toolRow.right)throw std::runtime_error("Caps retained a search entry or a non-text split entry");
@@ -3966,7 +3975,7 @@ int main() {
                     panelKind=2;layerKind=4;
                     numberFrame(ImGuiKey_None,false);
                     if(toolRow.left!=LONG(pieCenter.x+65*scale) || toolRow.top!=LONG(pieCenter.y-15*scale))throw std::runtime_error("Split must replace original right-side creation position");
-                    if(capsRows[5].left!=toolRow.left || capsRows[5].bottom+quickGroupGap*scale!=toolRow.top)throw std::runtime_error("Move controls must sit above split on the right");
+                    if(capsRows[5].top!=holdRows[2].top || capsRows[6].bottom>=toolRow.top)throw std::runtime_error("Move controls must share sorting row above the text tool");
                     for(int i=0;i<7;++i){const auto tip=quickTipBounds(i);if(tip.z>tip.x && tipOverlaps(tip,toolRow,2*scale))throw std::runtime_error("Creation tooltip covers relocated split");}
                     const auto r=toolRow;if(r.right<=r.left || !toolEnabled(1))throw std::runtime_error("Text Caps entry unavailable");
                     renderedHit=71;finishHold({(r.left+r.right)/2,(r.top+r.bottom)/2});

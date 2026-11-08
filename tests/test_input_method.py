@@ -173,7 +173,10 @@ class ImeWorkerTests(unittest.TestCase):
         def layouts(count,values):values[0]=0x8040804;values[1]=0x4090409;return 2
         self.user=SimpleNamespace(GetKeyboardLayout=Mock(return_value=0x8040804),GetKeyboardLayoutList=Mock(side_effect=layouts),PostMessageW=Mock(),GetAsyncKeyState=Mock(side_effect=lambda key:0x8000 if held and key==65 else 0),GetTickCount64=Mock(side_effect=lambda:int(time.monotonic()*1000)))
         self.policy_calls=[]
-        native=SimpleNamespace(read=lambda value:{**read(value),'context_nonce':123},send=send,observe_owned=lambda value:{**owned(value),'context_nonce':123})
+        native=SimpleNamespace(read=lambda value:{**read(value),'context_nonce':123},send=send,observe_owned=lambda value:{**owned(value),'context_nonce':123},
+                                set_canvas_tool=Mock(return_value=1),canvas_correct=Mock(return_value=1),
+                                canvas_diagnostics=Mock(return_value={'available':True}))
+        self.native_mock=native
         if policy:
             def set_policy(window,enabled):
                 self.policy_calls.append(bool(enabled))
@@ -260,6 +263,20 @@ class ImeWorkerTests(unittest.TestCase):
         self.wait(lambda:not self.c.focus_policy)
         self.assertEqual(self.policy_calls,[True,False])
         self.assertEqual(self.posts,[])
+
+    def test_canvas_tool_state_is_pushed_to_the_native_context(self):
+        self.start(policy=True,unknown=True)
+        self.wait(lambda:self.c.focus_policy)
+        self.desktop.input_tool_state=lambda:{'classID':'typeCreateOrEditTool','isModal':False,
+                                              'sequence':1,'created_at_ms':time.time()*1000}
+        self.c.wake.set()
+        self.wait(lambda:self.native_mock.set_canvas_tool.called)
+        self.assertEqual(self.native_mock.set_canvas_tool.call_args.args,(self.c.policy_window,True))
+        self.desktop.input_tool_state=lambda:{'classID':'moveTool','isModal':False,
+                                              'sequence':2,'created_at_ms':time.time()*1000}
+        self.c.wake.set()
+        self.wait(lambda:self.native_mock.set_canvas_tool.call_count>=2)
+        self.assertEqual(self.native_mock.set_canvas_tool.call_args.args,(self.c.policy_window,False))
 
     def test_focus_policy_is_restored_and_confirmed_on_shutdown(self):
         self.start(policy=True)

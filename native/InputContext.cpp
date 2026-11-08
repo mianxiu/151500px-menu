@@ -30,6 +30,35 @@ static bool testTrace=false;
 static HANDLE menuProcess=nullptr;
 static DWORD menuPid=0;
 
+// Canvas text editing: clicking the PS canvas with a type tool, double-clicking
+// any text, or pressing Enter on a selected text layer enters text editing
+// without a focus change. The queue hook restores the canvas HIMC before PS
+// processes that message; Esc/Ctrl+Enter post a disable that runs after PS has
+// handled the key. Background UXP evidence only corrects a missed entry/exit.
+static const wchar_t* canvasEntryTickProperty=L"PhotoshopMenu.InputContext.Canvas.EntryTick.v1";
+static const wchar_t* canvasEntryTriggerProperty=L"PhotoshopMenu.InputContext.Canvas.EntryTrigger.v1";
+static const wchar_t* canvasExitTickProperty=L"PhotoshopMenu.InputContext.Canvas.ExitTick.v1";
+static const wchar_t* canvasExitTriggerProperty=L"PhotoshopMenu.InputContext.Canvas.ExitTrigger.v1";
+static const wchar_t* canvasEpochProperty=L"PhotoshopMenu.InputContext.Canvas.Epoch.v1";
+static const wchar_t* canvasCorrectionsProperty=L"PhotoshopMenu.InputContext.Canvas.Corrections.v1";
+static const wchar_t* policyTraceCountProperty=L"PhotoshopMenu.InputContext.PolicyTrace.Count.v1";
+enum CanvasTrigger : DWORD {
+    CanvasNone=0,CanvasClickText=1,CanvasDoubleClick=2,CanvasEnterText=3,
+    CanvasCorrectionEnter=4,CanvasEsc=5,CanvasCtrlEnter=6,CanvasNumpadEnter=7,
+    CanvasCorrectionExit=8,CanvasTimeoutExit=9,CanvasFocusLeave=10
+};
+static bool canvasTextEditing=false,typeToolActive=false,typeToolKnown=false;
+static bool compositionActive=false,entryPending=false;
+static ULONGLONG canvasEntryTick=0,canvasEntryWallMs=0,canvasExitTick=0,canvasExitWallMs=0;
+static DWORD canvasEntryTrigger=CanvasNone,canvasExitTrigger=CanvasNone;
+static DWORD canvasEpoch=1,canvasCorrections=0;
+static constexpr int traceCapacity=20;
+static ULONGLONG policyTrace[traceCapacity]{};
+static unsigned policyTraceCount=0;
+#ifdef INPUT_CONTEXT_SELF_TEST
+static int testCtrlHeld=-1,testAltHeld=-1;
+#endif
+
 // Focus policy: the PS UI thread synchronously detaches the IME context of the
 // verified non-input focus target (root window or its PSViewC canvas) in the
 // WM_SETFOCUS callback. Every other focus target restores the saved association
@@ -38,8 +67,11 @@ static DWORD menuPid=0;
 enum PolicyReason : DWORD {
     PolicyNone=0,PolicyDisableRoot=1,PolicyDisableView=2,PolicyRestoreOther=3,
     PolicyRestoreForeground=4,PolicyReapplyLanguage=5,PolicyRestoreOwner=6,
-    PolicyOff=7,PolicyReapplyDrift=8,PolicyEnable=9,PolicyWindowGone=10
+    PolicyOff=7,PolicyReapplyDrift=8,PolicyEnable=9,PolicyWindowGone=10,
+    PolicyRestoreCanvasText=11,PolicyDisableCanvasExit=12,PolicyCorrectionEnter=13,
+    PolicyCorrectionExit=14,PolicyCanvasFocus=15
 };
+enum PolicyTraceAction : DWORD {TraceDisable=1,TraceRestore=2,TraceEnable=3,TraceOff=4,TraceCorrection=5,TraceCanvasEnter=6,TraceCanvasExit=7};
 struct FocusEntry { HWND window=nullptr; HIMC context=nullptr; };
 static constexpr int focusCapacity=8;
 static FocusEntry focusEntries[focusCapacity];
@@ -97,9 +129,75 @@ static HIMC associated(HWND window) {
     if(context)ImmReleaseContext(window,context);
     return context;
 }
-static void policyChanged(DWORD reason) {
+static ULONGLONG wallMilliseconds() {
+    FILETIME value{};
+#ifdef INPUT_CONTEXT_SELF_TEST
+    GetSystemTimeAsFileTime(&value);
+#else
+    GetSystemTimePreciseAsFileTime(&value);
+#endif
+    const ULONGLONG ticks=(static_cast<ULONGLONG>(value.dwHighDateTime)<<32)|value.dwLowDateTime;
+    return ticks/10000ULL-11644473600000ULL;
+}
+static unsigned windowKind(HWND window) {
+    if(!window)return 0;
+    if(window==root)return 1;
+    wchar_t name[64]{};GetClassNameW(window,name,64);
+    if(wcscmp(name,L"PSViewC")==0)return 2;
+    if(wcscmp(name,L"Edit")==0)return 3;
+    if(wcscmp(name,L"PSFloatC")==0)return 4;
+    return 5;
+}
+static void recordPolicyTrace(DWORD action,DWORD reason,HWND window) {
+    const ULONGLONG tick=GetTickCount64();
+    const ULONGLONG packed=((tick&0xffffffffffULL)<<24)|(ULONGLONG(windowKind(window)&0xf)<<20)|
+        (ULONGLONG(reason&0xff)<<8)|(action&0xff);
+    const unsigned index=policyTraceCount%traceCapacity;
+    policyTrace[index]=packed;++policyTraceCount;
+    if(control) {
+        wchar_t name[64]{};
+        wsprintfW(name,L"PhotoshopMenu.InputContext.PolicyTrace.%u.v1",index);
+        SetPropW(control,name,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(packed)));
+        SetPropW(control,policyTraceCountProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(policyTraceCount)));
+    }
+}
+static void publishCanvas() {
+    if(!control)return;
+    SetPropW(control,canvasEntryTickProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(canvasEntryTick)));
+    SetPropW(control,canvasEntryTriggerProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(canvasEntryTrigger)));
+    SetPropW(control,canvasExitTickProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(canvasExitTick)));
+    SetPropW(control,canvasExitTriggerProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(canvasExitTrigger)));
+    SetPropW(control,canvasEpochProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(canvasEpoch)));
+    SetPropW(control,canvasCorrectionsProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(canvasCorrections)));
+}
+static bool compositionBusy(HWND window) {
+    if(compositionActive)return true;
+    if(!window)return false;
+    const auto context=associated(window);
+    if(!context)return false;
+    return ImmGetCompositionStringW(context,GCS_COMPSTR,nullptr,0)>0;
+}
+static void clearCanvasState(DWORD exitReason) {
+    if(canvasTextEditing || entryPending) {
+        canvasTextEditing=false;entryPending=false;
+        canvasExitTick=GetTickCount64();canvasExitWallMs=wallMilliseconds();
+        if(exitReason!=CanvasNone)canvasExitTrigger=exitReason;
+        canvasEpoch=canvasEpoch==0xffffffff?1:canvasEpoch+1;
+        publishCanvas();
+    }
+    compositionActive=false;
+}
+static void policyChanged(DWORD reason,HWND window=nullptr) {
     policyReason=reason;policyTick=GetTickCount64();
     if(control)SetPropW(control,policyTickProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(policyTick)));
+    if(reason!=PolicyNone) {
+        DWORD action=TraceDisable;
+        if(reason==PolicyEnable)action=TraceEnable;
+        else if(reason==PolicyOff||reason==PolicyRestoreOwner)action=TraceOff;
+        else if(reason==PolicyRestoreOther||reason==PolicyRestoreForeground||reason==PolicyReapplyLanguage||reason==PolicyRestoreCanvasText)action=TraceRestore;
+        else if(reason==PolicyCorrectionEnter||reason==PolicyCorrectionExit)action=TraceCorrection;
+        recordPolicyTrace(action,reason,window);
+    }
 }
 static bool protectedFocus(HWND window) {
     if(!window || !root || !IsWindow(window))return false;
@@ -137,7 +235,7 @@ static bool disableFocus(HWND window,DWORD reason) {
         policyRestoreFailed=true;
         return false;
     }
-    policyChanged(reason);
+    policyChanged(reason,window);
     return true;
 }
 static bool restoreFocus(DWORD reason) {
@@ -162,6 +260,80 @@ static bool restoreFocus(DWORD reason) {
     policyRestoreFailed=!ok;
     policyChanged(reason);
     return ok;
+}
+static bool canvasTarget(HWND window) {
+    if(!window || !root || !IsWindow(window))return false;
+    if(GetAncestor(window,GA_ROOT)!=root)return false;
+    wchar_t name[64]{};GetClassNameW(window,name,64);
+    return wcscmp(name,L"PSViewC")==0;
+}
+// Restore the canvas association synchronously, before PS handles the message
+// that enters text editing. focusCount>0 means our policy currently owns it.
+static bool canvasEntry(HWND target,DWORD trigger) {
+    if(!focusPolicy || !canvasTarget(target) || !focusCount)return false;
+    if(canvasTextEditing)return true;
+    restoreFocus(PolicyRestoreCanvasText);
+    canvasTextEditing=true;entryPending=true;
+    canvasEntryTick=GetTickCount64();canvasEntryWallMs=wallMilliseconds();
+    canvasEntryTrigger=trigger;compositionActive=false;
+    canvasEpoch=canvasEpoch==0xffffffff?1:canvasEpoch+1;
+    publishCanvas();
+    recordPolicyTrace(TraceCanvasEnter,trigger,target);
+    return true;
+}
+static void postCanvasExit(DWORD trigger) {
+    if(!control)return;
+    canvasExitTrigger=trigger;
+    const ULONGLONG packed=(static_cast<ULONGLONG>(trigger&0xff)<<32)|(canvasEpoch&0xffffffff);
+    PostMessageW(control,controlMessage,(nonce<<8)|7,static_cast<LPARAM>(packed));
+}
+// Runs after PS processed Esc/Ctrl+Enter. A new entry bumps the epoch, so a
+// stale posted exit cannot disable a later editing round.
+static void canvasExitApply(ULONGLONG epoch,DWORD trigger) {
+    if(!focusPolicy || !canvasTextEditing || epoch!=canvasEpoch)return;
+    const auto focus=GetFocus();
+    if(!protectedFocus(focus)) {
+        clearCanvasState(CanvasFocusLeave);
+        return;
+    }
+    if(compositionBusy(focus))return;
+    if(disableFocus(focus,PolicyDisableCanvasExit)) {
+        canvasTextEditing=false;entryPending=false;compositionActive=false;
+        canvasExitTick=GetTickCount64();canvasExitWallMs=wallMilliseconds();
+        canvasExitTrigger=trigger;
+        canvasEpoch=canvasEpoch==0xffffffff?1:canvasEpoch+1;
+        publishCanvas();
+        recordPolicyTrace(TraceCanvasExit,trigger,focus);
+    }
+}
+// Background UXP correction, timestamped in Unix milliseconds so a late event
+// from an earlier round cannot affect the current one.
+static void canvasCorrect(bool enter,ULONGLONG stamp) {
+    if(!focusPolicy)return;
+    ++canvasCorrections;publishCanvas();
+    if(enter) {
+        if(canvasTextEditing || stamp<canvasExitWallMs)return;
+        const auto focus=GetFocus();
+        if(!protectedFocus(focus))return;
+        restoreFocus(PolicyCorrectionEnter);
+        canvasTextEditing=true;entryPending=false;compositionActive=false;
+        canvasEntryTick=GetTickCount64();canvasEntryWallMs=stamp;
+        canvasEntryTrigger=CanvasCorrectionEnter;
+        canvasEpoch=canvasEpoch==0xffffffff?1:canvasEpoch+1;
+        publishCanvas();recordPolicyTrace(TraceCorrection,PolicyCorrectionEnter,focus);
+        return;
+    }
+    if(!canvasTextEditing || stamp<canvasEntryWallMs)return;
+    const auto focus=GetFocus();
+    if(!protectedFocus(focus)){clearCanvasState(CanvasFocusLeave);return;}
+    if(compositionBusy(focus))return;
+    if(disableFocus(focus,PolicyCorrectionExit)) {
+        canvasTextEditing=false;entryPending=false;compositionActive=false;
+        canvasExitTick=GetTickCount64();canvasExitWallMs=stamp;
+        canvasExitTrigger=CanvasCorrectionExit;
+        canvasEpoch=canvasEpoch==0xffffffff?1:canvasEpoch+1;
+        publishCanvas();recordPolicyTrace(TraceCorrection,PolicyCorrectionExit,focus);
+    }
 }
 static bool restore() {
     if(!disabledWindow)return true;
@@ -191,6 +363,15 @@ static bool ownFocus(HWND window) {
 static void verifyContext() {
     if(focusPolicy) {
         const auto focus=GetFocus();
+        if(canvasTextEditing) {
+            if(canvasTarget(focus)) {
+                // Keeping the canvas open is the whole point of this state; the
+                // 100 ms watchdog must not detach it again mid-edit.
+                if(focusCount)restoreFocus(PolicyRestoreCanvasText);
+                return;
+            }
+            clearCanvasState(CanvasFocusLeave);
+        }
         if(!protectedFocus(focus)) {
             if(focusCount)restoreFocus(PolicyRestoreOther);
             return;
@@ -243,21 +424,43 @@ static LRESULT state(HWND focus) {
     DWORD pid=0;
     if(focus && (GetWindowThreadProcessId(focus,&pid)!=GetCurrentThreadId() || pid!=GetCurrentProcessId()))return 9;
     const bool protectedTarget=protectedFocus(focus);
+    const bool canvasOpen=canvasTextEditing && canvasTarget(focus) && associated(focus)!=nullptr;
     LRESULT value=1 | (disabledWindow?2:0) |
-        (!disabledWindow && focus && !protectedTarget && (associated(focus) || InputContextTsf::available())?4:0) |
+        (!disabledWindow && focus && ((!protectedTarget && (associated(focus) || InputContextTsf::available())) || canvasOpen)?4:0) |
         (restoreFailed?8:0) | (restored?16:0) | (tsf.keyboard && tsf.currentDisabled()?32:0) | (tsf.watching()?64:0) |
         (((disabledWindow || (focusPolicy && focusCount))) && (menuActive() || menuReturning())?128:0);
     if(focusPolicy)value|=0x100;
-    if(policyRestoreFailed || (!focusPolicy && focusCount) || (focusPolicy && protectedTarget && focusIndex(focus)<0))value|=0x200;
+    if(policyRestoreFailed || (!focusPolicy && focusCount) ||
+       (focusPolicy && protectedTarget && focusIndex(focus)<0 && !canvasOpen))value|=0x200;
     value|=LRESULT(focusCount&0xff)<<16;
     value|=LRESULT(policyReason&0xff)<<24;
+    value|=LRESULT(canvasTextEditing?1:0)<<32;
+    value|=LRESULT(typeToolActive?1:0)<<33;
+    value|=LRESULT(typeToolKnown?1:0)<<34;
+    value|=LRESULT(compositionActive?1:0)<<35;
+    value|=LRESULT(entryPending?1:0)<<36;
     return value;
 }
 static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
     if(message==controlMessage && (wParam>>8)==nonce) {
         const auto focus=reinterpret_cast<HWND>(lParam);const auto operation=wParam&255;
-        if(operation==3){restore();restoreFocus(PolicyOff);return state(focus);}
+        if(operation==3){restore();restoreFocus(PolicyOff);clearCanvasState(CanvasNone);return state(focus);}
         if(operation==1)return state(focus);
+        if(operation==6) {
+            // Background push: current tool is a type tool (horizontal,
+            // vertical or mask variant). Stored only; no window is touched.
+            typeToolActive=lParam!=0;typeToolKnown=true;
+            return state(GetFocus());
+        }
+        if(operation==7) {
+            canvasExitApply(static_cast<ULONGLONG>(lParam)&0xffffffffULL,DWORD((static_cast<ULONGLONG>(lParam)>>32)&0xff));
+            return state(GetFocus());
+        }
+        if(operation==8) {
+            const bool enter=(lParam&1)!=0;
+            canvasCorrect(enter,static_cast<ULONGLONG>(lParam)>>1);
+            return state(GetFocus());
+        }
         if(operation==4){
             if(!focusPolicy)verifyContext();
             if(disabledWindow==focus && foreground() && (ownFocus(focus) || menuActive()))deadline=GetTickCount64()+1500;
@@ -270,6 +473,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
                     // policy takes over; no pending request is reissued here.
                     if(!restore())return state(GetFocus())|8;
                     focusPolicy=true;policyRestoreFailed=false;
+                    clearCanvasState(CanvasNone);typeToolKnown=false;
                     policyChanged(PolicyEnable);
                     const auto target=GetFocus();
                     if(protectedFocus(target))disableFocus(target,focusReason(target));
@@ -277,6 +481,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
                 }
             } else if(focusPolicy) {
                 focusPolicy=false;
+                clearCanvasState(CanvasNone);
                 restoreFocus(PolicyOff);
                 restore();
                 policyChanged(PolicyOff);
@@ -306,8 +511,10 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
 #ifdef INPUT_CONTEXT_SELF_TEST
                 if(testTrace)std::fprintf(stderr,"restore: owner exit policy windows=%d\n",focusCount);
 #endif
+                clearCanvasState(CanvasNone);
                 focusPolicy=false;restoreFocus(PolicyRestoreOwner);
             } else if(!policyForeground()) {
+                clearCanvasState(CanvasFocusLeave);
                 restoreFocus(PolicyRestoreForeground);menuHandoff=false;
             }
         } else if(disabledWindow && (exited || !foreground() || (GetFocus()!=disabledWindow && !menuActive() && !menuReturning()) || GetTickCount64()>deadline)) {
@@ -323,6 +530,8 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
     }
     if(message==WM_DESTROY) {
         focusPolicy=false;
+        clearCanvasState(CanvasNone);
+        typeToolActive=false;typeToolKnown=false;
         restoreFocus(PolicyRestoreOwner);
         restore();
         KillTimer(window,1);RemovePropW(root,controlProperty);RemovePropW(window,nonceProperty);RemovePropW(window,ownerProperty);RemovePropW(window,revisionProperty);RemovePropW(window,policyTickProperty);
@@ -345,8 +554,57 @@ static DWORD focusReason(HWND window) {
 }
 static void applyFocusPolicy(HWND window,DWORD reason) {
     if(!focusPolicy)return;
+    if(canvasTextEditing && canvasTarget(window)) {
+        // The canvas is the text-edit carrier; a focus notification for it
+        // while editing must not detach the association again.
+        restoreFocus(PolicyRestoreCanvasText);
+        return;
+    }
     if(protectedFocus(window))disableFocus(window,reason);
     else restoreFocus(PolicyRestoreOther);
+}
+static bool canvasControlHeld() {
+#ifdef INPUT_CONTEXT_SELF_TEST
+    if(testCtrlHeld>=0)return testCtrlHeld!=0;
+#endif
+    return (GetKeyState(VK_CONTROL)&0x8000)!=0;
+}
+static bool canvasAltHeld() {
+#ifdef INPUT_CONTEXT_SELF_TEST
+    if(testAltHeld>=0)return testAltHeld!=0;
+#endif
+    return (GetKeyState(VK_MENU)&0x8000)!=0;
+}
+// Entry/exit state machine fed by both the queued-input and sent-message hooks.
+// Entry restores before PS processes the message; exit only posts a control
+// message so the key is handled first (Q5 ordering).
+static void canvasInputMessage(const CWPSTRUCT& event) {
+    if(!focusPolicy)return;
+    if(event.message==WM_IME_STARTCOMPOSITION){compositionActive=true;return;}
+    if(event.message==WM_IME_ENDCOMPOSITION){compositionActive=false;return;}
+    if(!canvasTextEditing) {
+        if(!canvasTarget(event.hwnd) || !focusCount)return;
+        const bool control=canvasControlHeld(),alt=canvasAltHeld();
+        if(event.message==WM_LBUTTONDOWN && typeToolActive)canvasEntry(event.hwnd,CanvasClickText);
+        else if(event.message==WM_LBUTTONDBLCLK)canvasEntry(event.hwnd,CanvasDoubleClick);
+        else if(event.message==WM_KEYDOWN && event.wParam==VK_RETURN && typeToolActive && !control && !alt)
+            canvasEntry(event.hwnd,CanvasEnterText);
+        return;
+    }
+    const auto focus=GetFocus();
+    if(!canvasTarget(focus) || !canvasTarget(event.hwnd)) {
+        if(event.message==WM_KEYDOWN)clearCanvasState(CanvasFocusLeave);
+        return;
+    }
+    const bool control=canvasControlHeld(),alt=canvasAltHeld();
+    if(event.message==WM_KEYDOWN && event.wParam==VK_ESCAPE && !control && !alt) {
+        if(!compositionBusy(focus))postCanvasExit(CanvasEsc);
+        return;
+    }
+    if(event.message==WM_KEYDOWN && event.wParam==VK_RETURN && !alt) {
+        if(control)postCanvasExit(CanvasCtrlEnter);
+        else if(event.lParam&(1<<24))postCanvasExit(CanvasNumpadEnter);
+    }
 }
 static void observeMessage(const CWPSTRUCT& event) {
         if((disabledWindow || focusPolicy) && event.message==WM_ACTIVATEAPP && !event.wParam)
@@ -356,18 +614,22 @@ static void observeMessage(const CWPSTRUCT& event) {
         if(disabledWindow && menuHandoff && event.message==WM_KEYDOWN && !ownMenu(event.hwnd) &&
            (event.wParam!='T' || !(GetKeyState(VK_CONTROL)&0x8000)) && event.wParam!=VK_RETURN && event.wParam!=VK_F2){verifyContext();menuHandoff=false;}
         if(focusPolicy && event.hwnd!=control && !ownMenu(event.hwnd)) {
+            canvasInputMessage(event);
             if(event.message==WM_SETFOCUS) {
                 const auto target=event.hwnd;
+                if(canvasTextEditing && !canvasTarget(target))clearCanvasState(CanvasFocusLeave);
                 applyFocusPolicy(target,focusReason(target));
                 return;
             }
             if(event.message==WM_INPUTLANGCHANGE) {
                 // Keep the user's chosen IME/layout; only re-detach the current
                 // non-input PS association after a manual language switch.
+                if(canvasTextEditing && canvasTarget(GetFocus()))return;
                 applyFocusPolicy(GetFocus(),PolicyReapplyLanguage);
                 return;
             }
             if(event.message==WM_ACTIVATEAPP && !event.wParam && !ownMenu(GetForegroundWindow()) && !ownMenuThread(DWORD(event.lParam))) {
+                clearCanvasState(CanvasFocusLeave);
                 restoreFocus(PolicyRestoreForeground);
                 menuHandoff=false;
                 return;
@@ -406,6 +668,11 @@ static bool attach(HWND rootWindow,DWORD ownerProcess,ULONG_PTR nonceValue) {
     WNDCLASSW wc{};wc.lpfnWndProc=procedure;wc.hInstance=module;wc.lpszClassName=controlClass;RegisterClassW(&wc);
     root=rootWindow;ownerId=ownerProcess;owner=candidate;nonce=nonceValue;revision=1;tsf.notify=contextChanged;
     focusCount=0;focusPolicy=false;policyRestoreFailed=false;policyReason=0;policyTick=0;
+    canvasTextEditing=false;entryPending=false;compositionActive=false;
+    typeToolActive=false;typeToolKnown=false;
+    canvasEntryTick=canvasExitTick=0;canvasEntryTrigger=canvasExitTrigger=CanvasNone;
+    canvasEntryWallMs=canvasExitWallMs=0;canvasEpoch=1;canvasCorrections=0;
+    policyTraceCount=0;for(auto& entry:policyTrace)entry=0;
     control=CreateWindowExW(0,controlClass,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,module,nullptr);
     if(!control){CloseHandle(owner);owner=nullptr;ownerId=0;return false;}
     if(!SetPropW(control,nonceProperty,reinterpret_cast<HANDLE>(nonce)) ||
@@ -414,6 +681,7 @@ static bool attach(HWND rootWindow,DWORD ownerProcess,ULONG_PTR nonceValue) {
        !SetPropW(root,controlProperty,control) || !SetTimer(control,1,100,nullptr)) {
         DestroyWindow(control);control=nullptr;return false;
     }
+    publishCanvas();
     return true;
 }
 static bool detach() {

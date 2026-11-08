@@ -37,7 +37,7 @@ static int alias(int key) {
 }
 struct KeyMachine {
     std::array<bool,256> physical{}, held{}, consumed{};
-    int pending=-1; bool used=false;
+    int pending=-1; bool used=false,searchConsumed=false;
     ULONGLONG pressTime=0;
     void cancelGesture() { pending=-1; used=true; }
     void seed(int raw) { physical[raw]=held[alias(raw)]=true; }
@@ -62,6 +62,7 @@ struct KeyMachine {
         } else held[key]=physical[raw];
         if (!down && consumed[key]) {
             consumed[key]=false;
+            if(key=='F')searchConsumed=false;
             if (key==pending) {
                 action=scope && !reserveOnly && !used?(now && now-pressTime<=220?HoldPin:HoldRelease):HoldCancel;
                 pending=-1;
@@ -86,9 +87,9 @@ struct KeyMachine {
                 if (b.keys[i]==VK_CAPITAL) {consumed[key]=true;return true;}
             return false;
         }
-        if(key=='F' && !modified() && !held[VK_CAPITAL]) {
+        if(key=='F' && held[VK_CONTROL] && !held[VK_SHIFT] && !held[VK_MENU] && !held[VK_LWIN] && !held[VK_RWIN] && !held[VK_CAPITAL]) {
             if(!cfg.searchAllowed || cfg.textInput || !cfg.evidenceFresh || (cfg.colorEditor && visible))return false;
-            consumed[key]=true;action=SearchLayers;return true;
+            consumed[key]=true;searchConsumed=true;action=SearchLayers;return true;
         }
         const Binding* match=nullptr;
         bool tabPrefix=false;
@@ -228,8 +229,16 @@ static ULONGLONG microseconds() {
     return static_cast<ULONGLONG>((value.QuadPart/counterFrequency)*1000000+
         (value.QuadPart%counterFrequency)*1000000/counterFrequency);
 }
+#ifdef HOTKEY_MEASURE
+// Measurement harness only (tools/measure-hook-scope.cpp). Never defined in the
+// shipped HotkeyHost.exe.
+extern void measureHookSample(unsigned long long,int);
+static int measurementKind=0;
+static bool measureDirectMode=false;
+#endif
 struct CallbackTiming {
     ULONGLONG start=microseconds();
+    ULONGLONG elapsed() const {return microseconds()-start;}
     ~CallbackTiming() {
         auto elapsed=microseconds()-start;
         if (elapsed>callbackPeakUs.load(std::memory_order_relaxed)) callbackPeakUs.store(elapsed,std::memory_order_relaxed);
@@ -314,6 +323,28 @@ static bool scope(HWND foreground=GetForegroundWindow()) {
 }
 struct ProcessIdentity { DWORD pid=0;HANDLE handle=nullptr; };
 static std::array<ProcessIdentity,32> photoshopProcesses{};
+// Non-Photoshop foregrounds are cached with a held handle: a live handle
+// proves the same process (PID reuse exits the old object), so the message
+// thread does not reopen the process on every WinEvent/focus notification.
+static std::array<ProcessIdentity,32> nonPhotoshopProcesses{};
+static std::atomic<ULONG> processQueries{0};
+// Foreground identity snapshot. The low-level hooks only compare the current
+// foreground HWND with this snapshot; they never open a process or build a
+// process image path. A mismatch is conservative (not PS) and wakes the
+// message thread to recompute.
+static std::atomic<HWND> scopeForeground{nullptr};
+static std::atomic<bool> scopeIsPhotoshop{false};
+static std::atomic<bool> scopeKnown{false};
+static std::atomic<bool> foregroundRefreshPosted{false};
+static constexpr UINT foregroundMessage=WM_APP+8;
+static bool processAlive(HANDLE handle) {return handle && WaitForSingleObject(handle,0)==WAIT_TIMEOUT;}
+static bool namedImage(HANDLE process,const wchar_t* expected) {
+    static wchar_t path[32768];
+    DWORD length=32768;
+    if(!QueryFullProcessImageNameW(process,0,path,&length))return false;
+    const wchar_t* name=wcsrchr(path,L'\\');name=name?name+1:path;
+    return _wcsicmp(name,expected)==0;
+}
 struct ProcessSnapshot {
     std::array<ProcessIdentity,32> entries{};
     ULONGLONG scanUs=0;
@@ -327,12 +358,10 @@ static std::unique_ptr<ProcessSnapshot> scanPhotoshopProcesses() {
     PROCESSENTRY32W entry{};entry.dwSize=sizeof(entry);
     if (Process32FirstW(snapshot,&entry)) do {
         if (_wcsicmp(entry.szExeFile,L"Photoshop.exe")!=0) continue;
+        processQueries.fetch_add(1,std::memory_order_relaxed);
         HANDLE handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,entry.th32ProcessID);
         if (!handle) continue;
-        wchar_t path[32768]{};DWORD length=32768;
-        bool valid=QueryFullProcessImageNameW(handle,0,path,&length)!=0;
-        const wchar_t* name=wcsrchr(path,L'\\');name=name?name+1:path;
-        valid=valid && _wcsicmp(name,L"Photoshop.exe")==0 && WaitForSingleObject(handle,0)==WAIT_TIMEOUT;
+        bool valid=namedImage(handle,L"Photoshop.exe") && processAlive(handle);
         bool stored=false;
         if (valid) for (auto& p:result->entries) if (!p.handle) {p={entry.th32ProcessID,handle};stored=true;break;}
         if (!stored) CloseHandle(handle);
@@ -358,22 +387,78 @@ static bool photoshopProcessWindow(HWND hwnd) {
     // A held handle keeps the process object alive, so a verified PID entry
     // cannot be a recycled PID and needs no time-based revalidation.
     for (const auto& p:photoshopProcesses)
-        if (p.pid==pid) return p.handle && WaitForSingleObject(p.handle,0)==WAIT_TIMEOUT;
+        if (p.pid==pid) return processAlive(p.handle);
+    for (auto& p:nonPhotoshopProcesses)
+        if (p.pid==pid) {
+            if(processAlive(p.handle))return false;
+            CloseHandle(p.handle);p={};
+        }
     // A miss verifies exactly one process: no full system enumeration, no
     // background scanner, no time window in which a running Photoshop is
-    // unknown after it starts or restarts.
+    // unknown after it starts or restarts. The negative entry intentionally
+    // keeps the handle so a repeated non-PS foreground costs no query.
+    processQueries.fetch_add(1,std::memory_order_relaxed);
     HANDLE handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,pid);
     if(!handle)return false;
-    wchar_t path[32768]{};DWORD length=32768;
-    bool valid=QueryFullProcessImageNameW(handle,0,path,&length)!=0;
-    const wchar_t* name=wcsrchr(path,L'\\');name=name?name+1:path;
-    valid=valid && _wcsicmp(name,L"Photoshop.exe")==0 && WaitForSingleObject(handle,0)==WAIT_TIMEOUT;
-    if(!valid){CloseHandle(handle);return false;}
+    const bool valid=namedImage(handle,L"Photoshop.exe") && processAlive(handle);
+    if(!valid) {
+        for (auto& p:nonPhotoshopProcesses) if (!p.handle) {p={pid,handle};return false;}
+        for (auto& p:nonPhotoshopProcesses) if (!processAlive(p.handle)) {CloseHandle(p.handle);p={pid,handle};return false;}
+        CloseHandle(nonPhotoshopProcesses[0].handle);nonPhotoshopProcesses[0]={pid,handle};
+        return false;
+    }
     for (auto& p:photoshopProcesses) if (!p.handle) {p={pid,handle};return true;}
     for (auto& p:photoshopProcesses)
-        if (WaitForSingleObject(p.handle,0)!=WAIT_TIMEOUT) {CloseHandle(p.handle);p={pid,handle};return true;}
+        if (!processAlive(p.handle)) {CloseHandle(p.handle);p={pid,handle};return true;}
     CloseHandle(photoshopProcesses[0].handle);photoshopProcesses[0]={pid,handle};
     return true;
+}
+// Hook-safe identity: only the already verified positive cache is consulted.
+// No OpenProcess, QueryFullProcessImageNameW or allocation.
+static bool photoshopProcessWindowFast(HWND hwnd) {
+    if(!hwnd)return false;
+    DWORD pid=0;GetWindowThreadProcessId(hwnd,&pid);
+    if(!pid)return false;
+    for (const auto& p:photoshopProcesses)
+        if (p.pid==pid) return processAlive(p.handle);
+    return false;
+}
+static void publishForegroundScope(HWND foreground,bool photoshop) {
+    // Store order matters: a reader that observes a new HWND before the new
+    // verdict must see the conservative older false, never a stale true.
+    if(photoshop) {
+        scopeForeground.store(foreground,std::memory_order_release);
+        scopeIsPhotoshop.store(true,std::memory_order_release);
+    } else {
+        scopeIsPhotoshop.store(false,std::memory_order_release);
+        scopeForeground.store(foreground,std::memory_order_release);
+    }
+    scopeKnown.store(true,std::memory_order_release);
+}
+static bool photoshopKeyScopeSlow(HWND foreground) {
+    return config.enabled && (photoshopProcessWindow(foreground) ||
+        (menuWindow(foreground) && photoshopProcessWindow(target)));
+}
+static void updateForegroundScope(HWND foreground,bool force=false) {
+    if(!foreground)return;
+    if(!force && scopeKnown.load(std::memory_order_acquire) &&
+       scopeForeground.load(std::memory_order_acquire)==foreground)return;
+    publishForegroundScope(foreground,photoshopKeyScopeSlow(foreground));
+}
+static void requestForegroundRefresh(HWND foreground) {
+    if(!foreground || !hookThread)return;
+    if(foregroundRefreshPosted.exchange(true,std::memory_order_acq_rel))return;
+    if(!PostThreadMessageW(hookThread,foregroundMessage,0,reinterpret_cast<LPARAM>(foreground)))
+        foregroundRefreshPosted.store(false,std::memory_order_release);
+}
+// Called only from the low-level hooks. Never opens a process.
+static bool photoshopKeyScope(HWND foreground=GetForegroundWindow()) {
+    if(!config.enabled || !foreground)return false;
+    if(scopeForeground.load(std::memory_order_acquire)!=foreground) {
+        requestForegroundRefresh(foreground);
+        return false;
+    }
+    return scopeIsPhotoshop.load(std::memory_order_acquire);
 }
 // Only the frozen, process-verified Layers list. No tree enumeration, COM,
 // UIA, filesystem, allocations or blocking messages in the mouse hook.
@@ -382,22 +467,17 @@ static bool previewGuardWindow(HWND clicked) {
     if(!owner || !panel || !clicked || IsWindowVisible(config.overlay) ||
        !IsWindow(owner) || IsIconic(owner) || !IsWindowVisible(owner) ||
        !IsWindow(panel) || !IsWindowVisible(panel) ||
-       (clicked!=panel && !IsChild(panel,clicked)) || !photoshopProcessWindow(owner))return false;
+       (clicked!=panel && !IsChild(panel,clicked)) || !photoshopProcessWindowFast(owner))return false;
     DWORD ownerPid=0,panelPid=0,clickPid=0;
     GetWindowThreadProcessId(owner,&ownerPid);GetWindowThreadProcessId(panel,&panelPid);GetWindowThreadProcessId(clicked,&clickPid);
     wchar_t ownerClass[32]{},panelClass[32]{};GetClassNameW(owner,ownerClass,32);GetClassNameW(panel,panelClass,32);
     return ownerPid && ownerPid==panelPid && ownerPid==clickPid && wcscmp(ownerClass,L"Photoshop")==0 &&
         wcscmp(panelClass,L"PSViewC")==0 && GetDlgCtrlID(panel)==0 && GetAncestor(panel,GA_ROOTOWNER)==owner;
 }
-static bool photoshopKeyScope(HWND foreground=GetForegroundWindow()) {
-    if (!config.enabled) return false;
-    return photoshopProcessWindow(foreground) ||
-        (menuWindow(foreground) && photoshopProcessWindow(target));
-}
 static HWND remoteWorkspace(HWND child) {
     if(!child || !IsWindowVisible(child) || !IsWindowEnabled(child))return nullptr;
     HWND root=GetAncestor(child,GA_ROOT);
-    if(!photoshop(root) || !photoshopProcessWindow(root))return nullptr;
+    if(!photoshop(root) || !photoshopProcessWindowFast(root))return nullptr;
     DWORD childPid=0,rootPid=0;
     GetWindowThreadProcessId(child,&childPid);GetWindowThreadProcessId(root,&rootPid);
     return childPid && childPid==rootPid?GetAncestor(root,GA_ROOTOWNER):nullptr;
@@ -458,13 +538,22 @@ static bool languageEditEndEvent(int key,bool down,const KeyMachine& state,int& 
     if(!down && key==pending){pending=0;return true;}
     return false;
 }
+static bool resumeSearchContext(bool fromMenu,const Config& cfg,HWND foreground);
 static void CALLBACK languageFocusEvent(HWINEVENTHOOK,DWORD event,HWND hwnd,LONG,LONG,DWORD,DWORD) {
     if(!hwnd)return;
-    if(photoshopProcessWindow(hwnd)) {
-        emit(LanguageActivity,hwnd);
-    } else if(event==EVENT_SYSTEM_FOREGROUND && !menuWindow(hwnd)) {
-        advanceInput();emit(LanguageActivity,hwnd);
+    if(event==EVENT_SYSTEM_FOREGROUND) {
+        static HWND previous=nullptr;
+        const bool fromMenu=menuWindow(std::exchange(previous,hwnd));
+        // Foreground identity is decided here, on the message thread, so the
+        // low-level hooks can answer from the snapshot without OpenProcess.
+        updateForegroundScope(hwnd,true);
+        if(!menuWindow(hwnd)) {
+            if(!resumeSearchContext(fromMenu,config,hwnd))advanceInput();
+            emit(LanguageActivity,hwnd);
+        }
+        return;
     }
+    if(photoshopProcessWindow(hwnd))emit(LanguageActivity,hwnd);
 }
 static bool searchContextMatches(const Config& cfg,HWND root,HWND focus,ULONGLONG epoch) {
     return cfg.searchAllowed && root && focus && root==cfg.searchRoot && focus==cfg.searchFocus &&
@@ -476,16 +565,32 @@ static bool searchInputAllowed(const Config& cfg,HWND foreground) {
     GUITHREADINFO info{};info.cbSize=sizeof(info);
     if(!thread || !GetGUIThreadInfo(thread,&info) || !info.hwndFocus || info.hwndCapture || info.hwndMenuOwner || info.hwndMoveSize ||
        info.hwndCaret)return false;
-    wchar_t name[32]{};GetClassNameW(info.hwndFocus,name,32);
+    HWND focus=info.hwndFocus;
+    const HWND root=GetAncestor(foreground,GA_ROOTOWNER);
+    // Windows can report our hidden menu's focus while activation returns to PS.
+    if(cfg.overlay && !IsWindowVisible(cfg.overlay) &&
+       (focus==cfg.overlay || IsChild(cfg.overlay,focus)) && IsWindow(cfg.searchFocus) &&
+       GetAncestor(cfg.searchFocus,GA_ROOTOWNER)==root)focus=cfg.searchFocus;
+    wchar_t name[32]{};GetClassNameW(focus,name,32);
     if(wcscmp(name,L"Edit")==0 || wcscmp(name,L"RichEdit20W")==0 || wcscmp(name,L"RichEdit50W")==0 || wcscmp(name,L"ComboBox")==0)return false;
-    return searchContextMatches(cfg,GetAncestor(foreground,GA_ROOTOWNER),info.hwndFocus,inputEpoch);
+    return searchContextMatches(cfg,root,focus,inputEpoch);
 }
 static bool photoshopInputFocus(HWND foreground) {
-    if(!photoshopProcessWindow(foreground))return false;
+    // Hook path: the foreground snapshot, never a process query or handle wait.
+    if(!photoshopKeyScope(foreground) || menuWindow(foreground))return false;
     DWORD pid=0,focusPid=0;const auto thread=GetWindowThreadProcessId(foreground,&pid);
     GUITHREADINFO info{};info.cbSize=sizeof(info);
     if(!GetGUIThreadInfo(thread,&info) || !info.hwndFocus)return false;
     GetWindowThreadProcessId(info.hwndFocus,&focusPid);return pid && focusPid==pid;
+}
+static bool resumeSearchContext(bool fromMenu,const Config& cfg,HWND foreground) {
+    if(!fromMenu || IsWindowVisible(cfg.overlay) || cfg.textInput || !cfg.searchAllowed ||
+       cfg.searchEpoch!=inputEpoch || !cfg.searchFocus || !IsWindow(cfg.searchFocus) ||
+       GetAncestor(foreground,GA_ROOTOWNER)!=cfg.searchRoot || !photoshopKeyScope(foreground))return false;
+    wchar_t name[32]{};GetClassNameW(cfg.searchFocus,name,32);
+    // Keep the generation during handoff; each key still checks the actual focus/caret.
+    return wcscmp(name,L"Edit")!=0 && wcscmp(name,L"RichEdit20W")!=0 &&
+        wcscmp(name,L"RichEdit50W")!=0 && wcscmp(name,L"ComboBox")!=0;
 }
 static bool routeKey(KeyMachine& state,int raw,bool down,bool commandScope,bool processScope,
                      const Config& cfg,bool visible,Action& action,ULONGLONG now) {
@@ -539,6 +644,7 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
                 return 1;
             }
         }
+        const bool searchOwned=keys.searchConsumed;
         Config localConfig=config;
         Config evidence;
         AcquireSRWLockShared(&inputEvidenceLock);evidence=inputEvidence;ReleaseSRWLockShared(&inputEvidenceLock);
@@ -560,7 +666,10 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
                 evidenceFocus.hwndFocus==localConfig.searchFocus &&
                 GetAncestor(foreground,GA_ROOTOWNER)==localConfig.searchRoot;
         }
-        if(input.vkCode=='F')localConfig.searchAllowed=searchInputAllowed(localConfig,foreground);
+        if(input.vkCode=='F') {
+            localConfig.searchAllowed=searchInputAllowed(localConfig,foreground);
+            localConfig.evidenceFresh=localConfig.searchAllowed;
+        }
         bool unusedPrefix=keys.pending!=-1 && !keys.used;
         bool blocked=routeKey(keys,input.vkCode,message==WM_KEYDOWN || message==WM_SYSKEYDOWN,
                      commandScope,processScope,localConfig,IsWindowVisible(config.overlay),action,GetTickCount64());
@@ -605,10 +714,16 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
             } else droppedEvents.fetch_add(1,std::memory_order_relaxed);
         }
         if (blocked) {
+            // Other hooks need the F pair too, or they can mistake Ctrl+F for double Ctrl.
+            if(input.vkCode=='F' && (searchOwned || keys.searchConsumed))CallNextHookEx(nullptr,code,message,data);
             emit(action,action==SearchLayers?localConfig.searchFocus:nullptr,action==SearchLayers?localConfig.searchRoot:nullptr); return 1;
         }
         if(unusedPrefix && keys.used && action==None)emit(HoldCancel);
     }
+#ifdef HOTKEY_MEASURE
+    measureHookSample(timing.elapsed(),measurementKind);
+    if(measureDirectMode)return 0;
+#endif
     return CallNextHookEx(nullptr,code,message,data);
 }
 static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
@@ -666,8 +781,8 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                 HWND clicked=WindowFromPoint(point);
                 activationOrigin=foreground;
                 if (taskbarWindow(clicked)) activation.beginTaskbar(lastInputTick);
-                else activation.clickTarget(photoshopProcessWindow(clicked),
-                    menuWindow(clicked) && photoshopProcessWindow(target),lastInputTick);
+                else activation.clickTarget(photoshopProcessWindowFast(clicked),
+                    menuWindow(clicked) && photoshopProcessWindowFast(target),lastInputTick);
             }
             bool visible=IsWindowVisible(config.overlay);
             if (visible && index==1 && scope()) {
@@ -678,7 +793,7 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
             }
             if (config.enabled) {
                 HWND child=WindowFromPoint(point),root=GetAncestor(child,GA_ROOT);
-                if (photoshop(root) && photoshopProcessWindow(root)){advanceInput();emit(PanelClick,child,root);}
+                if (photoshop(root) && photoshopProcessWindowFast(root)){advanceInput();emit(PanelClick,child,root);}
             }
             if (visible && !inside(config.overlay,point) && !menuWindow(GetAncestor(WindowFromPoint(point),GA_ROOT))) {
                 bool scoped=scope();
@@ -693,7 +808,7 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                 event.root=WindowFromPoint(reinterpret_cast<const MSLLHOOKSTRUCT*>(data)->pt);
                 event.message=static_cast<UINT>(message);event.time=GetTickCount();
                 event.flags=mouse.flags;
-                event.process=photoshopProcessWindow(event.root);
+                event.process=photoshopProcessWindowFast(event.root);
                 event.activationAllowed=activation.allowed;event.activationActive=activation.active;
                 event.directSwitching=activation.directSwitching;event.taskbarSwitching=activation.taskbarSwitching;
                 event.activationIntent=activation.clicked;
@@ -702,6 +817,10 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
             } else droppedEvents.fetch_add(1,std::memory_order_relaxed);
         }
     }
+#ifdef HOTKEY_MEASURE
+    measureHookSample(timing.elapsed(),measurementKind);
+    if(measureDirectMode)return 0;
+#endif
     return CallNextHookEx(nullptr,code,message,data);
 }
 static void stop() {
@@ -892,7 +1011,7 @@ static void sampleCapsState(bool force=false) {
         HookEvent event{};event.action=CapsState;event.hwnd=GetForegroundWindow();
         GetWindowThreadProcessId(event.hwnd,&event.pid);
         event.toggleOn=current;event.previousToggle=previous;event.enabled=!sampled || force;
-        event.process=photoshopKeyScope(event.hwnd);event.repeat=keys.physical[VK_CAPITAL];event.owned=keys.consumed[VK_CAPITAL];
+        event.process=photoshopKeyScopeSlow(event.hwnd);event.repeat=keys.physical[VK_CAPITAL];event.owned=keys.consumed[VK_CAPITAL];
         event.gapMs=GetTickCount64();event.dropped=droppedEvents.load(std::memory_order_relaxed);
         queue[head.load(std::memory_order_relaxed)]=event;
         head.store(next,std::memory_order_release);SetEvent(available);
@@ -996,18 +1115,22 @@ static int selfTest() {
     }
     {
         Config c;c.searchAllowed=true;c.bindings[0]={Toggle,{VK_CAPITAL},1};c.bindings[1]={EditStyle,{VK_CAPITAL,'F'},2};Action action;
-        KeyMachine f;
+        KeyMachine bare;check(!bare.event('F',true,true,c,false,action) && action==None);
+        check(!bare.event('F',false,true,c,false,action));
+        KeyMachine f;f.seed(VK_CONTROL);
         check(f.event('F',true,true,c,false,action) && action==SearchLayers);
+        check(f.searchConsumed);
         check(f.event('F',true,true,c,false,action) && action==None);
         check(f.event('F',false,false,c,false,action) && action==None);
-        for(int modifier:{VK_SHIFT,VK_CONTROL,VK_MENU,VK_LWIN,VK_RWIN}) {
-            KeyMachine modified;modified.event(modifier,true,true,c,false,action);
+        check(!f.searchConsumed);
+        for(int modifier:{VK_SHIFT,VK_MENU,VK_LWIN,VK_RWIN}) {
+            KeyMachine modified;modified.seed(VK_CONTROL);modified.event(modifier,true,true,c,false,action);
             check(!modified.event('F',true,true,c,false,action) && action==None);
             modified.event(modifier,false,true,c,false,action);
             check(!modified.event('F',false,true,c,false,action));
         }
         for(int guarded=0;guarded<3;++guarded) {
-            KeyMachine input;c.textInput=guarded==0;c.colorEditor=guarded==1;
+            KeyMachine input;input.seed(VK_CONTROL);c.textInput=guarded==0;c.colorEditor=guarded==1;
             check(!routeKey(input,'F',true,guarded!=2,true,c,true,action,1000) && action==None);
             check(!input.event('F',false,false,c,true,action));
         }
@@ -1016,7 +1139,7 @@ static int selfTest() {
         check(chord.event('F',true,true,c,false,action) && action==EditStyle);
         check(chord.event('F',false,true,c,false,action));
         check(chord.event(VK_CAPITAL,false,true,c,false,action) && action==HoldCancel);
-        c.searchAllowed=false;KeyMachine unverified;
+        c.searchAllowed=false;KeyMachine unverified;unverified.seed(VK_CONTROL);
         check(!unverified.event('F',true,true,c,false,action) && action==None);
         check(!unverified.event('F',false,true,c,false,action));
         c.searchAllowed=true;c.searchRoot=reinterpret_cast<HWND>(10);c.searchFocus=reinterpret_cast<HWND>(11);c.searchEpoch=100;
@@ -1125,7 +1248,7 @@ static int selfTest() {
         for(bool pinned:{false,true}) {
             KeyMachine machine;Action result;
             if(!pinned)check(machine.event(20,true,true,ref,false,result,1000) && result==HoldBegin);
-            const Action expected=pinned && pair.first=='F'?SearchLayers:pair.second;
+            const Action expected=pair.second;
             check(machine.event(pair.first,true,true,ref,pinned,result,1100) && result==expected);
             check(machine.event(pair.first,true,true,ref,pinned,result,1110) && result==None);
             check(machine.event(pair.first,false,true,ref,pinned,result,1120) && result==None);
@@ -1291,6 +1414,61 @@ static int selfTest() {
     std::cout<<"Native hotkey self-test passed: 10000 CapsLock and Tab pairs, repeat, scope, modifiers, combinations\n";
     return 0;
 }
+static int foregroundScopeSelfTest() {
+    HWND window=CreateWindowExW(0,L"STATIC",L"Foreground scope test",WS_OVERLAPPEDWINDOW,0,0,240,120,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    HWND other=CreateWindowExW(0,L"STATIC",L"Foreground scope other",WS_OVERLAPPEDWINDOW,260,0,120,80,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    check(window && other);
+    hookThread=GetCurrentThreadId();config.enabled=true;config.overlay=nullptr;
+    for(auto& p:photoshopProcesses)if(p.handle)CloseHandle(p.handle);
+    for(auto& p:nonPhotoshopProcesses)if(p.handle)CloseHandle(p.handle);
+    photoshopProcesses={};nonPhotoshopProcesses={};
+    try {
+        // First non-PS foreground costs one query; a repeated foreground uses
+        // the held negative handle with no OpenProcess/QueryFullProcessImageName.
+        processQueries.store(0);
+        check(!photoshopProcessWindow(window));
+        const ULONG afterFirst=processQueries.load();
+        for(int i=0;i<10000;++i)check(!photoshopProcessWindow(window));
+        check(processQueries.load()==afterFirst);
+        // Seen as the verified positive cache, the hook path must never query.
+        HANDLE self=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,GetCurrentProcessId());
+        check(self!=nullptr);
+        photoshopProcesses[0]={GetCurrentProcessId(),self};
+        check(photoshopProcessWindowFast(window));
+        publishForegroundScope(window,true);
+        processQueries.store(0);
+        for(int i=0;i<10000;++i)check(photoshopKeyScope(window));
+        check(processQueries.load()==0);
+        check(GetKeyboardLayout(0)!=0);
+        // A different foreground is conservative and wakes the message thread;
+        // no query happens inside the hook itself.
+        processQueries.store(0);foregroundRefreshPosted.store(false);
+        check(!photoshopKeyScope(other));
+        check(processQueries.load()==0);
+        check(foregroundRefreshPosted.load());
+        MSG pending{};check(PeekMessageW(&pending,nullptr,foregroundMessage,foregroundMessage,PM_REMOVE));
+        check(pending.message==foregroundMessage && reinterpret_cast<HWND>(pending.lParam)==other);
+        foregroundRefreshPosted.store(false);
+        publishForegroundScope(window,false);
+        check(!photoshopKeyScope(window));
+        updateForegroundScope(window,true);
+        check(photoshopKeyScope(window));
+        // An exited held handle cannot keep a recycled PID verified.
+        HANDLE ended=CreateEventW(nullptr,TRUE,TRUE,nullptr);check(ended!=nullptr);
+        CloseHandle(photoshopProcesses[0].handle);photoshopProcesses[0]={GetCurrentProcessId(),ended};
+        check(!photoshopProcessWindowFast(window));
+        std::cout<<"Foreground scope self-test passed: one process query per non-PS foreground, 10000 hook decisions with zero queries, conservative mismatch refresh, exited-handle rejection\n";
+    } catch(...) {
+        for(auto& p:photoshopProcesses)if(p.handle)CloseHandle(p.handle);
+        for(auto& p:nonPhotoshopProcesses)if(p.handle)CloseHandle(p.handle);
+        photoshopProcesses={};nonPhotoshopProcesses={};
+        DestroyWindow(other);DestroyWindow(window);throw;
+    }
+    for(auto& p:photoshopProcesses)if(p.handle)CloseHandle(p.handle);
+    for(auto& p:nonPhotoshopProcesses)if(p.handle)CloseHandle(p.handle);
+    photoshopProcesses={};nonPhotoshopProcesses={};
+    DestroyWindow(other);DestroyWindow(window);return 0;
+}
 static int searchInputSelfTest() {
     HWND window=CreateWindowExW(0,L"STATIC",L"Search input protection test",WS_OVERLAPPEDWINDOW,0,0,240,140,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     check(window!=nullptr);
@@ -1298,13 +1476,30 @@ static int searchInputSelfTest() {
         HWND focus=CreateWindowExW(0,L"STATIC",L"",WS_CHILD|WS_VISIBLE,0,0,40,40,window,nullptr,nullptr,nullptr);
         HWND edit=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_VISIBLE,50,0,120,24,window,nullptr,nullptr,nullptr);
         check(focus && edit);ShowWindow(window,SW_SHOW);SetForegroundWindow(window);SetFocus(focus);check(GetForegroundWindow()==window);
+        config.enabled=true;config.overlay=window;publishForegroundScope(window,true);
+        check(!photoshopInputFocus(window));
+        config.overlay=nullptr;check(photoshopInputFocus(window));
         Config cfg;cfg.searchAllowed=true;cfg.searchRoot=window;cfg.searchFocus=focus;cfg.searchEpoch=0;inputEpoch=0;
+        check(resumeSearchContext(true,cfg,window));
+        check(!resumeSearchContext(false,cfg,window));
+        cfg.colorEditor=true;check(resumeSearchContext(true,cfg,window));cfg.colorEditor=false;
+        cfg.textInput=true;check(!resumeSearchContext(true,cfg,window));cfg.textInput=false;
+        cfg.overlay=window;check(!resumeSearchContext(true,cfg,window));cfg.overlay=nullptr;
         const auto route=[&](){
             Config local=cfg;local.searchAllowed=searchInputAllowed(cfg,window);
-            KeyMachine machine;Action action;const bool blocked=routeKey(machine,'F',true,true,true,local,false,action,GetTickCount64());
+            KeyMachine machine;machine.seed(VK_CONTROL);Action action;const bool blocked=routeKey(machine,'F',true,true,true,local,false,action,GetTickCount64());
             check(machine.event('F',false,true,local,false,action)==blocked);return blocked;
         };
         check(route());
+        HWND menu=CreateWindowExW(0,L"STATIC",L"Search return fixture",WS_OVERLAPPEDWINDOW,0,0,80,80,nullptr,nullptr,nullptr,nullptr);
+        check(menu!=nullptr);cfg.overlay=menu;
+        SetFocus(menu);check(GetFocus()==menu);check(route());
+        ShowWindow(menu,SW_SHOW);check(!route());ShowWindow(menu,SW_HIDE);SetFocus(menu);check(route());
+        cfg.textInput=true;check(!route());cfg.textInput=false;
+        ++inputEpoch;check(!route());cfg.searchEpoch=inputEpoch;
+        cfg.searchFocus=edit;check(!route());cfg.searchFocus=focus;
+        SetFocus(edit);check(!route());SetFocus(focus);check(route());
+        DestroyWindow(menu);cfg.overlay=nullptr;
         KeyMachine burst;Action action;
         for(int i=0;i<1000;++i) {
             cfg.searchEpoch=inputEpoch;
@@ -1314,21 +1509,23 @@ static int searchInputSelfTest() {
                 check(!routeKey(burst,key,false,true,true,cfg,false,action,GetTickCount64()));
             }
             Config fresh=cfg;fresh.searchAllowed=searchInputAllowed(cfg,window);
+            burst.seed(VK_CONTROL);
             check(routeKey(burst,'F',true,true,true,fresh,false,action,GetTickCount64()) && action==SearchLayers);
             check(routeKey(burst,'F',false,true,true,fresh,false,action,GetTickCount64()));
+            burst.event(VK_CONTROL,false,true,fresh,false,action);
         }
-        check(CreateCaret(focus,nullptr,1,14)!=0 && ShowCaret(focus)!=0);check(!route());
+        check(CreateCaret(focus,nullptr,1,14)!=0 && ShowCaret(focus)!=0);check(!route());check(resumeSearchContext(true,cfg,window));
         check(!languageActivityKey('A',burst));
         HideCaret(focus);cfg.searchAllowed=false;check(!route());
         cfg.searchAllowed=true;check(!route());DestroyCaret();check(route());
-        ++inputEpoch;check(!route());
+        ++inputEpoch;check(!route());check(!resumeSearchContext(true,cfg,window));
         for(int i=0;i<1000;++i)for(int key:{'A','V','T'})
             check(!languageActivityKey(key,burst));
         check(!route());
         check(!languageActivityKey('F',burst));
         cfg.searchEpoch=inputEpoch;check(route());
-        SetFocus(edit);cfg.searchFocus=edit;cfg.searchEpoch=inputEpoch;check(!route());
-        SetFocus(focus);cfg.searchFocus=edit;check(!route());
+        SetFocus(edit);cfg.searchFocus=edit;cfg.searchEpoch=inputEpoch;check(!route());check(!resumeSearchContext(true,cfg,window));
+        SetFocus(focus);cfg.searchFocus=edit;check(!route());check(!resumeSearchContext(true,cfg,window));
         cfg.searchFocus=focus;cfg.searchEpoch=inputEpoch;check(route());
         // Removing the host round trip must not authorise a single-key action
         // from a publication that predates the current generation or focus.
@@ -1336,8 +1533,9 @@ static int searchInputSelfTest() {
         {
             Config stale=cfg;stale.searchAllowed=true;stale.searchRoot=window;stale.searchFocus=focus;
             stale.searchEpoch=inputEpoch-1;stale.evidenceFresh=false;
-            KeyMachine machine;
+            KeyMachine machine;machine.seed(VK_CONTROL);
             check(!machine.event('F',true,true,stale,false,action) && action==None);
+            machine.event(VK_CONTROL,false,true,stale,false,action);
             Config bindings;bindings.enabled=true;bindings.bindings[0]={Toggle,{VK_CAPITAL},1};
             bindings.bindings[1]={SelectAbove,{VK_CAPITAL,'W'},2};
             Action chordAction=None;
@@ -1369,8 +1567,33 @@ static bool renewHooks(HHOOK& keyHook,HHOOK& mouseHook) {
     if (mouseHook) UnhookWindowsHookEx(mouseHook);
     keyHook=nextKey;mouseHook=nextMouse;return true;
 }
+static void applySelfTestLowCpu() {
+    DWORD_PTR available=0,system=0;
+    if(!GetProcessAffinityMask(GetCurrentProcess(),&available,&system))throw std::runtime_error("self-test affinity");
+    DWORD_PTR mask=0;int picked=0;
+    for(int bit=int(sizeof(DWORD_PTR)*8)-1;bit>=0 && picked<2;--bit)
+        if(system&(DWORD_PTR(1)<<bit)){mask|=DWORD_PTR(1)<<bit;++picked;}
+    if(picked!=2 || !SetProcessAffinityMask(GetCurrentProcess(),mask))throw std::runtime_error("self-test low CPU affinity");
+    if(!SetPriorityClass(GetCurrentProcess(),BELOW_NORMAL_PRIORITY_CLASS))throw std::runtime_error("self-test low CPU priority");
+    DWORD_PTR readback=0;int count=0;
+    if(!GetProcessAffinityMask(GetCurrentProcess(),&readback,&system))throw std::runtime_error("self-test affinity readback");
+    for(auto bits=readback;bits;bits&=bits-1)count++;
+    if(count!=2 || readback!=mask || GetPriorityClass(GetCurrentProcess())!=BELOW_NORMAL_PRIORITY_CLASS)
+        throw std::runtime_error("self-test low CPU not applied");
+}
 int main(int argc,char** argv) {
     LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);counterFrequency=frequency.QuadPart;
+    bool selfTestLow=false;
+    int kept=1;
+    for(int i=1;i<argc;++i) {
+        if(std::string(argv[i])=="--low")selfTestLow=true;
+        else argv[kept++]=argv[i];
+    }
+    argc=kept;
+    if(selfTestLow) {
+        try{applySelfTestLowCpu();}
+        catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
+    }
     // MSLLHOOKSTRUCT uses physical per-monitor coordinates. GetWindowRect and
     // WindowFromPoint must use the same coordinate space at 125/150/200% DPI.
     auto dpi=reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"SetProcessDpiAwarenessContext"));
@@ -1391,6 +1614,7 @@ int main(int argc,char** argv) {
     }
     if (argc==2 && std::string(argv[1])=="--self-test") return selfTest();
     if (argc==2 && std::string(argv[1])=="--self-test-search-input") return searchInputSelfTest();
+    if (argc==2 && std::string(argv[1])=="--self-test-foreground-scope") return foregroundScopeSelfTest();
     if(argc==4 && std::string(argv[1])=="--inspect-preview-guard") {
         refreshPhotoshopProcesses();config.guardOwner=reinterpret_cast<HWND>(std::stoull(argv[2]));config.guardPanel=reinterpret_cast<HWND>(std::stoull(argv[3]));
         std::cout<<(previewGuardWindow(config.guardPanel)?"true":"false")<<"\n";
@@ -1485,13 +1709,14 @@ int main(int argc,char** argv) {
     while (GetMessageW(&message,nullptr,0,0)>0) {
         if (message.message==WM_TIMER && message.wParam==capsTimer) {
             HWND foreground=GetForegroundWindow();
-            observeActivation(foreground,photoshopKeyScope(foreground),GetTickCount64());
+            updateForegroundScope(foreground);
+            observeActivation(foreground,photoshopKeyScopeSlow(foreground),GetTickCount64());
             sampleCapsState();
         } else if (message.message==winRightMessage) {
             if (message.wParam==MOUSEEVENTF_RIGHTDOWN) {
                 // Do not send a new click to a window that gained foreground
                 // after the physical down. Ups still complete any sent down.
-                if (!rightInjected && GetForegroundWindow()==reinterpret_cast<HWND>(message.lParam) && photoshopKeyScope()) {
+                if (!rightInjected && GetForegroundWindow()==reinterpret_cast<HWND>(message.lParam) && photoshopKeyScopeSlow(GetForegroundWindow())) {
                     rightInjected=injectRight(MOUSEEVENTF_RIGHTDOWN);
                     if (!rightInjected) emit(Error);
                 }
@@ -1537,7 +1762,11 @@ int main(int argc,char** argv) {
             if(beginDiagnostic)diagnosticUntil=GetTickCount64()+35000;
             else if(!config.diagnostic)diagnosticUntil=0;
             if (!IsWindowVisible(config.overlay)) dismissPending=false;
+            updateForegroundScope(GetForegroundWindow(),true);
             emit(Configured);
+        } else if (message.message==foregroundMessage) {
+            foregroundRefreshPosted.store(false,std::memory_order_release);
+            updateForegroundScope(reinterpret_cast<HWND>(message.lParam),true);
         } else if (message.message==WM_APP+1) emit(Error);
         else { TranslateMessage(&message); DispatchMessageW(&message); }
     }
