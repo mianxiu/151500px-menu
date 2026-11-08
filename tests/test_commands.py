@@ -9,9 +9,9 @@ from backend.photoshop_bridge import PhotoshopBridge
 class CommandTests(unittest.IsolatedAsyncioTestCase):
     def test_contracts_cover_every_existing_command(self):
         self.assertEqual(set(REGISTRY), set(COMMANDS)|{'document.recent'})
-        self.assertEqual(len(REGISTRY), 43)
+        self.assertEqual(len(REGISTRY), len(COMMANDS)+1)
         for contract in command_contracts():
-            if contract['id'] in QUICK_ACTIONS or contract['id'] in CAPS_ACTIONS or contract['id'].startswith('shape.') or contract['id'] in ('layer.focus','text.replace','text.split'):
+            if contract['id'] in QUICK_ACTIONS or contract['id'] in CAPS_ACTIONS or contract['id'].startswith('shape.') or contract['id'] in ('layer.focus','layer.frame','text.replace','text.split','text.object'):
                 self.assertEqual(contract['channel'],'uxp-local-files')
                 self.assertIn('read-back',contract['expected_result'])
                 continue
@@ -37,7 +37,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_registry_can_be_read_without_photoshop(self):
         result = await Application.dispatch(Mock(), 'commands.list', {})
-        self.assertEqual(len(result['commands']), 43)
+        self.assertEqual({row['id'] for row in result['commands']}, set(REGISTRY))
 
     async def test_bridge_rejects_unknown_before_com(self):
         bridge = PhotoshopBridge()

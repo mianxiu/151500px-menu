@@ -654,6 +654,24 @@ class Desktop:
                 raise RuntimeError('当前为 Photoshop 首页，请进入文档后执行图层操作')
 
     @window_transition
+    def require_layer_frame(self, input_guard=None, reserved=False):
+        self.require_action_focus()
+        if reserved:
+            sample=self.input_focus.native_sample() if self.input_focus else {}
+            identity={key:sample.get(key) for key in ('root','focus')};identity['epoch']=getattr(self.input_focus,'native_epoch',None)
+            if (not sample.get('workspace') or sample.get('blocked') or sample.get('state')=='input' or identity!=input_guard):
+                raise RuntimeError('F触发后的原生焦点或输入世代已改变，本次未聚焦')
+            return identity
+        observed=self.input_focus.shortcut_context() if self.input_focus else {}
+        if observed.get('state')!='non-input':raise RuntimeError('输入状态未确认，未聚焦图层')
+        if input_guard is not None:
+            if (not isinstance(input_guard,dict) or set(input_guard)!={'root','focus','epoch'} or
+                    any(type(input_guard[k]) is not int or input_guard[k]<(0 if k=='epoch' else 1) for k in input_guard)):
+                raise ValueError('无效的F聚焦输入身份')
+            if any(observed.get(k)!=v for k,v in input_guard.items()):raise RuntimeError('F触发后的输入上下文已改变，本次未聚焦')
+        return {key:observed[key] for key in ('root','focus','epoch')}
+
+    @window_transition
     def require_menu_tools(self, epoch):
         if not self.visible or epoch != self.menu_epoch or not self.menu_tools_active:
             raise RuntimeError('操作面板已关闭或重新打开，本次未执行')

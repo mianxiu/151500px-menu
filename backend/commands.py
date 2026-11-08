@@ -32,6 +32,7 @@ CAPS_ACTIONS = {
 }
 COMMANDS = {**CAPS_ACTIONS,**ACTIONS, **LABEL_ACTIONS, **QUICK_ACTIONS,'shape.paint':{'label':'调整形状填充与描边'},
     'layer.focus':{'label':'定位图层'},
+    'layer.frame':{'label':'聚焦所选图层'},
     'text.replace':{'label':'文本查找替换'},
     'text.split':{'label':'拆分文字图层'},
     'text.object':{'label':'写回矢量文字对象'},
@@ -70,6 +71,7 @@ REGISTRY = MappingProxyType({
         target_document='captured-UXP-session-and-document-set; cancel-if-changed', target_layers='not-applicable'),
     'shape.paint':Command('shape.paint','调整形状填充与描边','paint-and-vector-identity-read-back',
         channel='uxp-local-files',parameters=('revision','fill','stroke')),
+    'layer.frame':Command('layer.frame','聚焦所选图层','view-and-selection-read-back; document-content-unchanged',channel='uxp-local-files'),
     'layer.focus':Command('layer.focus','定位图层','destination-and-selection-read-back',channel='uxp-local-files'),
     'text.replace':Command('text.replace','文本查找替换','text-style-and-layout-read-back',channel='uxp-local-files'),
     'text.split':Command('text.split','拆分文字图层','text-style-position-and-order-read-back',channel='uxp-local-files'),

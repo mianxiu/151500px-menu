@@ -401,7 +401,7 @@ async function probe(reason) {
     if (!heartbeatValue) {
       heartbeatValue={
         ...await metadata(),
-        probe_version: '0.3.96', session, transport: 'plugin-data-files',
+        probe_version: '0.3.97', session, transport: 'plugin-data-files',
         photoshop_version: hostVersion,
         extended_label_colors:labels.extendedLabelColors,
         uxp_version: optional(() => uxp.versions.uxp),
@@ -477,7 +477,7 @@ async function probe(reason) {
       lastRequest=request.id;return;
     }
     seen.add(request.id); // Consume before any write; never retry after an uncertain response.
-    const response = {schema:1,session,id: request.id, probe_version: '0.3.96', operation: request.operation,
+    const response = {schema:1,session,id: request.id, probe_version: '0.3.97', operation: request.operation,
       transport: 'plugin-data-files',
       completed_at_ms: Date.now(), phase: 'completed'};
     const timingStarted=Date.now(),timings={};
@@ -523,7 +523,8 @@ async function probe(reason) {
         await record(folder,'result-'+request.id+'.json',{...response,phase:'accepted'});
         request={...request,target:captured};
       }
-      if(request.operation==='inspect'&&request.text_inspect===true)response.text=await labels.readText();
+      if(request.operation==='inspect'&&request.layer_view_inspect===true)response.layer_view=await labels.inspectLayerView();
+      else if(request.operation==='inspect'&&request.text_inspect===true)response.text=await labels.readText();
       else if (request.operation === 'inspect') {
         response.target = labels.documentTarget();
         response.document_count = response.target.document_ids.length;

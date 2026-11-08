@@ -157,6 +157,7 @@ class UxpTransport:
                     if version_tuple(heartbeat.get('photoshop_version'))<(25,2,0) or heartbeat.get('extended_label_colors') is not True:raise RuntimeError('当前PS执行端未确认支持此标签颜色；未提交修改')
                 if payload.get('command')=='layer.thumbnail':
                     raise RuntimeError('非静默缩略图已停用，未提交操作')
+                if payload.get('command')=='layer.frame' and version(heartbeat.get('probe_version'))<(0,3,97):raise RuntimeError('F聚焦需要正常重启PS加载UXP0.3.97')
                 if payload.get('command')=='layer.focus' and (version(heartbeat.get('probe_version'))<(0,3,57) or payload.get('target',{}).get('session')!=heartbeat.get('session')):
                     raise RuntimeError('搜索会话或UXP版本已改变，请重新搜索')
                 if payload.get('stability_run') and version(heartbeat.get('probe_version'))<(0,3,47):

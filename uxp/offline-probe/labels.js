@@ -4,6 +4,7 @@ module.exports = function createLabels(ps, session, options={}) {
   const extendedColors=extendedLabelColors(options.hostVersion);
   const layerSearch=createLayerSearch(ps,session,captureSelection);
   const textTools=createTextTools(ps,session,captureSelection,creationTree);
+  const layerView=createLayerView(ps,session,captureSelection);
   // A bounded work-planning hint only. Every result still reads and validates
   // current identity/count/locks; this never supplies target capabilities.
   const nativePlan={total:null,single:true};
@@ -357,6 +358,7 @@ module.exports = function createLabels(ps, session, options={}) {
     if(request.command==='text.replace')return textTools.replace(request);
     if(request.command==='text.split')return textTools.split(request);
     if(request.command==='layer.focus')return layerSearch.focus(request);
+    if(request.command==='layer.frame')return layerView.frame(request);
     if(request.command==='layer.thumbnail')throw Error('非静默缩略图已停用，未提交操作');
     if(request.command==='stability.internal')return stability.execute(request,setLabel);
     if(['shape.copyPaint','shape.pastePaint'].includes(request.command))return paintClipboard.execute(request);
@@ -771,7 +773,7 @@ module.exports = function createLabels(ps, session, options={}) {
     return {samples,equivalent:Object.values(samples).every(sample=>signature(sample.value)===signature(samples.dom.value)),
       constant_contract:{layer_kinds:Object.fromEntries(Object.entries(ps.constants.LayerKind))}};
   }
-  return {extendedLabelColors:extendedColors,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
+  return {extendedLabelColors:extendedColors,inspectLayerView:layerView.inspect,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
     if(!nativeSelection)return shapePaint.observe(...args);
     // Only explicit optional editor reads enter a short read-only modal scope.
     // Idle selection polling uses batchPlay and never occupies modal execution.
@@ -2647,4 +2649,89 @@ function createTextTools(ps,session,capture,readTree) {
     catch(error){if(uncertain){const unknown=Error('文字拆分恢复结果待核对');unknown.resultUnknown=true;throw unknown;}throw error;}
   }
   return {read,replace,split,prepareObject,finishObject};
+}
+
+function createLayerView(ps,session,capture) {
+  const property=name=>({_obj:'get',_target:[{_ref:'property',_property:name},{_ref:'document',_enum:'ordinal',_value:'targetEnum'}],_options:{dialogOptions:'silent'}});
+  const number=v=>typeof v==='number'?v:v?._value;
+  async function batch(commands) {
+    const result=await ps.action.batchPlay(commands,{});
+    if(!Array.isArray(result)||result.length!==commands.length||result.some(r=>!r||r._obj==='error'))throw Error('PS聚焦视图命令被拒绝');
+    return result;
+  }
+  async function menus() {
+    const [result]=await batch([{_obj:'get',_target:[{_ref:'property',_property:'menuBarInfo'},{_ref:'application',_enum:'ordinal',_value:'targetEnum'}],_options:{dialogOptions:'silent'}}]);
+    const found=[];
+    function visit(value) {
+      if(!value||typeof value!=='object')return;
+      if(Number.isInteger(value.command)&&typeof value.checked==='boolean') {
+        const name=String(value.name||value.title||'').replace(/&/g,'');
+        if(/^(Layer Edges|图层边缘|Extras|显示额外内容|额外内容)$/i.test(name))found.push({...value,name});
+      }
+      for(const item of Object.values(value))if(item&&typeof item==='object')visit(item);
+    }
+    visit(result);
+    const edge=found.filter(r=>/^(Layer Edges|图层边缘)$/i.test(r.name)),extras=found.filter(r=>/^(Extras|显示额外内容|额外内容)$/i.test(r.name));
+    if(edge.length!==1||extras.length!==1)throw Error('无法核验PS原生图层边缘／额外内容状态');
+    const ids=[edge[0].command,extras[0].command];
+    // menuBarInfo caches checked flags; uiInfo reads the current native state.
+    const states=await batch(ids.map(commandID=>({_obj:'uiInfo',_target:{_ref:'application',_enum:'ordinal',_value:'targetEnum'},command:'getCommandEnabled',commandID})));
+    const live=states.map((r,i)=>{if(r.result?.commandID!==ids[i]||typeof r.result?.checked!=='boolean')throw Error('PS原生边缘实时状态不可用');return {command:ids[i],checked:r.result.checked};});
+    return {edge:live[0],extras:live[1]};
+  }
+  async function view() {
+    const [z,c]=await batch(['zoom','center'].map(property)),zoom=number(z.zoom),x=number(c.center?.horizontal),y=number(c.center?.vertical);
+    if(!Number.isFinite(zoom)||zoom<=0||!Number.isFinite(x)||!Number.isFinite(y))throw Error('无法核验PS视图位置');
+    return {zoom,x,y};
+  }
+  const zoomCommand=zoom=>({_obj:'set',_target:property('zoom')._target,to:{_obj:'zoom',zoom},_options:{dialogOptions:'silent'}});
+  async function inspect() {return {menus:await menus(),view:await view()};}
+  async function frame(request) {
+    return ps.core.executeAsModal(async context=>{
+      const expected=request.target;
+      async function guard() {
+        if(context.isCancelled||Date.now()>request.expires_at_ms)throw Error('聚焦已取消或过期');
+        const target=await capture();
+        if(expected?.session!==session||target.session!==session||target.document_id!==expected.document_id||target.active_layer_id!==expected.active_layer_id||target.layer_ids.join(',')!==expected.layer_ids?.join(','))throw Error('聚焦目标已改变，本次未执行');
+      }
+      await guard();
+      const doc=ps.app.activeDocument,layers=Array.from(doc.activeLayers);
+      if(!layers.length||layers.length>128||layers.map(l=>l.id).sort((a,b)=>a-b).join(',')!==expected.layer_ids.join(','))throw Error('聚焦最多支持128个选中图层');
+      const boxes=[];
+      for(const layer of layers) {
+        if(typeof layer.visible!=='boolean')throw Error('图层可见性无法确认');
+        for(let parent=layer;parent&&parent!==doc;parent=parent.parent)if(parent.visible===false)throw Error('请先显示隐藏的目标图层或父组');
+        const b=layer.boundsNoEffects,rect=['left','top','right','bottom'].map(k=>number(b?.[k]));
+        if(!rect.every(Number.isFinite))throw Error('图层边界无法确认');
+        if(rect[2]>rect[0]&&rect[3]>rect[1])boxes.push(rect);
+      }
+      if(!boxes.length)throw Error('所选图层没有可聚焦的内容边界');
+      const bounds=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];
+      const saved=await inspect();let changed=false;
+      async function toggle(item) {
+        if(!await ps.core.performMenuCommand({commandID:item.command}))throw Error('PS原生边界显示命令不可用');
+      }
+      try {
+        await guard();changed=true;
+        await batch([{_obj:'select',_target:[{_ref:'menuItemClass',_enum:'menuItemType',_value:'fitLayersOnScreen'}],_options:{dialogOptions:'silent'}}]);
+        const fitted=await view(),zoom=Math.max(.0001,Math.min(4,fitted.zoom));
+        if(zoom!==fitted.zoom){await guard();await batch([zoomCommand(zoom)]);}
+        let state=await menus();
+        for(const key of ['extras','edge'])if(!state[key].checked){await guard();await toggle(state[key]);state=await menus();}
+        await guard();const after=await inspect();
+        if(Math.abs(after.view.zoom-zoom)>1e-6||!after.menus.edge.checked||!after.menus.extras.checked||Math.abs(after.view.x/zoom-fitted.x/fitted.zoom)>1||Math.abs(after.view.y/zoom-fitted.y/fitted.zoom)>1)throw Error('聚焦视图或原生边界读回不一致');
+        return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:true};
+      } catch(error) {
+        if(changed)try {
+          await guard();await batch([zoomCommand(saved.view.zoom),{_obj:'set',_target:property('center')._target,to:{_obj:'center',horizontal:{_unit:'distanceUnit',_value:saved.view.x},vertical:{_unit:'distanceUnit',_value:saved.view.y}},_options:{dialogOptions:'silent'}}]);
+          let state=await menus();
+          for(const key of ['edge','extras'])if(state[key].checked!==saved.menus[key].checked){await guard();await toggle(state[key]);state=await menus();}
+          const restored=await inspect();
+          if(Math.abs(restored.view.zoom-saved.view.zoom)>1e-6||Math.abs(restored.view.x-saved.view.x)>1||Math.abs(restored.view.y-saved.view.y)>1||restored.menus.edge.checked!==saved.menus.edge.checked||restored.menus.extras.checked!==saved.menus.extras.checked)throw Error('View restore mismatch');
+        } catch(_){error.resultUnknown=true;}
+        throw error;
+      }
+    },{commandName:'聚焦所选图层',timeOut:0});
+  }
+  return {inspect,frame};
 }

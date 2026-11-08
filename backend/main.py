@@ -523,7 +523,7 @@ class Application(web.Application):
             from .commands import CAPS_ACTIONS
             if name in CAPS_ACTIONS and not isinstance(self.bridge,UxpBridge):
                 raise ValueError("参考Caps快捷键需要更新并重载UXP 0.3.16")
-            if name in ('shape.paint','shape.copyPaint','shape.pastePaint') and not isinstance(self.bridge,UxpBridge):raise ValueError('形状颜色需要UXP执行插件')
+            if name in ('layer.frame','shape.paint','shape.copyPaint','shape.pastePaint') and not isinstance(self.bridge,UxpBridge):raise ValueError('形状颜色需要UXP执行插件')
             if name=='editStyle' and not args.get('_wait_for_dialog'):
                 if self._dialog_tasks or self.operation_lock.locked() or self.bridge.busy:
                     raise RuntimeError('请先结束当前操作或关闭图层样式窗口')
@@ -557,6 +557,7 @@ class Application(web.Application):
                     if not self.bridge.busy:
                         await self.broadcast({"type":"operation","busy":True,"action":name})
                     await asyncio.to_thread(self.desktop.require_action_focus)
+                    frame_input=await asyncio.to_thread(self.desktop.require_layer_frame,args.get('input_guard')) if name=='layer.frame' else None
                     if name in ('moveToTop','moveToBottom','moveUp','moveDown','moveDocumentTop','moveDocumentBottom'):
                         await asyncio.to_thread(self.desktop.require_move_context,name)
                     async with self.panel_lock:
@@ -569,6 +570,7 @@ class Application(web.Application):
                             frozen_target['active_layer_id']=(snapshot.get('shape_editor',{}).get('active_layer_id') if name in ('shape.paint','shape.pastePaint') and snapshot.get('shape_editor',{}).get('mask_batch') else snapshot['layer_ids'][0])
                     async def before_dispatch(target):
                         async with self.panel_lock:
+                            if name=='layer.frame':await asyncio.to_thread(self.desktop.require_layer_frame,frame_input,reserved=True)
                             if name in ('moveToTop','moveToBottom','moveUp','moveDown','moveDocumentTop','moveDocumentBottom'):
                                 await asyncio.to_thread(self.desktop.require_move_context,name)
                             if 'menu_epoch' in args and args['menu_epoch'] != self.desktop.menu_epoch:
