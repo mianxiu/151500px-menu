@@ -245,7 +245,7 @@ int main(int argc,char** argv) {
         check(GetKeyboardLayout(0)==layout,"policy changed keyboard profile");
         SendMessageW(policyCanvas,WM_LBUTTONDOWN,0,0);
         check(associated(policyCanvas)==nullptr && focusCount==1,"mouse down released policy protection");
-        for(int key:{int('T'),int(VK_RETURN),int(VK_F2)})SendMessageW(policyCanvas,WM_KEYDOWN,key,0);
+        for(int key:{int('T'),int(VK_RETURN),int(VK_F2)}){SendMessageW(control,controlMessage,(12345<<8)|6,0);SendMessageW(policyCanvas,WM_KEYDOWN,key,0);}
         check(associated(policyCanvas)==nullptr && focusCount==1,"edit key released policy protection");
         deadline=GetTickCount64()-1;forceForeground(fixture);SetFocus(policyCanvas);SendMessageW(control,WM_TIMER,1,0);
         check(associated(policyCanvas)==nullptr && focusCount==1,"policy lease expiry released protection");
@@ -284,6 +284,35 @@ int main(int argc,char** argv) {
         SetFocus(policyCanvas);check(associated(policyCanvas)==nullptr,"policy off precondition");
         check((policy(0)&0x300)==0 && !focusPolicy && focusCount==0 && associated(policyCanvas)==policyForeignContext,"policy disable did not confirm restoration");
         check((policy(1)&0x100) && associated(policyCanvas)==nullptr,"policy re-enable persistence");
+        {
+            WNDCLASSW hostClass{};hostClass.lpfnWndProc=DefWindowProcW;hostClass.hInstance=module;hostClass.lpszClassName=frameEndpointClass;RegisterClassW(&hostClass);
+            const auto host=CreateWindowW(frameEndpointClass,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,module,nullptr);
+            SetPropW(host,frameOwnerProp,reinterpret_cast<HANDLE>(ULONG_PTR(GetCurrentProcessId())));
+            check(configureFrameHost(host),"F endpoint binding failed");
+            typeToolKnown=true;typeToolActive=false;frameLayerClick=nullptr;
+            check(frameNonInput(),"known canvas non-input F not eligible");
+            check(frameKeyboard(HC_ACTION,'F',1)==1 && frameKeyOwned,"F down not owned");
+            const auto id=framePressId;
+            check(frameKeyboard(HC_ACTION,'F',0x40000001)==1 && framePressId==id,"F repeat submitted twice");
+            check(frameKeyboard(HC_ACTION,'F',0xc0000001)==1 && !frameKeyOwned,"F up not drained");
+            SetFocus(edit);check(!frameNonInput() && !frameKeyboard(HC_ACTION,'F',1),"F input was swallowed");SetFocus(policyCanvas);
+            compositionActive=true;check(!frameNonInput(),"composition eligible for F");compositionActive=false;
+            WNDCLASSW paletteClass{};paletteClass.lpfnWndProc=DefWindowProcW;paletteClass.hInstance=module;paletteClass.lpszClassName=L"OWL.Palette";RegisterClassW(&paletteClass);
+            const auto palette=CreateWindowW(L"OWL.Palette",L"",WS_CHILD|WS_VISIBLE,0,0,200,200,fixture,nullptr,module,nullptr);
+            const auto list=CreateWindowW(L"PSViewC",L"",WS_CHILD|WS_VISIBLE,0,0,100,100,palette,nullptr,module,nullptr);
+            HWND fields[5]{};int n=0;
+            for(auto value:{std::pair<const wchar_t*,int>{L"ComboBox",2490},{L"ComboBox",2493},{L"Edit",6093},{L"Edit",6097},{L"ScrollBar",6098}})
+                fields[n++]=CreateWindowW(value.first,L"",WS_CHILD|WS_VISIBLE,0,0,10,10,palette,reinterpret_cast<HMENU>(INT_PTR(value.second)),module,nullptr);
+            check(frameLayerList(list) && !canvasTarget(list),"Layers PSViewC confused with text canvas");
+            SetFocus(list);typeToolActive=true;SendMessageW(list,WM_LBUTTONDOWN,0,0);
+            check(!canvasTextEditing && frameNonInput(),"type-tool Layers click entered canvas text editing");
+            DestroyWindow(fields[4]);check(!frameLayerList(list),"incomplete Layers signature accepted");
+            SetFocus(policyCanvas);typeToolActive=false;frameLayerClick=nullptr;DestroyWindow(palette);
+            DestroyWindow(host);
+            check(frameKeyboard(HC_ACTION,'F',1)==1 && frameKeyOwned,"failed notification leaked native F");
+            frameKeyboard(HC_ACTION,'F',0xc0000001);check(!frameKeyOwned,"failed notification pair not drained");
+            configureFrameHost(nullptr);
+        }
         // Canvas text editing: type-tool click, double-click, and Enter restore
         // before PS handles the message; Esc/Ctrl+Enter/numpad Enter post the
         // disable; a composition keeps the first Esc local; UXP corrections are

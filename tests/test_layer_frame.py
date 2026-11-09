@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock,patch
 
 from backend.layer_frame import FramePreview
 
@@ -37,3 +38,10 @@ class FramePreviewTests(unittest.IsolatedAsyncioTestCase):
         preview.publish=stopped.set
         await preview.pump(SimpleNamespace(hook_health=None,_scope=lambda:False),stopped)
         self.assertEqual(preview.phase,'cancel')
+
+    async def test_healthy_hold_has_no_thirty_second_expiry(self):
+        preview=FramePreview(12);stopped=asyncio.Event();preview.publish=stopped.set
+        desktop=SimpleNamespace(hook_health=(31,dict(frame_id=12,frame_phase=0)),_scope=lambda:True)
+        with patch('backend.layer_frame.time',SimpleNamespace(monotonic=Mock(side_effect=[0,31,31]))):
+            await preview.pump(desktop,stopped)
+        self.assertEqual(preview.phase,'preview')

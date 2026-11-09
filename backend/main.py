@@ -553,9 +553,9 @@ class Application(web.Application):
                 raise ValueError('无效的颜色返回菜单请求')
             if not self.desktop:
                 raise RuntimeError("无桌面模式不提供图层操作")
+            frame_context=self.desktop.frame_input_context(args.get('frame_id'),args.get('input_guard')) if name=='layer.frame' else None
             if self.operation_lock.locked() or self.bridge.busy:
                 raise RuntimeError("操作进行中，请等待完成后重新选择；本次操作未接受")
-            frame_context=self.desktop.input_focus.shortcut_context() if name=='layer.frame' and self.desktop.input_focus else None
             frame_preview=None;frame_publisher=None;frame_stopped=asyncio.Event()
             if name=='layer.frame' and 'frame_id' in args:
                 from .layer_frame import FramePreview

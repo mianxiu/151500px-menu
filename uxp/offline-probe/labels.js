@@ -2687,7 +2687,8 @@ function createLayerView(ps,session,capture) {
   const zoomCommand=zoom=>({_obj:'set',_target:property('zoom')._target,to:{_obj:'zoom',zoom},_options:{dialogOptions:'silent'}});
   async function inspect() {return {menus:await menus(),view:await view()};}
   async function frame(request,io) {
-    return ps.core.executeAsModal(async context=>{
+    let finishPreview=null,rollback=null;
+    const prepared=await ps.core.executeAsModal(async context=>{
       const expected=request.target;
       async function documentGuard() {
         const target=await capture();
@@ -2752,6 +2753,8 @@ function createLayerView(ps,session,capture) {
         if(zoom!==fitted.zoom){await guard();await batch([zoomCommand(zoom)]);}
         await display(true,true);await guard();const after=await inspect();
         if(Math.abs(after.view.zoom-zoom)>1e-6||!after.menus.edge.checked||!after.menus.extras.checked||Math.abs(after.view.x/zoom-fitted.x/fitted.zoom)>1||Math.abs(after.view.y/zoom-fitted.y/fitted.zoom)>1)throw Error('聚焦视图或原生边界读回不一致');
+        rollback=()=>ps.core.executeAsModal(async()=>{await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);},{commandName:'恢复聚焦视图',timeOut:0});
+        finishPreview=async()=>{
         const shown=Date.now();
         if(io)await io.applied({seq,view:after.view,native_layer_edges:true});
         do {
@@ -2761,16 +2764,23 @@ function createLayerView(ps,session,capture) {
           if(phase==='cancel'||phase==='commit'&&Date.now()-shown>=500)break;
           await new Promise(resolve=>setTimeout(resolve,40));
         } while(true);
+        await ps.core.executeAsModal(async()=>{
         if(phase==='cancel')await restoreView();
         // F is a temporary highlight, including when upgrading from persistent 319 edges.
         await display(false,(await menus()).extras.checked && saved.menus.extras.checked);
+        },{commandName:'结束临时聚焦',timeOut:0});
         return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:false,view_restored:phase==='cancel',cancelled:phase==='cancel'};
+        };return null;
       } catch(error) {
         if(changed)try {await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);}
         catch(_){error.resultUnknown=true;}
         throw error;
       }
-    },{commandName:'聚焦所选图层',timeOut:0,...(io?{interactive:true}:{})});
+    },{commandName:'聚焦所选图层',timeOut:0});
+    if(!finishPreview)return prepared;
+    // Native layer edges paint after the modal exits; holding F keeps this same request open.
+    try{return await finishPreview();}
+    catch(error){try{await rollback();}catch(_){error.resultUnknown=true;}throw error;}
   }
   return {inspect,frame};
 }

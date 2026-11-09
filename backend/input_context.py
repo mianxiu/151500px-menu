@@ -8,8 +8,9 @@ from .paths import resource_root,runtime_dir
 
 
 class NativeImeContext:
-    def __init__(self,user):
+    def __init__(self,user,frame_host=None):
         self.user=user;self.hooks={};self.controls={};self.library=None
+        self.frame_host=frame_host;self.frame_bindings={};self.frame_rejected={}
         self.user.RegisterWindowMessageW.argtypes=[W.LPCWSTR];self.user.RegisterWindowMessageW.restype=W.UINT
         self.user.GetPropW.argtypes=[W.HWND,W.LPCWSTR];self.user.GetPropW.restype=W.HANDLE
         self.user.SetWindowsHookExW.argtypes=[ctypes.c_int,ctypes.c_void_p,W.HINSTANCE,W.DWORD];self.user.SetWindowsHookExW.restype=W.HANDLE
@@ -70,6 +71,24 @@ class NativeImeContext:
         if not sample.get('root'):return value
         window=self.control(sample)
         if not window:return value
+        if getattr(self,'frame_host',None):
+            host=self.frame_host();previous=self.frame_bindings.get(window)
+            if isinstance(previous,tuple):
+                wanted=previous[1]
+                if (self.user.GetPropW(window,'PhotoshopMenu.FrameKey.Host.v1') or 0)!=wanted:
+                    raise RuntimeError('PS线程F配置结果待核对，不重复发送')
+                self.frame_bindings[window]=wanted
+            if self.frame_bindings.get(window)!=host:
+                if getattr(self,'frame_rejected',{}).get(window)==host:raise RuntimeError('PS线程F接管已拒绝，请正常重启PS')
+                self.frame_bindings[window]=('pending',host)
+                self.command(window,9,host)
+                actual=self.user.GetPropW(window,'PhotoshopMenu.FrameKey.Host.v1') or 0
+                if actual!=host:
+                    self.frame_bindings[window]=actual
+                    if not hasattr(self,'frame_rejected'):self.frame_rejected={}
+                    self.frame_rejected[window]=host
+                    raise RuntimeError('PS线程F接管未确认，请正常重启PS')
+                self.frame_bindings[window]=host
         status=self.command(window,1,sample['focus'])
         if not status&1 or status&8:raise RuntimeError('PS输入上下文恢复待核对')
         tick=self.user.GetPropW(window,'PhotoshopMenu.InputContext.PolicyTick.v1') or 0

@@ -48,8 +48,7 @@ class FramePreview:
             if health and health[1].get('frame_id') == self.identity:
                 phase = health[1].get('frame_phase')
                 if phase in (1, 2):self.finish(phase == 2)
-            if (time.monotonic()-started > 30 or
-                    time.monotonic()-started > 4 and (not health or time.monotonic()-health[0] > 3.5 or health[1].get('frame_id') != self.identity) or
+            if (time.monotonic()-started > 4 and (not health or time.monotonic()-health[0] > 3.5 or health[1].get('frame_id') != self.identity) or
                     not await asyncio.to_thread(desktop._scope)):
                 self.finish(True)
             # Publication failure stops lease renewal; PS restores the original view.

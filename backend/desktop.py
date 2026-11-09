@@ -178,6 +178,7 @@ class Desktop:
         self.message = "桌面功能未启动"
         self.native = None
         self.hook_health=None
+        self.frame_host=0;self.frame_grants={};self.frame_grant_lock=threading.Lock()
         self.hotkey_events=deque(maxlen=64)
         self.hook_generation=0
         self.native_lock = threading.Lock()
@@ -389,6 +390,8 @@ class Desktop:
                     self.hotkey_events.append(key_evidence(event))
                 if event.get("type") == "ready":
                     self.message = "C++ / Win32 原生热键 · 仅 Photoshop 前台生效"
+                    self.frame_host=event.get('frame_hwnd',0)
+                    with self.frame_grant_lock:self.frame_grants.clear()
                     self.ready.set()
                     if self.input_focus:self.input_focus.invalidate(event.get('input_epoch',0))
                 elif event.get('type') == 'input.verify':
@@ -411,6 +414,10 @@ class Desktop:
                     if self.input_focus:self.input_focus.edit_end(event.get('input_epoch'))
                 elif event.get("type") == "action":
                     logging.info('Native hook action: %s cursor=%s', event['action'], event.get('cursor'))
+                    if event.get('action')=='layer.frame' and event.get('native_non_input') is True:
+                        with self.frame_grant_lock:
+                            self.frame_grants[event.get('frame_id')]=dict(event.get('input_guard') or {})
+                            while len(self.frame_grants)>8:self.frame_grants.pop(next(iter(self.frame_grants)))
                     args={key:event[key] for key in ('action','cursor','input_guard','frame_id') if key in event}
                     self.notify(args if len(args)>1 else event['action'])
                 elif event.get('type') == 'trigger.trace':
@@ -652,6 +659,11 @@ class Desktop:
                 raise RuntimeError('正在编辑输入框，请先退出输入再执行图层操作')
             if panel['kind'] == 'home' and not allow_home:
                 raise RuntimeError('当前为 Photoshop 首页，请进入文档后执行图层操作')
+
+    def frame_input_context(self,identity,guard):
+        with self.frame_grant_lock:grant=self.frame_grants.pop(identity,None)
+        if grant and grant==guard:return {'state':'non-input',**grant}
+        return self.input_focus.shortcut_context() if self.input_focus else None
 
     @window_transition
     def require_layer_frame(self, input_guard=None, reserved=False, accepted=None):

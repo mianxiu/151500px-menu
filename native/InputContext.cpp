@@ -199,6 +199,7 @@ static void policyChanged(DWORD reason,HWND window=nullptr) {
         recordPolicyTrace(action,reason,window);
     }
 }
+static bool frameLayerList(HWND window);
 static bool protectedFocus(HWND window) {
     if(!window || !root || !IsWindow(window))return false;
     if(window==root)return true;
@@ -206,7 +207,7 @@ static bool protectedFocus(HWND window) {
     // A PSViewC inside a floating dialog (PSFloatC) is a different top-level
     // window and must keep its IME; only the canvas below the verified PS root
     // counts as a non-input shortcut target.
-    return wcscmp(name,L"PSViewC")==0 && GetAncestor(window,GA_ROOT)==root;
+    return wcscmp(name,L"PSViewC")==0 && (GetAncestor(window,GA_ROOT)==root || frameLayerList(window));
 }
 static int focusIndex(HWND window) {
     for(int i=0;i<focusCount;++i)if(focusEntries[i].window==window)return i;
@@ -265,7 +266,7 @@ static bool canvasTarget(HWND window) {
     if(!window || !root || !IsWindow(window))return false;
     if(GetAncestor(window,GA_ROOT)!=root)return false;
     wchar_t name[64]{};GetClassNameW(window,name,64);
-    return wcscmp(name,L"PSViewC")==0;
+    return wcscmp(name,L"PSViewC")==0 && !frameLayerList(window);
 }
 // Restore the canvas association synchronously, before PS handles the message
 // that enters text editing. focusCount>0 means our policy currently owns it.
@@ -441,15 +442,18 @@ static LRESULT state(HWND focus) {
     value|=LRESULT(entryPending?1:0)<<36;
     return value;
 }
+#include "InputContextFrame.h"
 static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
     if(message==controlMessage && (wParam>>8)==nonce) {
         const auto focus=reinterpret_cast<HWND>(lParam);const auto operation=wParam&255;
+        if(operation==9){configureFrameHost(focus);return state(GetFocus());}
+        if(operation==10){if(framePressId==static_cast<ULONGLONG>(lParam)){frameKeyOwned=false;frameDrainUp=true;}return state(GetFocus());}
         if(operation==3){restore();restoreFocus(PolicyOff);clearCanvasState(CanvasNone);return state(focus);}
         if(operation==1)return state(focus);
         if(operation==6) {
             // Background push: current tool is a type tool (horizontal,
             // vertical or mask variant). Stored only; no window is touched.
-            typeToolActive=lParam!=0;typeToolKnown=true;
+            typeToolActive=lParam!=0;typeToolKnown=true;frameTypePending=false;
             return state(GetFocus());
         }
         if(operation==7) {
@@ -458,6 +462,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
         }
         if(operation==8) {
             const bool enter=(lParam&1)!=0;
+            if(enter)frameLayerClick=nullptr;
             canvasCorrect(enter,static_cast<ULONGLONG>(lParam)>>1);
             return state(GetFocus());
         }
@@ -472,7 +477,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
                     // A lease from the previous mechanism is restored before the
                     // policy takes over; no pending request is reissued here.
                     if(!restore())return state(GetFocus())|8;
-                    focusPolicy=true;policyRestoreFailed=false;
+                    focusPolicy=true;policyRestoreFailed=false;frameTypePending=false;
                     clearCanvasState(CanvasNone);typeToolKnown=false;
                     policyChanged(PolicyEnable);
                     const auto target=GetFocus();
@@ -505,6 +510,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
     }
     if(message==contextChangedMessage){verifyContext();return 0;}
     if(message==WM_TIMER) {
+        if(frameKeyOwned && !(GetAsyncKeyState('F')&0x8000))frameEnd(true,true);
         const bool exited=!owner || WaitForSingleObject(owner,0)!=WAIT_TIMEOUT;
         if(focusPolicy) {
             if(exited) {
@@ -529,6 +535,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
         return 0;
     }
     if(message==WM_DESTROY) {
+        frameEnd(true);frameHost=nullptr;
         focusPolicy=false;
         clearCanvasState(CanvasNone);
         typeToolActive=false;typeToolKnown=false;
@@ -585,9 +592,9 @@ static void canvasInputMessage(const CWPSTRUCT& event) {
     if(!canvasTextEditing) {
         if(!canvasTarget(event.hwnd) || !focusCount)return;
         const bool control=canvasControlHeld(),alt=canvasAltHeld();
-        if(event.message==WM_LBUTTONDOWN && typeToolActive)canvasEntry(event.hwnd,CanvasClickText);
+        if(event.message==WM_LBUTTONDOWN && (typeToolActive || frameTypePending))canvasEntry(event.hwnd,CanvasClickText);
         else if(event.message==WM_LBUTTONDBLCLK)canvasEntry(event.hwnd,CanvasDoubleClick);
-        else if(event.message==WM_KEYDOWN && event.wParam==VK_RETURN && typeToolActive && !control && !alt)
+        else if(event.message==WM_KEYDOWN && event.wParam==VK_RETURN && (typeToolActive || frameTypePending) && !control && !alt)
             canvasEntry(event.hwnd,CanvasEnterText);
         return;
     }
@@ -607,6 +614,7 @@ static void canvasInputMessage(const CWPSTRUCT& event) {
     }
 }
 static void observeMessage(const CWPSTRUCT& event) {
+        frameInputChanged(event);
         if((disabledWindow || focusPolicy) && event.message==WM_ACTIVATEAPP && !event.wParam)
             menuHandoff=ownMenuThread(DWORD(event.lParam)) || ownMenu(GetForegroundWindow());
         if(focusPolicy && event.message==WM_ACTIVATEAPP && event.wParam && !ownMenu(GetForegroundWindow()))menuHandoff=false;
@@ -704,7 +712,11 @@ extern "C" __declspec(dllexport) DWORD WINAPI InputContextOwner() {
 }
 extern "C" __declspec(dllexport) LRESULT CALLBACK InputContextQueueHook(int code,WPARAM wParam,LPARAM lParam) {
     if(code>=0 && wParam==PM_REMOVE) {
-        const auto& message=*reinterpret_cast<MSG*>(lParam);
+        auto& message=*reinterpret_cast<MSG*>(lParam);
+        if(message.wParam=='F' && (message.message==WM_KEYDOWN || message.message==WM_KEYUP || message.message==WM_SYSKEYDOWN || message.message==WM_SYSKEYUP) &&
+           frameKeyboard(HC_ACTION,message.wParam,message.lParam,message.time)) {
+            message.message=WM_NULL;message.wParam=message.lParam=0;
+        }
         const CWPSTRUCT event{message.lParam,message.wParam,message.message,message.hwnd};
         observeMessage(event);
     }

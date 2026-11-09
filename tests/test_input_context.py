@@ -65,6 +65,23 @@ class NativeContextTransportTests(unittest.TestCase):
         self.assertTrue(result['tsf_disabled']);self.assertEqual(result['context_revision'],123)
         value.command.assert_called_once_with(7,1,2)
 
+    def test_frame_endpoint_binding_is_confirmed_once_and_rebound_after_restart(self):
+        value=self.context();value.control=Mock(return_value=7);value.frame_host=lambda:77;value.frame_bindings={}
+        value.user.GetPropW=Mock(side_effect=lambda window,name:77 if name.endswith('FrameKey.Host.v1') else 123)
+        value.read({'root':1,'focus':2,'state':'unknown'});value.read({'root':1,'focus':2,'state':'unknown'})
+        self.assertEqual([c.args for c in value.command.call_args_list],[(7,9,77),(7,1,2),(7,1,2)])
+        value.frame_host=lambda:88
+        with self.assertRaisesRegex(RuntimeError,'接管未确认'):value.read({'root':1,'focus':2,'state':'unknown'})
+        self.assertEqual(value.frame_bindings[7],77)
+
+    def test_frame_binding_timeout_is_not_republished(self):
+        value=self.context();value.control=Mock(return_value=7);value.frame_host=lambda:77;value.frame_bindings={}
+        value.command.side_effect=OSError('timeout');value.user.GetPropW.return_value=0
+        with self.assertRaises(OSError):value.read({'root':1,'focus':2})
+        self.assertEqual(value.frame_bindings[7],('pending',77))
+        with self.assertRaisesRegex(RuntimeError,'不重复发送'):value.read({'root':1,'focus':2})
+        self.assertEqual(value.command.call_count,1)
+
     def test_reading_or_changed_layout_cannot_renew_unowned_context(self):
         value=self.context();owned={'identity':[1,2,'time',3],'layout':4,'ime':5,'focus':6,'context_nonce':7}
         for sample in ({**owned,'state':'outside'},{**owned,'state':'unknown'},{**owned,'state':'non-input','layout':8},{**owned,'state':'non-input','context_nonce':8}):value.renew(owned,sample)

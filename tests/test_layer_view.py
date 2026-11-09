@@ -39,4 +39,12 @@ class LayerFrameGuardTests(unittest.TestCase):
   with self.assertRaises(RuntimeError):self.desktop.require_layer_frame(self.guard,accepted=accepted)
   sample['state']='unknown';self.desktop.input_focus.native_epoch=4
   with self.assertRaises(RuntimeError):self.desktop.require_layer_frame(self.guard,accepted=accepted)
+ def test_native_receipt_is_single_use_and_does_not_reclassify_input_cache(self):
+  self.desktop.frame_grants={12:dict(self.guard)};self.desktop.frame_grant_lock=threading.Lock();self.context['state']='unknown'
+  self.assertEqual(self.desktop.frame_input_context(12,self.guard),{'state':'non-input',**self.guard})
+  self.assertEqual(self.desktop.frame_input_context(12,self.guard)['state'],'unknown')
+  self.assertEqual(self.context['state'],'unknown')
+  self.desktop.frame_grants[13]=dict(self.guard)
+  self.assertEqual(self.desktop.frame_input_context(13,{**self.guard,'epoch':4})['state'],'unknown')
+  self.assertNotIn(13,self.desktop.frame_grants)
 if __name__=='__main__':unittest.main()

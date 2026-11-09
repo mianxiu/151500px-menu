@@ -423,7 +423,7 @@ class InputMethod(InputLanguage):
                 logging.exception('IME input observer initialization failed')
             self.report.update(uia_available=self.accessibility is not None,tool_reads=0)
             old_context=self.context_schema==1 and bool(self.policy.owned or self.policy.pending)
-            if not old_context:self.ime=NativeImeContext(self.user);self.context_schema=2
+            if not old_context:self.ime=NativeImeContext(self.user,lambda:getattr(self.desktop,'frame_host',0) if self.desktop.settings['enabled'] else 0);self.context_schema=2
             self.report['mechanism']='open-close-recovery' if old_context else 'ps-thread-context-association'
             examined=None;tool=None;context_before=None;episode=0;blocked_before=False;retry_after=0
             revision_before=None;next_tool_check=0;recovering=False;recovery_after=0;stable=None;stable_at=0
@@ -596,7 +596,7 @@ class InputMethod(InputLanguage):
                     if saved!=persisted:atomic_json(path,saved);persisted=json.loads(json.dumps(saved))
                     self.complete_verification(sample,serial)
                     if old_context and not self.policy.owned and not self.policy.pending:
-                        self.ime=NativeImeContext(self.user);self.context_schema=2;old_context=False;examined=None
+                        self.ime=NativeImeContext(self.user,lambda:getattr(self.desktop,'frame_host',0) if self.desktop.settings['enabled'] else 0);self.context_schema=2;old_context=False;examined=None
                         self.report['mechanism']='ps-thread-context-association'
                     self.report.pop('error_type',None);self.report.pop('native_error_code',None)
                 except Exception as error:

@@ -13,11 +13,12 @@
 #include <utility>
 #include <vector>
 #include "ScreenSample.h"
+#include "FrameKeyProtocol.h"
 
 enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers, FrameCommit, FrameRestore };
 static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame", "layer.frame.commit", "layer.frame.restore"};
 struct Binding { Action action=None; std::array<int,6> keys{}; int count=0; };
-struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false; HWND overlay=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true; };
+struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false; HWND overlay=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; };
 // Opt-in remote clicks qualify only on a matching release in the same verified
 // PS workspace. No hover, taskbar or injected Alt+Tab activation is added.
 struct RemoteClickIntent {
@@ -37,7 +38,7 @@ static int alias(int key) {
 }
 struct KeyMachine {
     std::array<bool,256> physical{}, held{}, consumed{};
-    int pending=-1; bool used=false,searchConsumed=false;
+    int pending=-1; bool used=false,searchConsumed=false,frameNative=false;
     ULONGLONG pressTime=0,frameId=0,frameStart=0; int framePhase=2;
     void cancelGesture() { pending=-1; used=true; }
     void seed(int raw) { physical[raw]=held[alias(raw)]=true; }
@@ -83,7 +84,7 @@ struct KeyMachine {
         // reinterpret it after focus, modifiers or configuration changes.
         if (down && repeated) return consumed[key];
         if (!scope || !down) return down && consumed[key];
-        if(key==VK_ESCAPE && consumed['F'] && !searchConsumed && framePhase==0){framePhase=2;consumed[key]=true;action=FrameRestore;return true;}
+        if(key==VK_ESCAPE && (consumed['F'] || frameNative) && !searchConsumed && framePhase==0){framePhase=2;consumed[key]=true;action=FrameRestore;return true;}
         // PS-owned dialogs reserve CapsLock without launching commands or
         // interfering with Tab/navigation/input in the dialog.
         if (reserveOnly) {
@@ -91,10 +92,11 @@ struct KeyMachine {
                 if (b.keys[i]==VK_CAPITAL) {consumed[key]=true;return true;}
             return false;
         }
+        if(key=='F' && cfg.frameThread && !modified() && !held[VK_CAPITAL] && !visible)return false;
         if(key=='F' && (held[VK_CONTROL] || !visible) && !held[VK_SHIFT] && !held[VK_MENU] && !held[VK_LWIN] && !held[VK_RWIN] && !held[VK_CAPITAL]) {
             if(!cfg.searchAllowed || cfg.textInput || !cfg.evidenceFresh || (cfg.colorEditor && visible))return false;
             consumed[key]=true;searchConsumed=held[VK_CONTROL];action=searchConsumed?SearchLayers:FrameLayers;
-            if(!searchConsumed){frameId=now>frameId?now:frameId+1;frameStart=now;framePhase=0;}return true;
+            if(!searchConsumed){frameId=now>frameId?now:frameId+1;frameStart=now;framePhase=0;frameNative=false;}return true;
         }
         const Binding* match=nullptr;
         bool tabPrefix=false;
@@ -161,6 +163,18 @@ static Config inputEvidence;
 static SRWLOCK inputEvidenceLock=SRWLOCK_INIT;
 static ULONGLONG diagnosticUntil=0;
 static KeyMachine keys;
+static HWND frameEndpoint=nullptr,nativeFrameControl=nullptr;
+static DWORD frameParent=0;
+static ULONGLONG nativeFrameId=0,nativeFrameCommonId=0;
+static UINT frameBeginMessage=0,frameCommitMessage=0,frameRestoreMessage=0,frameReleaseMessage=0;
+static bool frameRawReleased=false,frameLastUpKnown=false;
+static DWORD frameLastUpTime=0;
+struct PassedFrameKey {DWORD time=0;HWND root=nullptr;bool plain=false,used=true;};
+static std::array<PassedFrameKey,64> passedFrameKeys{};static unsigned passedFrameCursor=0;
+static bool claimPassedFrame(DWORD time,HWND root) {
+    for(auto& value:passedFrameKeys)if(!value.used && value.time==time && value.root==root){value.used=true;return value.plain;}
+    return false;
+}
 static HWND target=nullptr;
 static bool dismissPending=false;
 static std::array<bool,3> mouseConsumed{};
@@ -294,7 +308,7 @@ struct InvocationGate {
     HookEvent reveal(){shown=true;return begin;}
     DWORD wait() const {return due()?0:250;}
 };
-static void emit(Action action,HWND hwnd=nullptr,HWND root=nullptr) {
+static void emit(Action action,HWND hwnd=nullptr,HWND root=nullptr,bool nativeFrame=false) {
     if (action==None) return;
     unsigned next=(head.load(std::memory_order_relaxed)+1)%queue.size();
     if (next==tail.load(std::memory_order_acquire)) {droppedEvents.fetch_add(1,std::memory_order_relaxed);return;}
@@ -303,6 +317,8 @@ static void emit(Action action,HWND hwnd=nullptr,HWND root=nullptr) {
     queue[head.load(std::memory_order_relaxed)]={action,hwnd,root,cursor};
     queue[head.load(std::memory_order_relaxed)].inputEpoch=inputEpoch;
     queue[head.load(std::memory_order_relaxed)].frameId=keys.frameId;
+    queue[head.load(std::memory_order_relaxed)].guardAllowed=nativeFrame;
+    if(action==FrameLayers && frameEndpoint){SetPropW(frameEndpoint,frameActiveProp,reinterpret_cast<HANDLE>(keys.frameId));SetPropW(frameEndpoint,frameActiveRootProp,root);}
     if(action==Configured)queue[head.load(std::memory_order_relaxed)].gapMs=config.sequence;
     if(action==HoldBegin){queue[head.load(std::memory_order_relaxed)].gapMs=GetTickCount64();GetCursorPos(&intentOrigin);queue[head.load(std::memory_order_relaxed)].cursor=intentOrigin;intentRevealed=false;}
     head.store(next,std::memory_order_release); SetEvent(available);
@@ -581,6 +597,71 @@ static bool searchInputAllowed(const Config& cfg,HWND foreground) {
     if(wcscmp(name,L"Edit")==0 || wcscmp(name,L"RichEdit20W")==0 || wcscmp(name,L"RichEdit50W")==0 || wcscmp(name,L"ComboBox")==0)return false;
     return searchContextMatches(cfg,root,focus,inputEpoch);
 }
+static void finishNativeFrame() {
+    if(nativeFrameControl && IsWindow(nativeFrameControl)) {
+        const auto nonce=reinterpret_cast<ULONG_PTR>(GetPropW(nativeFrameControl,L"PhotoshopMenu.InputContext.Nonce.v1"));
+        const auto message=RegisterWindowMessageW(L"PhotoshopMenu.InputContext.Control.v1");
+        if(nonce && message)PostMessageW(nativeFrameControl,message,(nonce<<8)|10,LPARAM(nativeFrameId));
+    }
+    nativeFrameControl=nullptr;nativeFrameId=nativeFrameCommonId=0;keys.frameNative=false;
+}
+static void observedFrameRelease() {
+    if(keys.framePhase!=0 || !keys.frameId)return;
+    frameRawReleased=true;keys.physical['F']=keys.held['F']=false;
+    keys.framePhase=photoshopKeyScope(GetForegroundWindow()) && GetTickCount64()-keys.frameStart<250?1:2;
+    finishNativeFrame();emit(keys.framePhase==1?FrameCommit:FrameRestore);
+}
+static LRESULT CALLBACK frameProcedure(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
+    if(message==WM_INPUT) {
+        RAWINPUT input{};UINT bytes=sizeof(input);
+        if(GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam),RID_INPUT,&input,&bytes,sizeof(RAWINPUTHEADER))!=UINT(-1) &&
+           input.header.dwType==RIM_TYPEKEYBOARD && input.data.keyboard.VKey=='F' && (input.data.keyboard.Flags&RI_KEY_BREAK) &&
+           static_cast<int32_t>(DWORD(GetMessageTime())-DWORD(keys.frameStart))>=0)observedFrameRelease();
+        return DefWindowProcW(window,message,wParam,lParam);
+    }
+    if(message==frameReleaseMessage && wParam==keys.frameId && keys.framePhase==0) {
+        const HWND control=reinterpret_cast<HWND>(lParam);wchar_t name[64]{};GetClassNameW(control,name,64);
+        if(wcscmp(name,L"PhotoshopMenu.InputContext.v1")==0 && GetPropW(control,frameHostProp)==frameEndpoint && GetPropW(control,frameRootProp)==GetPropW(frameEndpoint,frameActiveRootProp) &&
+           reinterpret_cast<ULONG_PTR>(GetPropW(control,L"PhotoshopMenu.InputContext.Owner.v1"))==frameParent &&
+           static_cast<int32_t>(DWORD(reinterpret_cast<ULONG_PTR>(GetPropW(control,frameReleaseTimeProp)))-DWORD(keys.frameStart))>=0)observedFrameRelease();
+        return 0;
+    }
+    if(message==frameBeginMessage || message==frameCommitMessage || message==frameRestoreMessage) {
+        const HWND control=reinterpret_cast<HWND>(lParam);
+        if(message!=frameBeginMessage) {
+            if(control==nativeFrameControl && wParam==nativeFrameId && keys.frameId==nativeFrameCommonId) {
+                if(reinterpret_cast<ULONGLONG>(GetPropW(control,frameReleasedProp))==nativeFrameId){keys.physical['F']=keys.held['F']=false;frameRawReleased=true;}
+                keys.framePhase=message==frameCommitMessage?1:2;emit(keys.framePhase==1?FrameCommit:FrameRestore);finishNativeFrame();
+            }
+            return 0;
+        }
+        wchar_t name[64]{};GetClassNameW(control,name,64);
+        if(!config.enabled || keys.consumed['F'] || wcscmp(name,L"PhotoshopMenu.InputContext.v1")!=0 ||
+           reinterpret_cast<ULONG_PTR>(GetPropW(control,L"PhotoshopMenu.InputContext.Owner.v1"))!=frameParent ||
+           GetPropW(control,frameHostProp)!=frameEndpoint || reinterpret_cast<ULONGLONG>(GetPropW(control,frameIdProp))!=wParam ||
+           GetPropW(control,frameEpochProp)!=GetPropW(control,frameCurrentProp))return 0;
+        const HWND root=static_cast<HWND>(GetPropW(control,frameRootProp)),focus=static_cast<HWND>(GetPropW(control,frameFocusProp)),foreground=GetForegroundWindow();
+        if(DWORD(GetTickCount64())-DWORD(reinterpret_cast<ULONG_PTR>(GetPropW(control,frameMessageTimeProp)))>2000)return 0;
+        if(!claimPassedFrame(DWORD(reinterpret_cast<ULONG_PTR>(GetPropW(control,frameMessageTimeProp))),root))return 0;
+        if(GetAncestor(foreground,GA_ROOTOWNER)!=root)return 0;
+        updateForegroundScope(foreground,true);
+        DWORD pid=0,owner=0;const auto thread=GetWindowThreadProcessId(control,&pid);
+        GUITHREADINFO info{};info.cbSize=sizeof(info);GetWindowThreadProcessId(root,&owner);
+        if(!root || !focus || !photoshopKeyScope(foreground) || GetAncestor(foreground,GA_ROOTOWNER)!=root || pid!=owner ||
+           !GetGUIThreadInfo(thread,&info) || info.hwndFocus!=focus || info.hwndCaret || info.hwndCapture || info.hwndMenuOwner || info.hwndMoveSize)return 0;
+        nativeFrameControl=control;nativeFrameId=wParam;
+        keys.frameId=wParam>keys.frameId?wParam:keys.frameId+1;nativeFrameCommonId=keys.frameId;
+        keys.frameStart=reinterpret_cast<ULONGLONG>(GetPropW(control,frameTickProp));keys.framePhase=0;keys.searchConsumed=false;keys.frameNative=true;
+        // The down passed this hook: its up must reach Windows too. PS consumes the pair in its queue.
+        emit(FrameLayers,focus,root,true);
+        if(!keys.physical['F'] && frameLastUpKnown && DWORD(frameLastUpTime-DWORD(keys.frameStart))<2000) {
+            keys.framePhase=DWORD(frameLastUpTime-DWORD(keys.frameStart))<250?1:2;
+            emit(keys.framePhase==1?FrameCommit:FrameRestore);finishNativeFrame();
+        }
+        return 0;
+    }
+    return DefWindowProcW(window,message,wParam,lParam);
+}
 static bool photoshopInputFocus(HWND foreground) {
     // Hook path: the foreground snapshot, never a process query or handle wait.
     if(!photoshopKeyScope(foreground) || menuWindow(foreground))return false;
@@ -616,6 +697,10 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
     if (code>=0) {
         lastInputTick=GetTickCount64();
         const auto& input=*reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
+        if(input.vkCode=='F' && (message==WM_KEYUP || message==WM_SYSKEYUP)){frameLastUpTime=input.time;frameLastUpKnown=true;}
+        if(input.vkCode=='F' && (message==WM_KEYDOWN || message==WM_SYSKEYDOWN) && frameRawReleased) {
+            keys.consumed['F']=false;keys.physical['F']=keys.held['F']=false;frameRawReleased=false;
+        }
         const int logical=alias(input.vkCode);
         // The current hook event has not updated async state yet.
         if((message==WM_KEYDOWN || message==WM_SYSKEYDOWN) && logical!=VK_SHIFT && logical!=VK_CONTROL && logical!=VK_MENU && logical!=VK_LWIN && logical!=VK_RWIN)
@@ -673,12 +758,17 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
                 GetAncestor(foreground,GA_ROOTOWNER)==localConfig.searchRoot;
         }
         if(input.vkCode=='F') {
+            const HWND nativeControl=static_cast<HWND>(GetPropW(GetAncestor(foreground,GA_ROOTOWNER),L"PhotoshopMenu.InputContext.Window.v1"));
+            localConfig.frameThread=processScope && nativeControl && GetPropW(nativeControl,frameHostProp)==frameEndpoint && reinterpret_cast<ULONG_PTR>(GetPropW(nativeControl,L"PhotoshopMenu.InputContext.Owner.v1"))==frameParent;
             localConfig.searchAllowed=searchInputAllowed(localConfig,foreground);
             localConfig.evidenceFresh=localConfig.searchAllowed;
         }
         bool unusedPrefix=keys.pending!=-1 && !keys.used;
         bool blocked=routeKey(keys,input.vkCode,message==WM_KEYDOWN || message==WM_SYSKEYDOWN,
                      commandScope,processScope,localConfig,IsWindowVisible(config.overlay),action,GetTickCount64());
+        if(input.vkCode=='F' && !blocked && !repeat && (message==WM_KEYDOWN || message==WM_SYSKEYDOWN) && commandScope) {
+            passedFrameKeys[passedFrameCursor++%passedFrameKeys.size()]={input.time,GetAncestor(foreground,GA_ROOTOWNER),!keys.modified() && !keys.held[VK_CAPITAL],false};
+        }
         static int pendingEditEnd=0;
         const bool down=message==WM_KEYDOWN || message==WM_SYSKEYDOWN;
         if(!processScope)pendingEditEnd=0;
@@ -722,6 +812,7 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
         if (blocked) {
             // Other hooks need the F pair too, or they can mistake Ctrl+F for double Ctrl.
             if(input.vkCode=='F' && (searchOwned || keys.searchConsumed))CallNextHookEx(nullptr,code,message,data);
+            if((action==FrameCommit || action==FrameRestore) && nativeFrameCommonId==keys.frameId)finishNativeFrame();
             emit(action,(action==SearchLayers || action==FrameLayers)?localConfig.searchFocus:nullptr,(action==SearchLayers || action==FrameLayers)?localConfig.searchRoot:nullptr); return 1;
         }
         if(unusedPrefix && keys.used && action==None)emit(HoldCancel);
@@ -918,7 +1009,7 @@ static void writeActions() {
             const char* type=action==Ready?"ready":action==Error?"error":action==Configured?"configured":"action";
             std::string line;
             if(action==Ready) {
-                line="{\"type\":\"ready\",\"input_epoch\":"+std::to_string(event.inputEpoch)+"}\n";
+                line="{\"type\":\"ready\",\"input_epoch\":"+std::to_string(event.inputEpoch)+",\"frame_hwnd\":"+std::to_string(reinterpret_cast<uintptr_t>(frameEndpoint))+"}\n";
                 DWORD written=0;
                 if(!WriteFile(output,line.data(),static_cast<DWORD>(line.size()),&written,nullptr) || written!=line.size()){stop();return;}
                 continue;
@@ -992,6 +1083,7 @@ static void writeActions() {
                 line=std::string("{\"type\":\"")+type+"\",\"action\":\""+names[action]+"\"";
                 if(action==Configured)line+=",\"configuration_sequence\":"+std::to_string(event.gapMs);
                 if(action==SearchLayers || action==FrameLayers)line+=",\"input_guard\":{\"epoch\":"+std::to_string(event.inputEpoch)+",\"root\":"+std::to_string(reinterpret_cast<uintptr_t>(event.root))+",\"focus\":"+std::to_string(reinterpret_cast<uintptr_t>(event.hwnd))+"}";
+                if(action==FrameLayers)line+=",\"native_non_input\":"+std::string(event.guardAllowed?"true":"false");
                 if(action==FrameLayers || action==FrameCommit || action==FrameRestore)line+=",\"frame_id\":"+std::to_string(event.frameId);
                 if (action==HoldRelease || action==HoldBegin) line+=",\"cursor\":["+std::to_string(event.cursor.x)+","+std::to_string(event.cursor.y)+"]";
                 line+="}\n";
@@ -1166,6 +1258,29 @@ static int selfTest() {
         check(!searchContextMatches(c,c.searchRoot,c.searchFocus,99));
         check(!searchContextMatches(c,reinterpret_cast<HWND>(12),c.searchFocus,100));
         check(!searchContextMatches(c,c.searchRoot,reinterpret_cast<HWND>(12),100));
+    }
+    {
+        HWND root=reinterpret_cast<HWND>(10);
+        passedFrameKeys[0]={123,root,true,false};passedFrameKeys[1]={124,root,false,false};
+        check(!claimPassedFrame(123,reinterpret_cast<HWND>(11)));
+        check(claimPassedFrame(123,root) && !claimPassedFrame(123,root));
+        check(!claimPassedFrame(124,root) && passedFrameKeys[1].used);
+    }
+    {
+        Config cfg;cfg.searchAllowed=true;cfg.frameThread=true;cfg.bindings[0]={Toggle,{VK_CAPITAL},1};cfg.bindings[1]={EditStyle,{VK_CAPITAL,'F'},2};Action result;
+        KeyMachine thread;check(!thread.event('F',true,true,cfg,false,result,1000) && result==None);check(!thread.event('F',false,true,cfg,false,result,1100));
+        KeyMachine ctrl;ctrl.seed(VK_CONTROL);check(ctrl.event('F',true,true,cfg,false,result,1200) && result==SearchLayers);
+        KeyMachine caps;caps.seed(VK_CAPITAL);check(caps.event('F',true,true,cfg,false,result,1200) && result==EditStyle);
+        KeyMachine owned;cfg.frameThread=false;check(owned.event('F',true,true,cfg,false,result,1300) && result==FrameLayers);cfg.frameThread=true;
+        check(owned.event('F',true,true,cfg,false,result,1400) && result==None);check(owned.event('F',false,true,cfg,false,result,1600) && result==FrameRestore);
+        KeyMachine native;native.frameNative=true;native.frameId=1700;native.frameStart=1700;native.framePhase=0;
+        check(!native.event('F',true,true,cfg,false,result,1700));
+        check(!native.event('F',true,true,cfg,false,result,1800));
+        check(!native.event('F',false,true,cfg,false,result,1900));
+        check(!native.event('F',true,true,cfg,false,result,2000));
+        check(native.event(VK_ESCAPE,true,true,cfg,false,result,2100) && result==FrameRestore);
+        check(native.event(VK_ESCAPE,false,true,cfg,false,result,2200));
+        check(!native.event('F',false,true,cfg,false,result,2300));
     }
     // Complete remote click pairs only: opt-in, same valid workspace and 2s.
     RemoteClickIntent remote;
@@ -1693,6 +1808,13 @@ int main(int argc,char** argv) {
     }
     DWORD parent=argc==3 && std::string(argv[1])=="--parent"?std::stoul(argv[2]):0;
     hookThread=GetCurrentThreadId(); MSG message; PeekMessageW(&message,nullptr,0,0,PM_NOREMOVE);
+    frameParent=parent;frameBeginMessage=RegisterWindowMessageW(frameBeginName);frameCommitMessage=RegisterWindowMessageW(frameCommitName);frameRestoreMessage=RegisterWindowMessageW(frameRestoreName);frameReleaseMessage=RegisterWindowMessageW(frameReleaseName);
+    WNDCLASSW frameClass{};frameClass.lpfnWndProc=frameProcedure;frameClass.hInstance=GetModuleHandleW(nullptr);frameClass.lpszClassName=frameEndpointClass;RegisterClassW(&frameClass);
+    frameEndpoint=CreateWindowW(frameEndpointClass,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,frameClass.hInstance,nullptr);
+    if(!frameEndpoint || !SetPropW(frameEndpoint,frameOwnerProp,reinterpret_cast<HANDLE>(ULONG_PTR(parent))))return 1;
+    RAWINPUTDEVICE keyboardInput{1,6,RIDEV_INPUTSINK,frameEndpoint};
+    if(!RegisterRawInputDevices(&keyboardInput,1,sizeof(keyboardInput)))return 1;
+
     available=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     if(!available)return 1;
     for (int vk:{160,161,162,163,164,165,91,92}) if (GetAsyncKeyState(vk)&0x8000) keys.seed(vk);
