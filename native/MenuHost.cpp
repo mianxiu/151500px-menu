@@ -268,7 +268,7 @@ static const std::array<const char*,7> quickLabels={"新建空白图层","新建
 static std::array<RECT,7> quickRows{};
 static std::array<RECT,11> capsRows{};
 static const char* capsActions[]={"copyStyle","pasteStyle","editStyle","selectAbove","selectBelow","moveUp","moveDown","moveDocumentTop","moveDocumentBottom","convertSmartObjectsIndividually","convertSmartObject"};
-static const char* capsKeys[]={"c","v","f","w","s","上移","下移","文档顶","文档底","逐层","智能对象"};
+static const char* capsKeys[]={"c","v","f","w","s","上移","下移","文档顶","文档底","多层智能对象","单层智能对象"};
 static const char* capsLabels[]={"复制图层样式","粘贴图层样式","打开图层样式","单选上一个图层（Shift扩展多选）","单选下一个图层（Shift扩展多选）","上移一层","下移一层","移到文档顶部（移出当前组）","移到文档底部（移出当前组）","各自转为智能对象（一次撤销整批）","转换为一个智能对象（多选合并）"};
 static bool capsReady=false;
 static bool documentSortReady=false;
@@ -315,7 +315,7 @@ static const char* panelTitle() {
 static bool rowVisible(int i) {return panelKind==4?i==0:panelKind!=3 && ((panelKind!=1 && panelKind!=0) || i<2);}
 static float scale=1;
 static bool capsDividerAt(int i,POINT point) {
-    if(i>=9)return layerCount>1 && (i==9?point.x<capsRows[i].left+scale:point.x>=capsRows[i].right-scale);
+    if(i>=9)return layerCount>1 && (i==9?point.y<capsRows[i].top+scale:point.y>=capsRows[i].bottom-scale);
     const int first=i>=9?9:i>=7?7:panelKind==2 && i>=5?5:0;
     const int last=i>=9?10:i>=7?8:panelKind==2 && i>=5?6:capsBottomCount()-1;
     return ((i>first || panelKind==2 && i==5) && point.x<capsRows[i].left+scale) ||
@@ -1210,7 +1210,7 @@ static int tipFamily(int action) {
     return action;
 }
 static RECT tipGroupRect(int action) {
-    if(action==49 || action==50)return {capsRows[10].left,capsRows[10].top,layerCount>1?capsRows[9].right:capsRows[10].right,capsRows[10].bottom};
+    if(action==49 || action==50)return {capsRows[10].left,capsRows[10].top,capsRows[10].right,layerCount>1?capsRows[9].bottom:capsRows[10].bottom};
     if(action>=200+shapeModeTipBase)return shapeModeBounds;
     if(action>=200)return action==213 || action==214?shapeEditor.maskBounds:shapeEditor.bounds;
     if(panelKind==2 && capsReady && layerAware && tipFamily(action)==2)return {holdRows[2].left,holdRows[2].top,capsRows[6].right?capsRows[6].right:holdRows[3].right,holdRows[3].bottom};
@@ -1446,32 +1446,37 @@ static void drawCapsBar() {
     capsRows={};
     if(!capsReady || panelKind==4 || !layerAware)return;
     const ImVec2 savedCursor=ImGui::GetCursorScreenPos();
-    auto* font=menuFont(MenuTextRole::Control);
     auto* d=ImGui::GetWindowDrawList();
     const float h=figmaWidgetHeight*scale;
     POINT cursor{};GetCursorPos(&cursor);
     auto drawGroup=[&](int first,int last,float x,float y,bool smart=false) {
+        const bool compact=first==0;
+        auto* font=menuFont(compact?MenuTextRole::Shortcut:MenuTextRole::Control);
+        const float h=(compact?menuShortcutHeight:figmaWidgetHeight)*scale;
+        const float minimum=(compact?menuShortcutMinWidth:figmaWidgetHeight)*scale,inset=(compact?2*menuShortcutTextInset:2*figmaBasicLeftPadding)*scale;
         std::array<float,11> widths{};float total=0;
-        for(int j=first;j<=last;++j){const int i=smart?19-j:j;const char* label=smart && i==10 && layerCount>1?"单层":capsKeys[i];widths[i]=std::max(24.f*scale,font->CalcTextSizeA(font->LegacySize,FLT_MAX,0,label).x+18*scale);total+=widths[i];}
+        for(int j=first;j<=last;++j){const int i=smart?19-j:j;const char* label=capsKeys[i];widths[i]=std::max(minimum,font->CalcTextSizeA(font->LegacySize,FLT_MAX,0,label).x+inset);total=smart?std::max(total,widths[i]):total+widths[i];}
         if(first==0 || first==7)x=pieCenter.x-total*.5f;
-        const float left=x;
-        MenuControls::surface(d,{x,y},{x+total,y+h},scale);
+        const float left=x,height=h*(smart?last-first+1:1);
+        MenuControls::surface(d,{x,y},{x+total,y+height},scale);
         for(int j=first;j<=last;++j){
-            const int i=smart?19-j:j;const char* label=smart && i==10 && layerCount>1?"单层":capsKeys[i];
-            const ImVec2 a={x,y},b={x+widths[i],y+h};capsRows[i]={LONG(a.x),LONG(a.y),LONG(b.x),LONG(b.y)};
+            const int i=smart?19-j:j;const char* label=capsKeys[i];
+            const float width=smart?total:widths[i];
+            const ImVec2 a={x,y+(smart?(j-first)*h:0)},b={x+width,a.y+h};capsRows[i]={LONG(a.x),LONG(a.y),LONG(b.x),LONG(b.y)};
             const bool enabled=capsEnabled(i),seam=capsDividerAt(i,cursor);
             const bool hover=enabled && ((!preview.empty() && previewCapsHover>=0)?previewCapsHover==i:!seam && PtInRect(&capsRows[i],cursor));
-            MenuControls::segment(d,a,b,j==first,j==last,hover,scale);
+            MenuControls::segment(d,a,b,j==first,j==last,hover,scale,smart);
             const auto extent=font->CalcTextSizeA(font->LegacySize,FLT_MAX,0,label);
-            d->AddText(font,font->LegacySize,{a.x+(widths[i]-extent.x)*.5f,y+(h-extent.y)*.5f},tint(enabled?ImGuiCol_Text:ImGuiCol_TextDisabled),label);
+            d->AddText(font,font->LegacySize,{a.x+(width-extent.x)*.5f,a.y+(h-extent.y)*.5f},tint(enabled?ImGuiCol_Text:ImGuiCol_TextDisabled),label);
             if(pinned && !pieAnimating && enabled && !holdFinished){
-                ImGui::SetCursorScreenPos({a.x+(j>first?scale:0),y});ImGui::PushID(450+i);
-                if(ImGui::InvisibleButton("##caps",{widths[i]-(j>first?scale:0)-(j<last?scale:0),h})){holdFinished=true;send(capsActions[i]);}
+                const float leading=j>first?scale:0,trailing=j<last?scale:0;
+                ImGui::SetCursorScreenPos({a.x+(smart?0:leading),a.y+(smart?leading:0)});ImGui::PushID(450+i);
+                if(ImGui::InvisibleButton("##caps",{width-(smart?0:leading+trailing),h-(smart?leading+trailing:0)})){holdFinished=true;send(capsActions[i]);}
                 ImGui::PopID();
             }
-            x=b.x;
+            if(!smart)x=b.x;
         }
-        MenuControls::outline(d,{left,y},{x,y+h},scale);
+        MenuControls::outline(d,{left,y},{left+total,y+height},scale);
     };
     drawGroup(0,capsBottomCount()-1,0,pieCenter.y+(107+(rowVisible(1)?(labelRowCount()-2)*21.f:0))*scale);
     if(individualSmartReady && panelKind!=3 && layerCount && layerKind)
@@ -2938,16 +2943,19 @@ int main() {
                         ImGui::End();ImGui::Render();finishPlatformFrame();
                     };
                     const auto previousTextSize=uiFontSize;
-                    float previousBody=0,previousControl=0,previousSecondary=0;
+                    float previousBody=0,previousControl=0,previousSecondary=0,previousShortcut=0;
                     for(const char* size:{"small","medium","large"}) {
                         uiFontSize=size;io.FontDefault=menuFont(MenuTextRole::Body);
                         const auto body=menuFont(MenuTextRole::Body)->LegacySize,control=menuFont(MenuTextRole::Control)->LegacySize,secondary=menuFont(MenuTextRole::Secondary)->LegacySize;
                         if(!(body>control && control>=secondary && body>previousBody && control>previousControl && secondary>previousSecondary))
                             throw std::runtime_error("Semantic typography lost hierarchy / PS size scaling");
+                        const auto shortcut=menuFont(MenuTextRole::Shortcut)->LegacySize;
+                        if(!(shortcut<secondary && shortcut>previousShortcut && shortcut<menuShortcutHeight*scale))
+                            throw std::runtime_error("Compact shortcut typography lost hierarchy / PS size scaling");
                         // ImGui truncates atlas sizes to whole pixels.
                         if(std::abs(control-body*figmaBasicTextScale)>1.f || basicLabelSize()!=control || control>=menuControlHeight*scale)
                             throw std::runtime_error("Caps and panel control typography drifted / overflowed");
-                        controlsFrame(false);previousBody=body;previousControl=control;previousSecondary=secondary;
+                        controlsFrame(false);previousBody=body;previousControl=control;previousSecondary=secondary;previousShortcut=shortcut;
                     }
                     uiFontSize=previousTextSize;io.FontDefault=menuFont(MenuTextRole::Body);
                     controlsFrame(false);io.AddMousePosEvent(float(second.x),float(second.y));controlsFrame(false);
@@ -3838,6 +3846,8 @@ int main() {
                 if(capsRows[5].top!=holdRows[2].top || capsRows[5].bottom!=holdRows[2].bottom || capsRows[5].left!=holdRows[3].right || capsRows[6].left!=capsRows[5].right || capsRows[4].top<=capsRows[5].bottom ||
                    std::abs((capsRows[5].bottom-capsRows[5].top)-menuControlHeight*scale)>1)
                     throw std::runtime_error("Top/bottom and step controls must share one contiguous row");
+                if(std::abs((capsRows[0].bottom-capsRows[0].top)-menuShortcutHeight*scale)>1 || capsRows[0].bottom-capsRows[0].top>=menuControlHeight*scale)
+                    throw std::runtime_error("Bottom shortcut buttons lost their compact height");
                 if(tipFamily(40)==tipFamily(45) || tipGroupRect(45).top!=capsRows[5].top || tipFamily(45)!=tipFamily(2) || tipGroupRect(45).right!=capsRows[6].right ||
                    tipGroupRect(40).right!=capsRows[4].right)
                     throw std::runtime_error("Sorting tooltip must share the four-segment row");
@@ -3891,9 +3901,9 @@ int main() {
                     if(capsEnabled(10) || !capsEnabled(9))throw std::runtime_error("Cross-parent selection enabled combined Smart Object");
                     layerCrossParents=false;numberFrame(ImGuiKey_None,false);
                     const auto merged=capsRows[10];const POINT mergePoint={(merged.left+merged.right)/2,(merged.top+merged.bottom)/2};
-                    const POINT divider={merged.right,mergePoint.y};
-                    if(merged.right!=capsRows[9].left || merged.top!=capsRows[9].top || merged.bottom!=capsRows[9].bottom ||
-                       holdActionAt(mergePoint)!=50 || holdActionAt(divider)!=-1 || tipFamily(50)!=tipFamily(49) || !actionTipText(50) || tipGroupRect(50).right!=capsRows[9].right)
+                    const POINT divider={mergePoint.x,merged.bottom};
+                    if(merged.left!=capsRows[9].left || merged.right!=capsRows[9].right || merged.bottom!=capsRows[9].top ||
+                       holdActionAt(mergePoint)!=50 || holdActionAt(divider)!=-1 || holdActionAt({mergePoint.x,merged.bottom-1})!=-1 || tipFamily(50)!=tipFamily(49) || !actionTipText(50) || tipGroupRect(50).bottom!=capsRows[9].bottom)
                         throw std::runtime_error("Smart Object pair geometry/hit/divider/tooltip mismatch");
                     auto pairCount=testedActions.size();renderedHit=50;finishHold(mergePoint);
                     if(testedActions.size()!=pairCount+1 || testedActions.back()!="convertSmartObject")throw std::runtime_error("Combined Smart Object gesture did not use F5 action once");

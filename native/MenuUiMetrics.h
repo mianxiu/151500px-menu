@@ -1,5 +1,8 @@
 // Shared native control metrics; design geometry is imported before this header.
 static constexpr float menuControlHeight=figmaWidgetHeight;
+static constexpr float menuShortcutHeight=20.f;
+static constexpr float menuShortcutMinWidth=18.f;
+static constexpr float menuShortcutTextInset=6.f;
 static constexpr float menuControlPadding=figmaPadding;
 static constexpr float menuCompactGap=4.f;
 static constexpr float menuProgressHeight=2.f;

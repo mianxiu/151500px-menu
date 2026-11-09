@@ -7,6 +7,16 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 class MenuUiContractTests(unittest.TestCase):
+    def test_compact_shortcut_role_and_metrics_are_shared(self):
+        typography=(ROOT/'native/MenuTypography.h').read_text('utf-8')
+        self.assertIn('MenuTextRole::Shortcut',typography)
+        host=(ROOT/'native/MenuHost.cpp').read_text('utf-8')
+        self.assertIn('MenuTextRole::Shortcut',host)
+        metrics=(ROOT/'native/MenuUiMetrics.h').read_text('utf-8')
+        for name in ('menuShortcutHeight','menuShortcutMinWidth','menuShortcutTextInset'):
+            self.assertIn(name,metrics)
+            self.assertIn(name,host)
+
     def test_native_views_cannot_choose_fixed_fonts_or_local_text_scales(self):
         for path in (ROOT/'native').iterdir():
             if path.suffix not in ('.h','.cpp') or path.name=='MenuTypography.h':

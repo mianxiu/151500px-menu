@@ -9,10 +9,10 @@ inline void surface(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale,bool shadow=t
 inline void outline(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale) {
     draw->AddRect(a,b,ImGui::GetColorU32(ImGuiCol_Border),ImGui::GetStyle().FrameRounding,0,menuControlBorder*scale);
 }
-inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool highlighted,float scale) {
+inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool highlighted,float scale,bool vertical=false) {
     if(highlighted)draw->AddRectFilled(a,b,ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding,
-        first && last?ImDrawFlags_RoundCornersAll:first?ImDrawFlags_RoundCornersLeft:last?ImDrawFlags_RoundCornersRight:ImDrawFlags_RoundCornersNone);
-    if(!first)draw->AddLine(a,{a.x,b.y},ImGui::GetColorU32(ImGuiCol_Border),menuControlBorder*scale);
+        first && last?ImDrawFlags_RoundCornersAll:first?(vertical?ImDrawFlags_RoundCornersTop:ImDrawFlags_RoundCornersLeft):last?(vertical?ImDrawFlags_RoundCornersBottom:ImDrawFlags_RoundCornersRight):ImDrawFlags_RoundCornersNone);
+    if(!first)draw->AddLine(a,vertical?ImVec2{b.x,a.y}:ImVec2{a.x,b.y},ImGui::GetColorU32(ImGuiCol_Border),menuControlBorder*scale);
 }
 struct PanelStyle {
     explicit PanelStyle(float scale) {
