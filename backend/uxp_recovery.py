@@ -41,7 +41,7 @@ class PendingUxp:
             raise ValueError('Invalid plugin data folder')
         if value.get('operation') not in ('set_label', 'new_document'):
             raise ValueError('Not a modifying request')
-        if 'preview_command' in value and value['preview_command'] not in ('shape.preview','shape.legacy.preview'):
+        if 'preview_command' in value and value['preview_command'] not in ('shape.preview','shape.legacy.preview','layer.frame'):
             raise ValueError('Invalid preview execution identity')
         if 'thumbnail' in value and (value['thumbnail'] is not True or value.get('operation')!='set_label'):
             raise ValueError('Invalid thumbnail receipt identity')
@@ -54,7 +54,7 @@ class PendingUxp:
         value = {key: request[key] for key in ('id', 'session', 'operation')}
         if request.get('capture_current') is True:value['capture_current']=True
         if request.get('command')=='layer.thumbnail':value['thumbnail']=True
-        if request.get('command') in ('shape.preview','shape.legacy.preview'):value['preview_command']=request['command']
+        if request.get('command') in ('shape.preview','shape.legacy.preview','layer.frame'):value['preview_command']=request['command']
         value.update(schema=1, folder=str(Path(folder).resolve()), task_id=task_id,
                      submitted_at_ms=int(time.time()*1000))
         self.validate(value)
@@ -123,7 +123,7 @@ class PendingUxp:
         value=self.value
         if not value or self.error:return False
         command=value.get('preview_command')
-        if command not in ('shape.preview','shape.legacy.preview'):return False
+        if command not in ('shape.preview','shape.legacy.preview','layer.frame'):return False
         identity={key:value[key] for key in ('id','session','operation')}
         engine='standalone-extendscript' if command=='shape.legacy.preview' else 'uxp-modal'
         path=self.path.parent/('uxp-execution-exit-'+value['id']+'.json')

@@ -358,7 +358,7 @@ module.exports = function createLabels(ps, session, options={}) {
     if(request.command==='text.replace')return textTools.replace(request);
     if(request.command==='text.split')return textTools.split(request);
     if(request.command==='layer.focus')return layerSearch.focus(request);
-    if(request.command==='layer.frame')return layerView.frame(request);
+    if(request.command==='layer.frame')return layerView.frame(request,previewIO);
     if(request.command==='layer.thumbnail')throw Error('非静默缩略图已停用，未提交操作');
     if(request.command==='stability.internal')return stability.execute(request,setLabel);
     if(['shape.copyPaint','shape.pastePaint'].includes(request.command))return paintClipboard.execute(request);
@@ -2686,21 +2686,37 @@ function createLayerView(ps,session,capture) {
   }
   const zoomCommand=zoom=>({_obj:'set',_target:property('zoom')._target,to:{_obj:'zoom',zoom},_options:{dialogOptions:'silent'}});
   async function inspect() {return {menus:await menus(),view:await view()};}
-  async function frame(request) {
+  async function frame(request,io) {
     return ps.core.executeAsModal(async context=>{
       const expected=request.target;
+      async function documentGuard() {
+        const target=await capture();
+        if(expected?.session!==session||target.session!==session||target.document_id!==expected.document_id)throw Error('聚焦文档已改变，未操作其他文档');
+        return target;
+      }
       async function guard() {
         if(context.isCancelled||Date.now()>request.expires_at_ms)throw Error('聚焦已取消或过期');
-        const target=await capture();
-        if(expected?.session!==session||target.session!==session||target.document_id!==expected.document_id||target.active_layer_id!==expected.active_layer_id||target.layer_ids.join(',')!==expected.layer_ids?.join(','))throw Error('聚焦目标已改变，本次未执行');
+        const target=await documentGuard();
+        if(target.active_layer_id!==expected.active_layer_id||target.layer_ids.join(',')!==expected.layer_ids?.join(','))throw Error('聚焦目标已改变，本次未执行');
       }
-      await guard();
+      let seq=0,lease=Date.now()+4000,phase=io?'preview':'commit';
+      async function input() {
+        if(!io)return;
+        const packet=await io.read(),now=Date.now();
+        if(packet){
+          if(packet.id!==request.id||packet.session!==request.session||packet.token!==request.token||!Number.isSafeInteger(packet.seq)||packet.seq<seq||!Number.isFinite(packet.lease_until_ms)||packet.lease_until_ms>now+5000||!['preview','commit','cancel'].includes(packet.phase))throw Error('Invalid F gesture mailbox');
+          seq=packet.seq;lease=packet.lease_until_ms;phase=packet.phase;
+        }
+        if(context.isCancelled||now>lease)phase='cancel';
+      }
+      await guard();await input();
+      if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
       const doc=ps.app.activeDocument,layers=Array.from(doc.activeLayers);
       if(!layers.length||layers.length>128||layers.map(l=>l.id).sort((a,b)=>a-b).join(',')!==expected.layer_ids.join(','))throw Error('聚焦最多支持128个选中图层');
       const boxes=[];
       for(const layer of layers) {
         if(typeof layer.visible!=='boolean')throw Error('图层可见性无法确认');
-        for(let parent=layer;parent&&parent!==doc;parent=parent.parent)if(parent.visible===false)throw Error('请先显示隐藏的目标图层或父组');
+        for(let parent=layer;parent&&parent!==doc;parent=parent.parent)if(parent.visible===false)throw Error('不能显示隐藏的目标图层边界');
         const b=layer.boundsNoEffects,rect=['left','top','right','bottom'].map(k=>number(b?.[k]));
         if(!rect.every(Number.isFinite))throw Error('图层边界无法确认');
         if(rect[2]>rect[0]&&rect[3]>rect[1])boxes.push(rect);
@@ -2708,30 +2724,53 @@ function createLayerView(ps,session,capture) {
       if(!boxes.length)throw Error('所选图层没有可聚焦的内容边界');
       const bounds=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];
       const saved=await inspect();let changed=false;
-      async function toggle(item) {
-        if(!await ps.core.performMenuCommand({commandID:item.command}))throw Error('PS原生边界显示命令不可用');
+      async function display(edge,extras) {
+        let state=await menus();
+        async function toggle(key) {
+          await documentGuard();
+          if(!await ps.core.performMenuCommand({commandID:state[key].command}))throw Error('PS原生边界显示命令不可用');
+          state=await menus();
+        }
+        // With Extras off, the edge command only turns Extras on, leaving its own flag unchanged.
+        if(state.edge.checked!==edge){
+          if(!state.extras.checked)await toggle('extras');
+          await toggle('edge');
+        }
+        if(state.extras.checked!==extras)await toggle('extras');
+        if(state.edge.checked!==edge||state.extras.checked!==extras)throw Error('原生边界显示恢复未确认');
+      }
+      async function restoreView() {
+        await documentGuard();
+        await batch([zoomCommand(saved.view.zoom),{_obj:'set',_target:property('center')._target,to:{_obj:'center',horizontal:{_unit:'distanceUnit',_value:saved.view.x},vertical:{_unit:'distanceUnit',_value:saved.view.y}},_options:{dialogOptions:'silent'}}]);
+        const restored=await view();
+        if(Math.abs(restored.zoom-saved.view.zoom)>1e-6||Math.abs(restored.x-saved.view.x)>1||Math.abs(restored.y-saved.view.y)>1)throw Error('View restore mismatch');
       }
       try {
         await guard();changed=true;
         await batch([{_obj:'select',_target:[{_ref:'menuItemClass',_enum:'menuItemType',_value:'fitLayersOnScreen'}],_options:{dialogOptions:'silent'}}]);
         const fitted=await view(),zoom=Math.max(.0001,Math.min(4,fitted.zoom));
         if(zoom!==fitted.zoom){await guard();await batch([zoomCommand(zoom)]);}
-        let state=await menus();
-        for(const key of ['extras','edge'])if(!state[key].checked){await guard();await toggle(state[key]);state=await menus();}
-        await guard();const after=await inspect();
+        await display(true,true);await guard();const after=await inspect();
         if(Math.abs(after.view.zoom-zoom)>1e-6||!after.menus.edge.checked||!after.menus.extras.checked||Math.abs(after.view.x/zoom-fitted.x/fitted.zoom)>1||Math.abs(after.view.y/zoom-fitted.y/fitted.zoom)>1)throw Error('聚焦视图或原生边界读回不一致');
-        return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:true};
+        const shown=Date.now();
+        if(io)await io.applied({seq,view:after.view,native_layer_edges:true});
+        do {
+          await input();
+          const current=await documentGuard();
+          if(current.active_layer_id!==expected.active_layer_id||current.layer_ids.join(',')!==expected.layer_ids.join(','))phase='cancel';
+          if(phase==='cancel'||phase==='commit'&&Date.now()-shown>=500)break;
+          await new Promise(resolve=>setTimeout(resolve,40));
+        } while(true);
+        if(phase==='cancel')await restoreView();
+        // F is a temporary highlight, including when upgrading from persistent 319 edges.
+        await display(false,(await menus()).extras.checked && saved.menus.extras.checked);
+        return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:false,view_restored:phase==='cancel',cancelled:phase==='cancel'};
       } catch(error) {
-        if(changed)try {
-          await guard();await batch([zoomCommand(saved.view.zoom),{_obj:'set',_target:property('center')._target,to:{_obj:'center',horizontal:{_unit:'distanceUnit',_value:saved.view.x},vertical:{_unit:'distanceUnit',_value:saved.view.y}},_options:{dialogOptions:'silent'}}]);
-          let state=await menus();
-          for(const key of ['edge','extras'])if(state[key].checked!==saved.menus[key].checked){await guard();await toggle(state[key]);state=await menus();}
-          const restored=await inspect();
-          if(Math.abs(restored.view.zoom-saved.view.zoom)>1e-6||Math.abs(restored.view.x-saved.view.x)>1||Math.abs(restored.view.y-saved.view.y)>1||restored.menus.edge.checked!==saved.menus.edge.checked||restored.menus.extras.checked!==saved.menus.extras.checked)throw Error('View restore mismatch');
-        } catch(_){error.resultUnknown=true;}
+        if(changed)try {await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);}
+        catch(_){error.resultUnknown=true;}
         throw error;
       }
-    },{commandName:'聚焦所选图层',timeOut:0});
+    },{commandName:'聚焦所选图层',timeOut:0,...(io?{interactive:true}:{})});
   }
   return {inspect,frame};
 }

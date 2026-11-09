@@ -28,4 +28,15 @@ class LayerFrameGuardTests(unittest.TestCase):
  def test_malformed_identity_is_rejected(self):
   for value in ({'root':10},{**self.guard,'epoch':True},{**self.guard,'focus':0}):
    with self.assertRaises(ValueError):self.desktop.require_layer_frame(value)
+ def test_dispatch_snapshot_survives_busy_but_not_native_input_changes(self):
+  accepted=dict(self.context);self.context['state']='unknown'
+  sample={'root':10,'focus':11,'workspace':True,'blocked':False,'state':'unknown'}
+  self.desktop.input_focus.native_epoch=3;self.desktop.input_focus.native_sample=lambda:dict(sample)
+  self.assertEqual(self.desktop.require_layer_frame(self.guard,accepted=accepted),self.guard)
+  for state in ('input','unknown'):
+   with self.assertRaises(RuntimeError):self.desktop.require_layer_frame(self.guard,accepted={**accepted,'state':state})
+  sample['state']='input'
+  with self.assertRaises(RuntimeError):self.desktop.require_layer_frame(self.guard,accepted=accepted)
+  sample['state']='unknown';self.desktop.input_focus.native_epoch=4
+  with self.assertRaises(RuntimeError):self.desktop.require_layer_frame(self.guard,accepted=accepted)
 if __name__=='__main__':unittest.main()

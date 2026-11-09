@@ -411,7 +411,7 @@ class Desktop:
                     if self.input_focus:self.input_focus.edit_end(event.get('input_epoch'))
                 elif event.get("type") == "action":
                     logging.info('Native hook action: %s cursor=%s', event['action'], event.get('cursor'))
-                    args={key:event[key] for key in ('action','cursor','input_guard') if key in event}
+                    args={key:event[key] for key in ('action','cursor','input_guard','frame_id') if key in event}
                     self.notify(args if len(args)>1 else event['action'])
                 elif event.get('type') == 'trigger.trace':
                     from collections import deque
@@ -654,7 +654,7 @@ class Desktop:
                 raise RuntimeError('当前为 Photoshop 首页，请进入文档后执行图层操作')
 
     @window_transition
-    def require_layer_frame(self, input_guard=None, reserved=False):
+    def require_layer_frame(self, input_guard=None, reserved=False, accepted=None):
         self.require_action_focus()
         if reserved:
             sample=self.input_focus.native_sample() if self.input_focus else {}
@@ -662,14 +662,16 @@ class Desktop:
             if (not sample.get('workspace') or sample.get('blocked') or sample.get('state')=='input' or identity!=input_guard):
                 raise RuntimeError('F触发后的原生焦点或输入世代已改变，本次未聚焦')
             return identity
-        observed=self.input_focus.shortcut_context() if self.input_focus else {}
+        # Busy can clear the shared cache after dispatch reserved this press.
+        observed=accepted if accepted is not None else self.input_focus.shortcut_context() if self.input_focus else {}
         if observed.get('state')!='non-input':raise RuntimeError('输入状态未确认，未聚焦图层')
         if input_guard is not None:
             if (not isinstance(input_guard,dict) or set(input_guard)!={'root','focus','epoch'} or
                     any(type(input_guard[k]) is not int or input_guard[k]<(0 if k=='epoch' else 1) for k in input_guard)):
                 raise ValueError('无效的F聚焦输入身份')
             if any(observed.get(k)!=v for k,v in input_guard.items()):raise RuntimeError('F触发后的输入上下文已改变，本次未聚焦')
-        return {key:observed[key] for key in ('root','focus','epoch')}
+        identity={key:observed[key] for key in ('root','focus','epoch')}
+        return self.require_layer_frame(identity,reserved=True) if accepted is not None else identity
 
     @window_transition
     def require_menu_tools(self, epoch):

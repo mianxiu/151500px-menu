@@ -513,6 +513,11 @@ class Application(web.Application):
         if action in ('mask.preview.update','mask.preview.commit'):
             from .mask_preview import dispatch_preview
             return await dispatch_preview(self,action,args)
+        if action in ('layer.frame.commit','layer.frame.restore'):
+            preview=getattr(self,'_frame_preview',None)
+            if preview and preview.identity==args.get('frame_id'):
+                preview.finish(action=='layer.frame.restore')
+            return {'message':'已接收F松键状态'}
         if action == "action.execute":
             name = args.get("name")
             if name=='stability.internal':raise ValueError('测试命令仅能通过隔离测试入口执行')
@@ -550,6 +555,13 @@ class Application(web.Application):
                 raise RuntimeError("无桌面模式不提供图层操作")
             if self.operation_lock.locked() or self.bridge.busy:
                 raise RuntimeError("操作进行中，请等待完成后重新选择；本次操作未接受")
+            frame_context=self.desktop.input_focus.shortcut_context() if name=='layer.frame' and self.desktop.input_focus else None
+            frame_preview=None;frame_publisher=None;frame_stopped=asyncio.Event()
+            if name=='layer.frame' and 'frame_id' in args:
+                from .layer_frame import FramePreview
+                if type(args['frame_id']) is not int or args['frame_id']<=0:raise ValueError('无效的F手势')
+                frame_preview=self._frame_preview=FramePreview(args['frame_id'])
+                frame_publisher=asyncio.create_task(frame_preview.pump(self.desktop,frame_stopped))
             try:
                 async with self.operation_lock:
                     # Reserve before any awaited focus/target work. A repeat
@@ -557,7 +569,7 @@ class Application(web.Application):
                     if not self.bridge.busy:
                         await self.broadcast({"type":"operation","busy":True,"action":name})
                     await asyncio.to_thread(self.desktop.require_action_focus)
-                    frame_input=await asyncio.to_thread(self.desktop.require_layer_frame,args.get('input_guard')) if name=='layer.frame' else None
+                    frame_input=await asyncio.to_thread(self.desktop.require_layer_frame,args.get('input_guard'),accepted=frame_context) if name=='layer.frame' else None
                     if name in ('moveToTop','moveToBottom','moveUp','moveDown','moveDocumentTop','moveDocumentBottom'):
                         await asyncio.to_thread(self.desktop.require_move_context,name)
                     async with self.panel_lock:
@@ -580,7 +592,9 @@ class Application(web.Application):
                             if not return_to_menu:await asyncio.to_thread(self.desktop.hide)
                     # Frozen menu targets stay bound; direct UXP Caps actions capture
                     # in their single request and revalidate inside the write transaction.
-                    if name=='shape.paint':
+                    if frame_preview:
+                        result=await self.bridge.execute_frame(frame_preview,before_dispatch=before_dispatch)
+                    elif name=='shape.paint':
                         result=await self.bridge.execute_shape(args.get('params'),before_dispatch=before_dispatch,frozen_target=frozen_target)
                         if return_to_menu:
                             terminal=json.loads(result.get('result','{}'))
@@ -604,6 +618,10 @@ class Application(web.Application):
                 await self.broadcast({"type": "notice", "scope": "operation", "action": name, "ok": False, "message": str(exc)})
                 raise
             finally:
+                if frame_preview:
+                    frame_stopped.set()
+                    await asyncio.gather(frame_publisher,return_exceptions=True)
+                    if getattr(self,'_frame_preview',None) is frame_preview:self._frame_preview=None
                 if isinstance(self.bridge,PhotoshopBridge):
                     await self.broadcast({'type':'operation','busy':self.bridge.busy,'queue_ready':False,'queue_count':len(self.bridge._queue)})
                 else:await self.broadcast({"type": "operation", "busy": self.bridge.busy})
@@ -720,7 +738,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
         try:
             event_args = {}
             if isinstance(action, dict):
-                event_args = {key:action[key] for key in ('menu_epoch','cursor','params','after_action','return_to_menu','input_guard') if key in action}
+                event_args = {key:action[key] for key in ('menu_epoch','cursor','params','after_action','return_to_menu','input_guard','frame_id') if key in action}
                 action = action['action']
                 if 'menu_epoch' in event_args and (not app.desktop or event_args['menu_epoch'] != app.desktop.menu_epoch):
                     return
@@ -730,6 +748,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
             mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview')})
             mapping['document.new'] = 'document.new'
             mapping.update({name:name for name in ('mask.preview.update','mask.preview.commit')})
+            mapping.update({name:name for name in ('layer.frame.commit','layer.frame.restore')})
             if action.startswith('document.recent.'):
                 event_args['params']={'preset_id':action.removeprefix('document.recent.')}
                 action='document.recent'

@@ -401,7 +401,7 @@ async function probe(reason) {
     if (!heartbeatValue) {
       heartbeatValue={
         ...await metadata(),
-        probe_version: '0.3.97', session, transport: 'plugin-data-files',
+        probe_version: '0.3.98', session, transport: 'plugin-data-files',
         photoshop_version: hostVersion,
         extended_label_colors:labels.extendedLabelColors,
         uxp_version: optional(() => uxp.versions.uxp),
@@ -477,7 +477,7 @@ async function probe(reason) {
       lastRequest=request.id;return;
     }
     seen.add(request.id); // Consume before any write; never retry after an uncertain response.
-    const response = {schema:1,session,id: request.id, probe_version: '0.3.97', operation: request.operation,
+    const response = {schema:1,session,id: request.id, probe_version: '0.3.98', operation: request.operation,
       transport: 'plugin-data-files',
       completed_at_ms: Date.now(), phase: 'completed'};
     const timingStarted=Date.now(),timings={};
@@ -572,7 +572,7 @@ async function probe(reason) {
         }
       }
       if (request.operation === 'set_label' && !['shape.legacy.preview','text.object'].includes(request.command)) response.result = await labels.setLabel(request,
-        request.command==='shape.preview'?{
+        (request.command==='shape.preview'||request.command==='layer.frame'&&request.frame_preview===true)?{
           stage:async(name,seq)=>{await executionStage(name,seq);const stage=progressStage(name);if(stage)await previewProgress(stage,0,0,seq);},
           progress:previewProgress,
           read:boundedPreviewRead(async()=>{
@@ -595,7 +595,7 @@ async function probe(reason) {
     } catch (error) { response.phase = 'failed'; response.error = String(error); response.result_unknown=!!error.resultUnknown; }
     // This executes after the awaited modal function (including its finally)
     // returned or rejected. Content rollback can still be unknown independently.
-    if(request.operation==='set_label' && request.command==='shape.preview')
+    if(request.operation==='set_label' && ['shape.preview','layer.frame'].includes(request.command))
       response.execution_exit={schema:1,engine:'uxp-modal',exited:true};
     response.completed_at_ms = Date.now();
     timings.operation_ms=Date.now()-operationStarted;

@@ -12,6 +12,16 @@ from backend.uxp_recovery import PendingUxp
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_frame_exit_requires_original_modal_receipt(self):
+        pending=self.bridge.transport.pending
+        pending.begin({'id':'a'*32,'session':'one','operation':'set_label','command':'layer.frame'},self.folder,'b'*32)
+        self.assertFalse(pending.execution_has_exited())
+        self.receipt(probe_version='0.3.98',execution_exit={'schema':1,'engine':'uxp-modal','exited':True},result_unknown=True)
+        self.assertTrue(pending.execution_has_exited())
+        self.assertIsNotNone(pending.value)
+        self.assertIsNone(pending.read_result())
+        pending.clear()
+
     async def test_thumbnail_receipt_limit_is_bounded_and_does_not_expand_other_commands(self):
         pending=self.bridge.transport.pending
         request={'id':'a'*32,'session':'one','operation':'set_label','command':'layer.thumbnail'}

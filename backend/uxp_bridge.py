@@ -157,7 +157,7 @@ class UxpTransport:
                     if version_tuple(heartbeat.get('photoshop_version'))<(25,2,0) or heartbeat.get('extended_label_colors') is not True:raise RuntimeError('当前PS执行端未确认支持此标签颜色；未提交修改')
                 if payload.get('command')=='layer.thumbnail':
                     raise RuntimeError('非静默缩略图已停用，未提交操作')
-                if payload.get('command')=='layer.frame' and version(heartbeat.get('probe_version'))<(0,3,97):raise RuntimeError('F聚焦需要正常重启PS加载UXP0.3.97')
+                if payload.get('command')=='layer.frame' and version(heartbeat.get('probe_version'))<(0,3,98):raise RuntimeError('F聚焦需要正常重启PS加载UXP0.3.98')
                 if payload.get('command')=='layer.focus' and (version(heartbeat.get('probe_version'))<(0,3,57) or payload.get('target',{}).get('session')!=heartbeat.get('session')):
                     raise RuntimeError('搜索会话或UXP版本已改变，请重新搜索')
                 if payload.get('stability_run') and version(heartbeat.get('probe_version'))<(0,3,47):
@@ -226,7 +226,7 @@ class UxpTransport:
                 except Exception:
                     if modifying:self.pending.clear()
                     raise
-                interactive=operation=='set_label' and payload.get('command') in ('editStyle','shape.preview','shape.legacy.preview')
+                interactive=operation=='set_label' and (payload.get('command') in ('editStyle','shape.preview','shape.legacy.preview') or payload.get('command')=='layer.frame' and payload.get('frame_preview') is True)
                 deadline=None if interactive else time.monotonic()+self.response_timeout
                 checked=0;native_started=False;native_error_at=None
                 while deadline is None or time.monotonic()<deadline:
@@ -543,6 +543,18 @@ class UxpBridge(PhotoshopBridge):
         if capture_current and action in DIRECT_CAPS:
             return await self._execute_task(action,before_dispatch,capture=self._prepare_direct_caps,result_target=self._direct_caps_result_target)
         return await super().execute(action,before_dispatch,enqueue=False)
+
+    async def execute_frame(self,preview,before_dispatch=None):
+        if self.execution_guard:self.execution_guard()
+        def write(action):
+            self.transport.task_id=self._active_task_id;self._uxp_worker_active=True
+            try:
+                response=self.transport.call('set_label',command='layer.frame',target=self._captured_target,frame_preview=True,preview=preview)
+                value=validate(response.get('layer_context'),self._captured_app)
+                self.layer_context=value if fresh(value) else unavailable()
+                return json.dumps(response['result'])
+            finally:self._uxp_worker_active=False
+        return await self._execute_task('layer.frame',before_dispatch,capture=self._capture_target,execute=write,interactive=True)
 
     def _bind_batch_mask_target(self,target):
         from .operation_target import validate_target

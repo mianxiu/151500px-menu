@@ -14,8 +14,8 @@
 #include <vector>
 #include "ScreenSample.h"
 
-enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers };
-static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame"};
+enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers, FrameCommit, FrameRestore };
+static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame", "layer.frame.commit", "layer.frame.restore"};
 struct Binding { Action action=None; std::array<int,6> keys{}; int count=0; };
 struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false; HWND overlay=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true; };
 // Opt-in remote clicks qualify only on a matching release in the same verified
@@ -38,7 +38,7 @@ static int alias(int key) {
 struct KeyMachine {
     std::array<bool,256> physical{}, held{}, consumed{};
     int pending=-1; bool used=false,searchConsumed=false;
-    ULONGLONG pressTime=0;
+    ULONGLONG pressTime=0,frameId=0,frameStart=0; int framePhase=2;
     void cancelGesture() { pending=-1; used=true; }
     void seed(int raw) { physical[raw]=held[alias(raw)]=true; }
     void reconcileModifiers(unsigned down) {
@@ -62,7 +62,10 @@ struct KeyMachine {
         } else held[key]=physical[raw];
         if (!down && consumed[key]) {
             consumed[key]=false;
-            if(key=='F')searchConsumed=false;
+            if(key=='F'){
+                if(!searchConsumed && frameId && framePhase==0){framePhase=scope && !reserveOnly && now-frameStart<250?1:2;action=framePhase==1?FrameCommit:FrameRestore;}
+                searchConsumed=false;
+            }
             if (key==pending) {
                 action=scope && !reserveOnly && !used?(now && now-pressTime<=220?HoldPin:HoldRelease):HoldCancel;
                 pending=-1;
@@ -80,6 +83,7 @@ struct KeyMachine {
         // reinterpret it after focus, modifiers or configuration changes.
         if (down && repeated) return consumed[key];
         if (!scope || !down) return down && consumed[key];
+        if(key==VK_ESCAPE && consumed['F'] && !searchConsumed && framePhase==0){framePhase=2;consumed[key]=true;action=FrameRestore;return true;}
         // PS-owned dialogs reserve CapsLock without launching commands or
         // interfering with Tab/navigation/input in the dialog.
         if (reserveOnly) {
@@ -89,7 +93,8 @@ struct KeyMachine {
         }
         if(key=='F' && (held[VK_CONTROL] || !visible) && !held[VK_SHIFT] && !held[VK_MENU] && !held[VK_LWIN] && !held[VK_RWIN] && !held[VK_CAPITAL]) {
             if(!cfg.searchAllowed || cfg.textInput || !cfg.evidenceFresh || (cfg.colorEditor && visible))return false;
-            consumed[key]=true;searchConsumed=held[VK_CONTROL];action=searchConsumed?SearchLayers:FrameLayers;return true;
+            consumed[key]=true;searchConsumed=held[VK_CONTROL];action=searchConsumed?SearchLayers:FrameLayers;
+            if(!searchConsumed){frameId=now>frameId?now:frameId+1;frameStart=now;framePhase=0;}return true;
         }
         const Binding* match=nullptr;
         bool tabPrefix=false;
@@ -253,7 +258,7 @@ struct HookEvent {
     DWORD ageMs=0;
     bool attempted=false,toggleOn=false,previousToggle=false;
     bool activationAllowed=false,activationActive=false,taskbarSwitching=false,directSwitching=false;
-    ULONGLONG activationIntent=0,inputEpoch=0,guardEpoch=0;
+    ULONGLONG activationIntent=0,inputEpoch=0,guardEpoch=0,frameId=0; int framePhase=2;
     bool guardAllowed=false;
     wchar_t windowClass[64]{};
 };
@@ -297,6 +302,7 @@ static void emit(Action action,HWND hwnd=nullptr,HWND root=nullptr) {
     if (action==HoldRelease && !GetCursorPos(&cursor)) action=HoldCancel;
     queue[head.load(std::memory_order_relaxed)]={action,hwnd,root,cursor};
     queue[head.load(std::memory_order_relaxed)].inputEpoch=inputEpoch;
+    queue[head.load(std::memory_order_relaxed)].frameId=keys.frameId;
     if(action==Configured)queue[head.load(std::memory_order_relaxed)].gapMs=config.sequence;
     if(action==HoldBegin){queue[head.load(std::memory_order_relaxed)].gapMs=GetTickCount64();GetCursorPos(&intentOrigin);queue[head.load(std::memory_order_relaxed)].cursor=intentOrigin;intentRevealed=false;}
     head.store(next,std::memory_order_release); SetEvent(available);
@@ -950,7 +956,7 @@ static void writeActions() {
                     ",\"renew_us\":"+std::to_string(event.renewUs)+",\"timer_gap_ms\":"+std::to_string(event.gapMs)+
                     ",\"callback_peak_us\":"+std::to_string(event.peakUs)+",\"dropped_total\":"+std::to_string(event.dropped)+
                     ",\"renew_ok\":"+(event.blocked?"true":"false")+",\"renew_attempted\":"+(event.attempted?"true":"false")+
-                    ",\"input_epoch\":"+std::to_string(event.inputEpoch)+",\"scan_on_worker\":true}\n";
+                    ",\"input_epoch\":"+std::to_string(event.inputEpoch)+",\"frame_id\":"+std::to_string(event.frameId)+",\"frame_phase\":"+std::to_string(event.framePhase)+",\"scan_on_worker\":true}\n";
                 DWORD written=0;
                 if (!WriteFile(output,line.data(),static_cast<DWORD>(line.size()),&written,nullptr) || written!=line.size()) {stop();return;}
                 continue;
@@ -986,6 +992,7 @@ static void writeActions() {
                 line=std::string("{\"type\":\"")+type+"\",\"action\":\""+names[action]+"\"";
                 if(action==Configured)line+=",\"configuration_sequence\":"+std::to_string(event.gapMs);
                 if(action==SearchLayers || action==FrameLayers)line+=",\"input_guard\":{\"epoch\":"+std::to_string(event.inputEpoch)+",\"root\":"+std::to_string(reinterpret_cast<uintptr_t>(event.root))+",\"focus\":"+std::to_string(reinterpret_cast<uintptr_t>(event.hwnd))+"}";
+                if(action==FrameLayers || action==FrameCommit || action==FrameRestore)line+=",\"frame_id\":"+std::to_string(event.frameId);
                 if (action==HoldRelease || action==HoldBegin) line+=",\"cursor\":["+std::to_string(event.cursor.x)+","+std::to_string(event.cursor.y)+"]";
                 line+="}\n";
             }
@@ -1117,7 +1124,16 @@ static int selfTest() {
         Config c;c.searchAllowed=true;c.bindings[0]={Toggle,{VK_CAPITAL},1};c.bindings[1]={EditStyle,{VK_CAPITAL,'F'},2};Action action;
         KeyMachine bare;check(bare.event('F',true,true,c,false,action) && action==FrameLayers);
         check(bare.event('F',true,true,c,false,action) && action==None);
-        check(bare.event('F',false,false,c,false,action) && action==None);
+        check(bare.event('F',false,false,c,false,action) && action==FrameRestore);
+        KeyMachine tap;check(tap.event('F',true,true,c,false,action,1000) && action==FrameLayers);
+        check(tap.event('F',false,true,c,false,action,1100) && action==FrameCommit && tap.framePhase==1);
+        check(!tap.event('F',false,true,c,false,action,1101) && action==None);
+        KeyMachine hold;check(hold.event('F',true,true,c,false,action,1200) && action==FrameLayers);
+        check(hold.event('F',true,true,c,false,action,1500) && action==None);
+        check(hold.event('F',false,true,c,false,action,1600) && action==FrameRestore && hold.framePhase==2);
+        check(hold.event('F',true,true,c,false,action,1700) && action==FrameLayers);
+        check(hold.event(VK_ESCAPE,true,true,c,false,action,1800) && action==FrameRestore);
+        check(hold.event('F',false,true,c,false,action,1900) && action==None);
         KeyMachine guardedBare;c.searchAllowed=false;check(!guardedBare.event('F',true,true,c,false,action));c.searchAllowed=true;
         KeyMachine f;f.seed(VK_CONTROL);
         check(f.event('F',true,true,c,false,action) && action==SearchLayers);
@@ -1730,7 +1746,7 @@ int main(int argc,char** argv) {
             auto now=GetTickCount64(),started=microseconds();
             if(now-lastInputTick>=250)keys.reconcileModifiers(physicalModifiers());
             bool mouseHeld=sampleClicks.held[0] || sampleClicks.held[1];for (bool held:mouseConsumed) mouseHeld=mouseHeld || held;
-            bool attempted=renewalAllowed(now,lastInputTick,keys.physical[VK_CAPITAL] || keys.modified(),winRight.physical,mouseHeld);
+            bool attempted=renewalAllowed(now,lastInputTick,keys.physical[VK_CAPITAL] || keys.physical['F'] || keys.modified(),winRight.physical,mouseHeld);
             // Unhooking while Windows has pending hook calls can lose an
             // event. Keep the same hook throughout holds and rapid input.
             bool renewed=!attempted || renewHooks(keyHook,mouseHook);
@@ -1747,6 +1763,7 @@ int main(int argc,char** argv) {
                 if (next!=tail.load(std::memory_order_acquire)) {
                     HookEvent event{};event.action=HookHealth;event.scanUs=lastScanUs;event.renewUs=finished-started;event.attempted=attempted;
                     event.inputEpoch=inputEpoch;
+                    event.frameId=keys.frameId;event.framePhase=keys.framePhase;
                     event.gapMs=now-previousMaintenance;event.peakUs=callbackPeakUs.exchange(0,std::memory_order_relaxed);
                     event.dropped=dropped;event.blocked=renewed;
                     queue[head.load(std::memory_order_relaxed)]=event;
