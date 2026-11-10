@@ -21,6 +21,9 @@ from .stability_failures import describe
 class Stopped(RuntimeError):pass
 
 STAGE_LABELS={'fixture':'正在创建隔离临时文档','idle-read':'正在检查闲置后的图层读取',
+    'text-object-fixture':'正在创建隔离文字文档','text-object-create':'正在生成矢量文字对象',
+    'text-object-scale':'正在缩放独立测试副本','text-object-update':'正在更新测试文字源',
+    'text-object-undo-save-close':'正在核验撤销、保存重开和文档收尾',
     'fixed-layer-label':'正在反复修改固定图层的标签','fixed-layer-read':'正在读取固定图层',
     'preview-commit-undo':'正在核验颜色／羽化确认与一次撤销','preview-cancel':'正在核验预览取消恢复',
     'grow-layer':'正在逐步增加图层','growing-layer-read':'正在读取新增图层',
@@ -59,6 +62,25 @@ class StabilityTest:
             value=json.loads((self.folder/'latest.json').read_text('utf-8'))
             if value.get('schema')==1:
                 self.report=value
+                from .text_object_acceptance import compile_rejection
+                record=value.get('native_request',{})
+                proof=compile_rejection(record)
+                if (proof and value.get('phase')=='failed' and value.get('finished_at') and not value.get('read_request_pending') and
+                        not value.get('original_restore_pending') and not value.get('normal_quit')):
+                    run=value.get('run_id','')
+                    if len(run)==32 and all(c in '0123456789abcdef' for c in run):
+                        archive=self.folder/(run+'-compiler-original-unknown.json')
+                        if not archive.exists():atomic_json(archive,value)
+                        if json.loads(archive.read_text('utf-8'))!=value:raise ValueError('Compiler rejection archive mismatch; original protection retained')
+                        value=deepcopy(value);record=value['native_request']
+                        record.update(proof)
+                        for item in value.get('native_requests',[]):
+                            if (item.get('id'),item.get('sha256'))==(record.get('id'),record.get('sha256')):item.update(proof)
+                        value['native_compile_rejection_archive']=str(archive)
+                        bridge=getattr(app,'bridge',None);pending=getattr(getattr(bridge,'transport',None),'pending',None)
+                        value['original_request_pending']=bool(getattr(bridge,'busy',False) or pending and (pending.value or pending.error))
+                        atomic_json(self.folder/(run+'.json'),value);atomic_json(self.folder/'latest.json',value)
+                self.report=value
                 if value.get('phase')=='running':
                     self.report.update(phase='interrupted',message='上次测试已中断；未自动续跑或清理临时文档',cleanup='retained-after-service-interruption')
                     for row in self.report.get('steps',[]):
@@ -79,8 +101,20 @@ class StabilityTest:
     def retained_fixture(self):
         """Only a verified fixture owned by this original run is eligible."""
         if 'retained' not in self.report.get('cleanup',''):return None
+        fixture=self.report.get('text_fixture',{})
+        if (self.report.get('profile')=='text-object' and type(fixture.get('document_id')) is int and
+                self.report.get('native_request',{}).get('phase') in ('returned','not-started')):
+            session=self.report.get('versions',{}).get('session')
+            if session:return {'session':session,'document_id':fixture['document_id']}
+        fixture=self.report.get('color_fixture',{})
+        if (self.report.get('profile')=='color-native' and type(fixture.get('id')) is int and
+                self.report.get('native_request',{}).get('phase')=='returned'):
+            session=self.report.get('versions',{}).get('session')
+            if session:return {'session':session,'document_id':fixture['id']}
         for row in self.report.get('steps',[]):
+            if row.get('stage')!='fixture' or row.get('state')!='passed':continue
             value=row.get('evidence',{}).get('result',{})
+            if not isinstance(value,dict):continue
             target=value.get('target',{})
             if row.get('stage')=='fixture' and row.get('state')=='passed' and value.get('verified') is True and target.get('session') and isinstance(target.get('document_id'),int):
                 return target
@@ -94,7 +128,13 @@ class StabilityTest:
         await self.app.broadcast({'type':'stability','data':self.snapshot()})
 
     async def start(self,profile='standard'):
-        if profile not in ('standard','extended'):raise ValueError('未知测试模式')
+        if profile not in ('standard','extended','text-object','color-native'):raise ValueError('未知测试模式')
+        if self.report.get('native_request',{}).get('phase') in ('submitted','unknown'):
+            raise RuntimeError('原生验收请求退出仍未知，未开始新的测试')
+        if self.report.get('text_fixture'):
+            raise RuntimeError('上次文字验收文档仍保留，未开始新的测试')
+        if self.report.get('color_fixture') or self.report.get('original_restore_pending') or self.report.get('normal_quit',{}).get('phase') in ('submitted','unknown'):
+            raise RuntimeError('原颜色验收现场或原稿恢复仍待核对，未开始新的测试')
         app=self.app
         if self.active or app.operation_lock.locked() or app.bridge.busy:raise RuntimeError('请等待当前操作结束；测试不排队')
         if not isinstance(app.bridge,UxpBridge):raise RuntimeError('自动测试需要 UXP 执行端')
@@ -115,9 +155,9 @@ class StabilityTest:
             app.operation_lock.release();raise
         self.active=True;self.finalizing=False;self.stop_requested=False
         self.report={'schema':1,'run_id':uuid.uuid4().hex,'phase':'running','message':'正在准备隔离测试',
-            'profile':profile,'rounds':3 if profile=='standard' else 10,'round':0,'stage':'preflight',
+            'profile':profile,'rounds':2 if profile in ('text-object','color-native') else 3 if profile=='standard' else 10,'round':0,'stage':'preflight',
             'started_at':time.time(),'application_version':APP_VERSION,'steps':[],'system_samples':[],
-            'cleanup':'not-created','scope':{'native_menu_lifecycle':True,'native_menu_read_only':True,'temporary_document_only':True,'changes_power_plan':False,
+            'cleanup':'not-created','scope':{'native_menu_lifecycle':profile not in ('text-object','color-native'),'native_menu_read_only':True,'temporary_document_only':True,'changes_power_plan':False,
             'injects_input':False,'uploads':False,'original_documents_saved_or_closed':False},
             'not_tested':['physical_caps_and_UU_remote','mouse_hit_testing','visible_canvas','real_document_content',
                 'GPU_causality','thermal_throttling_causality','other_OS_or_Photoshop_versions'],
@@ -150,7 +190,8 @@ class StabilityTest:
 
     async def run_cleanup(self):
         try:
-            _,check=await asyncio.to_thread(host_scope)
+            self.host_pid,self.focus_check=await asyncio.to_thread(host_scope)
+            check=self.focus_check
             previous=self.retained_fixture()
             heartbeat=await asyncio.to_thread(lambda:read_heartbeat(self.app.bridge.transport.folder))
             if not previous or heartbeat.get('session')!=previous['session']:
@@ -159,6 +200,18 @@ class StabilityTest:
                 check()
                 if self.stop_requested:raise Stopped('已停止尚未提交的收尾')
             check()
+            if self.report.get('profile')=='color-native':
+                from .color_native_acceptance import cleanup
+                evidence=await cleanup(self)
+                self.report.update(phase='cleaned',message='原颜色验收文档已核验并关闭',
+                    cleanup='verified-closed-and-original-restored',cleanup_phase='completed',cleanup_evidence=evidence)
+                return
+            if self.report.get('profile')=='text-object':
+                from .text_object_acceptance import cleanup
+                evidence=await cleanup(self)
+                self.report.update(phase='cleaned',message='原文字验收文档已核验并关闭',
+                    cleanup='verified-closed-and-original-restored',cleanup_phase='completed',cleanup_evidence=evidence)
+                return
             result=await self.app.bridge.execute_stability(self.report['run_id'],'finish',before_dispatch)
             value=json.loads(result['result'])['result']
             if value.get('closed_owned_document') is not True or value.get('original_active_restored') is not True:
@@ -170,7 +223,7 @@ class StabilityTest:
             pending=bool(self.app.bridge.busy or self.app.bridge.transport.pending.value or self.app.bridge.transport.pending.error)
             self.report.update(message='收尾未完成；原测试报告和现场保持',cleanup_phase='failed',cleanup_problem=describe(error,'cleanup',pending))
         finally:
-            self.report['original_request_pending']=bool(self.app.bridge.busy or self.app.bridge.transport.pending.value or self.app.bridge.transport.pending.error)
+            self.report['original_request_pending']=bool(self.report.get('native_request',{}).get('phase') in ('submitted','unknown') or self.app.bridge.busy or self.app.bridge.transport.pending.value or self.app.bridge.transport.pending.error)
             try:await self.save()
             finally:
                 self.active=False
@@ -226,7 +279,8 @@ class StabilityTest:
         # reply still cannot authorize a new cleanup mutation. Fail closed;
         # a timeout, heartbeat or menu close is not execution-exit proof.
         self.report['read_request_pending']=True
-        try:value=await asyncio.to_thread(self.app.bridge.transport.call,'inspect',stability_run=self.report['run_id'],**payload)
+        binding={} if self.report.get('profile') in ('text-object','color-native') else {'stability_run':self.report['run_id']}
+        try:value=await asyncio.to_thread(self.app.bridge.transport.call,'inspect',**binding,**payload)
         except UxpRequestFailed:
             self.report['read_request_pending']=False
             raise
@@ -384,6 +438,17 @@ class StabilityTest:
                 'menu_process_alive':bool(desktop and desktop.process and desktop.process.poll() is None),
                 'hotkey_process_alive':bool(desktop and desktop.native and desktop.native.poll() is None),
                 'visible_content_and_physical_input_verified':False}
+            if self.report.get('profile')=='color-native':
+                from .color_native_acceptance import run
+                await run(self)
+                self.report.update(phase='completed',message='原生颜色通道隔离验收完成，报告已保存')
+                return
+            if self.report.get('profile')=='text-object':
+                if version(heartbeat.get('probe_version'))<(0,3,100):raise RuntimeError('文字对象验收需要UXP0.3.100')
+                from .text_object_acceptance import run
+                await run(self)
+                self.report.update(phase='completed',message='文字对象隔离验收完成，报告已保存')
+                return
             self.report['cleanup']='fixture-started-outcome-not-yet-verified'
             await self.step('fixture',lambda:self.command('fixture'));owned=True;self.report['cleanup']='owned-document-retained'
             await self.step('native-selection-probe',self.native_selection_probe)
@@ -414,7 +479,7 @@ class StabilityTest:
             # close, resend or new host reads from this failure path.
             if owned:self.report['cleanup']='retained-for-inspection-no-automatic-cleanup'
             if getattr(self,'heartbeat_folder',None):self.report['last_uxp_liveness']=await asyncio.to_thread(liveness,self.heartbeat_folder)
-            self.report['original_request_pending']=bool(self.report.get('read_request_pending') or self.app.bridge.busy or self.app.bridge.transport.pending.value or self.app.bridge.transport.pending.error)
+            self.report['original_request_pending']=bool(self.report.get('read_request_pending') or self.report.get('native_request',{}).get('phase') in ('submitted','unknown') or self.report.get('normal_quit',{}).get('phase') in ('submitted','unknown') or self.app.bridge.busy or self.app.bridge.transport.pending.value or self.app.bridge.transport.pending.error)
             self.finalizing=True
             if monitor:
                 try:await asyncio.wait_for(asyncio.shield(monitor),5)

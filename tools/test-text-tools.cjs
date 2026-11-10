@@ -10,6 +10,7 @@ const ps={app:{activeDocument:{resolution:72}},core:{getActiveTool:async()=>({cl
  assert.equal(c._options.dialogOptions,'silent');
  if(c._obj==='multiGet')return clone(row);
  if(c._obj==='get'&&c._target[0]._property==='XMPMetadataAsUTF8')return {XMPMetadataAsUTF8:row.XMPMetadataAsUTF8||''};
+ if(c._obj==='get'&&c._target[0]._property==='smartObjectMore')return {smartObjectMore:row.smartObjectMore};
  if(c._obj==='set'&&c.to?._obj==='layer'){assert.equal(c._target[0]._property,'XMPMetadataAsUTF8');if(!wrongXmp)row.XMPMetadataAsUTF8=c.to.XMPMetadataAsUTF8;return {};}
  if(c._obj==='set'){
   assert.equal(c._target.length,1);assert.equal(c._target[0]._ref,'textLayer');assert.equal(c._target[0]._value,'targetEnum');
@@ -28,6 +29,26 @@ vm.createContext(context);vm.runInContext(source.slice(source.lastIndexOf('funct
 const tools=context.tools;
 async function request(find,replacement){const read=await tools.read();return {target:read.target,text:{revision:read.revision,find,replacement},expires_at_ms:Date.now()+5000};}
 (async()=>{
+ ps.constants={DocumentMode:{RGB:'rgb'},BitsPerChannelType:{EIGHT:8}};
+ Object.assign(ps.app.activeDocument,{width:600,height:400,mode:'rgb',bitsPerChannel:8,colorProfileName:'sRGB IEC61966-2.1'});
+ let preparedRequest=await request('猫','XY');
+ const nativeSource=await tools.prepareObject(preparedRequest,preparedRequest.text);
+ assert.equal(nativeSource.source.schema,1);assert.equal(nativeSource.source.renderer,undefined);
+ assert.equal(nativeSource.source.layer.text.textKey,'AXY😀\rBCXY');
+ assert.equal(nativeSource.source.layer.text.textStyleRange[1].textStyle.fontPostScriptName,'Beta');
+ assert.deepEqual(clone(nativeSource.source.layer.text.textShape),original.textKey.textShape);assert.equal(writes,0);
+ await assert.rejects(tools.prepareObject(preparedRequest,{...preparedRequest.text,list_xmp:'new list options'}),/先写回普通文字列表/);
+ assert.equal(writes,0);
+ row.XMPMetadataAsUTF8='saved list options';preparedRequest=await request('猫','XY');
+ assert.equal((await tools.prepareObject(preparedRequest,{...preparedRequest.text,list_xmp:'saved list options'})).source.schema,1);
+ row.layerKind=5;row.smartObjectMore={transform:[0,0,600,0,600,400,0,400]};
+ let objectRead=await tools.read();
+ const objectParams={revision:objectRead.revision,find:'猫',replacement:'XY',object_render:'a'.repeat(64),object_source:{schema:1,canvas:nativeSource.source.canvas,layer:{text:clone(original.textKey),xmp:''}}};
+ assert.equal((await tools.prepareObject({target,expires_at_ms:Date.now()+5000},objectParams)).source.schema,1);
+ objectParams.object_source.schema=2;objectParams.object_source.renderer='list-v1';
+ const legacySource=(await tools.prepareObject({target,expires_at_ms:Date.now()+5000},objectParams)).source;
+ assert.equal(legacySource.schema,2);assert.equal(legacySource.renderer,'list-v1');assert.equal(writes,0);
+ row=clone(original);
  let req=await request('猫','XY');assert.equal(writes,0);
  const result=await tools.replace(req);assert.equal(result.count,2);assert.equal(row.textKey.textKey,'AXY😀\rBCXY');assert.equal(history,1);assert.equal(commits,1);
  assert.deepEqual(row.textKey.textStyleRange.map(r=>[r.from,r.to,r.textStyle.fontPostScriptName]),[[0,3,'Alpha'],[3,6,'Beta'],[6,11,'Gamma']]);

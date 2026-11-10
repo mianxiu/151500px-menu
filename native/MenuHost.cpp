@@ -1457,6 +1457,7 @@ static void drawCapsBar() {
         std::array<float,11> widths{};float total=0;
         for(int j=first;j<=last;++j){const int i=smart?19-j:j;const char* label=capsKeys[i];widths[i]=std::max(minimum,font->CalcTextSizeA(font->LegacySize,FLT_MAX,0,label).x+inset);total=smart?std::max(total,widths[i]):total+widths[i];}
         if(first==0 || first==7)x=pieCenter.x-total*.5f;
+        if(smart)x-=total;
         const float left=x,height=h*(smart?last-first+1:1);
         MenuControls::surface(d,{x,y},{x+total,y+height},scale);
         for(int j=first;j<=last;++j){
@@ -1480,7 +1481,7 @@ static void drawCapsBar() {
     };
     drawGroup(0,capsBottomCount()-1,0,pieCenter.y+(107+(rowVisible(1)?(labelRowCount()-2)*21.f:0))*scale);
     if(individualSmartReady && panelKind!=3 && layerCount && layerKind)
-        drawGroup(9,layerCount>1?10:9,pieCenter.x+65*scale,pieCenter.y+(quickGroupY(true)+figmaDisplayWidgetHeight+quickGroupGap)*scale,true);
+        drawGroup(9,layerCount>1?10:9,float(holdRows[1].left)-quickGroupGap*scale,float(holdRows[1].top),true);
     if(panelKind==2 && rowVisible(3)){
         float x=float(holdRows[3].right);
         for(int i:{5,6}){
@@ -3503,7 +3504,24 @@ int main() {
                 enterHex("112233");
                 if(shapeEditor.current()["rgb"]!=Json({17,34,51}) || testedActions.size()!=shapeCount || testedMaskEvents.size()<=valueEvents)
                     throw std::runtime_error("Unprefixed Hex failed to update only the owning preview");
-                shapeEditor.prepare(shapeFixture);numberFrame(ImGuiKey_None,false);
+                for(const auto& model:std::vector<std::string>{"cmyk","lab","gray"}){
+                    auto nativeFixture=shapeFixture;nativeFixture["live_preview"]=false;nativeFixture["native_model"]=model;
+                    const Json values=model=="cmyk"?Json::array({12.345,20,30,4}):model=="lab"?Json::array({55.5,-12.75,27}):Json::array({62.5});
+                    nativeFixture["fill"]=Json{{"kind","solid"},{"enabled",true},{"native",{{"model",model},{"values",values}}}};
+                    shapeEditor.prepare(nativeFixture);setHoldMode(true);shapePanelOpen=true;numberFrame(ImGuiKey_None,false);numberFrame(ImGuiKey_None,false);
+                    if(shapeEditor.hexBounds.right || shapeEditor.rgbBounds[values.size()-1].right<=shapeEditor.rgbBounds[0].left || beginShapeEyedrop())
+                        throw std::runtime_error("Native color channels retained RGB conversion controls or lost inputs");
+                    const int index=model=="lab"?1:0;const auto rect=shapeEditor.rgbBounds[index];
+                    GImGui->Time+=io.MouseDoubleClickTime+.1f;valueMouse(rect,false);valueMouse(rect,true);valueMouse(rect,false);valueMouse(rect,true);
+                    if(!ImGui::TempInputIsActive(shapeEditor.rgbInputIDs[index]))throw std::runtime_error("Native color scalar did not enter numeric input");
+                    io.AddInputCharactersUTF8(model=="lab"?"-25.75":"37.25");numberFrame(ImGuiKey_None,false);numberFrame(ImGuiKey_Enter,true);numberFrame(ImGuiKey_Enter,false);valueMouse(rect,false);
+                    if(std::abs(shapeEditor.current()["native"]["values"][index].get<double>()-(model=="lab"?-25.75:37.25))>.001 || !shapeEditor.dirty)
+                        throw std::runtime_error("Native color scalar lost fractional or negative channel value");
+                    shapeEditor.mode(1);numberFrame(ImGuiKey_None,false);
+                    if(!shapeEditor.current()["stops"][0].contains("native") || !shapeEditor.current()["stops"][1].contains("native"))
+                        throw std::runtime_error("Native gradient conversion changed the color model");
+                }
+                shapeEditor.prepare(shapeFixture);setHoldMode(true);shapePanelOpen=true;numberFrame(ImGuiKey_None,false);
                 const auto idleDraft=shapeEditor.draft;const auto idleEvents=testedMaskEvents.size();
                 for(int frame=0;frame<120;++frame)numberFrame(ImGuiKey_None,false);
                 if(shapeEditor.draft!=idleDraft || testedMaskEvents.size()!=idleEvents)
@@ -3888,7 +3906,8 @@ int main() {
                     for(int kind:{0,1,2}){
                         panelKind=kind;layerKind=8;layerCount=2;layerCrossParents=true;setHoldMode(true);holdMoved=true;numberFrame(ImGuiKey_None,false);
                         const auto r=capsRows[9];const POINT middle={(r.left+r.right)/2,(r.top+r.bottom)/2};
-                        if(r.right<=r.left || holdActionAt(middle)!=49 || !actionTipText(49) || tipGroupRect(49).left!=capsRows[10].left || tipFamily(49)==tipFamily(40))
+                        if(r.right<=r.left || std::abs(r.right-(holdRows[1].left-quickGroupGap*scale))>1 || capsRows[10].top!=holdRows[1].top ||
+                           holdActionAt(middle)!=49 || !actionTipText(49) || tipGroupRect(49).left!=capsRows[10].left || tipFamily(49)==tipFamily(40))
                             throw std::runtime_error("Individual Smart Object button lost capability/hit/independent tooltip");
                         renderedHit=49;finishHold(middle);
                         if(testedActions.back()!=capsActions[9])throw std::runtime_error("Individual Smart Object gesture failed");
@@ -3915,8 +3934,9 @@ int main() {
                     if(capsEnabled(10) || testedActions.size()!=pairCount)throw std::runtime_error("Locked combined Smart Object dispatched");
                     layerLocked=false;inputFocused=true;if(capsEnabled(10))throw std::runtime_error("Input enabled combined Smart Object");inputFocused=false;
                     panelKind=2;layerKind=4;layerCount=1;layerCrossParents=false;holdFinished=false;numberFrame(ImGuiKey_None,false);
-                    if(capsRows[9].right || capsEnabled(9) || capsRows[10].top<quickRows[6].bottom+LONG(quickGroupGap*scale)-1 || capsRows[10].left!=quickRows[3].left)
-                        throw std::runtime_error("Individual Smart Object overlaps text split or creation buttons");
+                    if(capsRows[9].right || capsEnabled(9) || capsRows[10].top!=holdRows[1].top || std::abs(capsRows[10].right-(holdRows[1].left-quickGroupGap*scale))>1 ||
+                       capsRows[10].right>=holdRows[1].left || capsRows[10].right>=toolRow.left)
+                        throw std::runtime_error("Lower-left Smart Object overlaps selection, labels or text tool");
                     for(int kind:{3,4}){panelKind=kind;numberFrame(ImGuiKey_None,false);if(capsRows[9].right || capsRows[10].right || capsEnabled(9) || capsEnabled(10))throw std::runtime_error("Input/home retained Smart Object controls");}
                     panelKind=2;individualSmartReady=false;numberFrame(ImGuiKey_None,false);
                     const auto before=testedActions.size();send(capsActions[9]);send(capsActions[10]);

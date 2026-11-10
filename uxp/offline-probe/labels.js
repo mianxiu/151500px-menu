@@ -1033,14 +1033,32 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     return values.every(v=>typeof v==='number' && Number.isFinite(v) && (floating || v>=0 && v<=255))?
       values.map(v=>Math.round(Math.max(0,Math.min(255,floating?v*255:v)))):null;
   };
+  const nativeModels={CMYKColorClass:['cmyk',['cyan','magenta','yellowColor','black'],[[0,100],[0,100],[0,100],[0,100]]],
+    labColor:['lab',['luminance','a','b'],[[0,100],[-128,127],[-128,127]]],grayscale:['gray',['gray'],[[0,100]]]};
+  function channels(color) {
+    const value=rgb(color);if(value)return {rgb:value};
+    const model=nativeModels[color?._obj];if(!model)return null;
+    const values=model[1].map(k=>color[k]);
+    return values.every((v,i)=>typeof v==='number' && Number.isFinite(v) && v>=model[2][i][0] && v<=model[2][i][1])?
+      {native:{model:model[0],values}}:null;
+  }
+  function colorDescriptor(value) {
+    if(!value.native)return {_obj:'RGBColor',red:value.rgb[0],grain:value.rgb[1],blue:value.rgb[2]};
+    const [name,model]=Object.entries(nativeModels).find(([,v])=>v[0]===value.native.model);
+    return {_obj:name,...Object.fromEntries(model[1].map((key,i)=>[key,value.native.values[i]]))};
+  }
+  function documentColor(doc) {
+    let profile=null;try{profile=doc.colorProfileName ?? null;}catch(_){}
+    return {mode:doc.mode,depth:doc.bitsPerChannel,profile};
+  }
   function paint(raw) {
-    if(raw?._obj==='solidColorLayer') {const c=rgb(raw.color);return c && c.every(v=>Number.isFinite(v))?{kind:'solid',rgb:c}:null;}
+    if(raw?._obj==='solidColorLayer') {const c=channels(raw.color);return c?{kind:'solid',...c}:null;}
     if(raw?._obj==='gradientLayer') {
       const colors=raw.gradient?.colors;
       if(!Array.isArray(colors) || colors.length<2 || colors.length>32)return null;
-      const stops=colors.map(v=>({rgb:rgb(v.color),location:Math.round(v.location)}));
+      const stops=colors.map(v=>({...(channels(v.color) || {}),location:Math.round(v.location)}));
       const method=raw.gradientsInterpolationMethod?._value ?? 'classic';
-      return stops.every(v=>v.rgb && v.rgb.every(Number.isFinite)) && ['classic','linear','perceptual'].includes(method)?{kind:'gradient',stops,method}:null;
+      return stops.every(v=>v.rgb || v.native) && ['classic','linear','perceptual'].includes(method)?{kind:'gradient',stops,method}:null;
     }
     if(raw?._obj==='patternLayer' && typeof raw.pattern?.name==='string')return {kind:'pattern',name:raw.pattern.name};
     return null;
@@ -1072,7 +1090,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     const actualStroke=vector?(stroke || defaultStroke):defaultStroke;
     if(actualStroke.strokeStyleLineWidth && !['pixelsUnit','pointsUnit'].includes(actualStroke.strokeStyleLineWidth._unit))return null;
     if(!paint(actualStroke.strokeStyleContent))return null;
-    const raw={fill,stroke:actualStroke,vector};
+    const raw={fill,stroke:actualStroke,vector,strokeMissing:vector && !stroke};
     if(vector) {
       // Read only while enriching an eligible shape, never on the basic
       // snapshot path or ordinary fill layers. Unknown values stay unavailable.
@@ -1093,14 +1111,14 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       return {available:false};
     const doc=ps.app.activeDocument,id=context.layer_ids[0],key=doc.id+':'+id;
     if(!force && cache?.key===key && Date.now()-cache.at<500)return cache.data;
-    if(doc.mode!==ps.constants.DocumentMode.RGB || ![ps.constants.BitsPerChannelType.EIGHT,ps.constants.BitsPerChannelType.SIXTEEN].includes(doc.bitsPerChannel))
+    if(!['RGB','CMYK','LAB','GRAYSCALE'].some(key=>ps.constants.DocumentMode[key]!==undefined && doc.mode===ps.constants.DocumentMode[key]) || ![ps.constants.BitsPerChannelType.EIGHT,ps.constants.BitsPerChannelType.SIXTEEN].includes(doc.bitsPerChannel))
       return {available:false};
     if(checkpoint)await checkpoint();
     const raw=await readCore(doc,id,checkpoint);
     if(!raw) {cache={key,at:Date.now(),data:{available:false}};return cache.data;}
     if(ps.app.activeDocument.id!==doc.id || doc.activeLayers.length!==1 || doc.activeLayers[0].id!==id)
       return {available:false};
-    const signature=JSON.stringify(raw),revision=cache?.key===key && cache.signature===signature?cache.data.revision:session+':'+(++serial);
+    const signature=JSON.stringify({raw,color:documentColor(doc)}),revision=cache?.key===key && cache.signature===signature?cache.data.revision:session+':'+(++serial);
     const fill={...paint(raw.fill),enabled:raw.stroke.fillEnabled!==false};
     const stroke={...paint(raw.stroke.strokeStyleContent),enabled:!!raw.stroke.strokeEnabled,
       width:Number(raw.stroke.strokeStyleLineWidth?._value ?? 1)*(raw.stroke.strokeStyleLineWidth?._unit==='pointsUnit'?doc.resolution/72:1)};
@@ -1108,8 +1126,10 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     // application-wide presets mid-drag adds unrelated host work, and cannot
     // make a newly added pattern valid for the original frozen editor anyway.
     if(checkpoint)await checkpoint();
-    const data={available:true,vector:raw.vector,live_preview:typeof ps.core.redrawDocument==='function' || legacyPreview,
-      ...(legacyPreview && typeof ps.core.redrawDocument!=='function'?{preview_engine:'legacy-com'}:{}),revision,fill,stroke,
+    const nativePaint=p=>!!p.native || p.stops?.some(s=>s.native);
+    const live=doc.mode===ps.constants.DocumentMode.RGB && !nativePaint(fill) && !nativePaint(stroke);
+    const data={available:true,vector:raw.vector,native_model:({[ps.constants.DocumentMode.CMYK]:'cmyk',[ps.constants.DocumentMode.LAB]:'lab',[ps.constants.DocumentMode.GRAYSCALE]:'gray'})[doc.mode] || '',live_preview:live && (typeof ps.core.redrawDocument==='function' || legacyPreview),
+      ...(live && legacyPreview && typeof ps.core.redrawDocument!=='function'?{preview_engine:'legacy-com'}:{}),revision,fill,stroke,
       patterns:frozenCatalog?frozenCatalog.patterns:await patterns(),
       pattern_catalog:frozenCatalog?frozenCatalog.pattern_catalog:catalogInfo};
     if(checkpoint)await checkpoint();
@@ -1118,15 +1138,18 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
   }
   function validatePaint(value) {
     if(!value || !['solid','gradient','pattern'].includes(value.kind) || typeof value.enabled!=='boolean')throw Error('Invalid paint type');
-    const color=c=>Array.isArray(c) && c.length===3 && c.every(v=>typeof v==='number' && Number.isFinite(v) && v>=0 && v<=255);
-    if(value.kind==='solid' && !color(value.rgb))throw Error('Invalid RGB color');
+    const color=v=>{
+      if(Object.prototype.hasOwnProperty.call(v,'native')){const n=v.native,model=n && Object.values(nativeModels).find(m=>m[0]===n.model);return !v.rgb && model && Object.keys(n).sort().join(',')==='model,values' && Array.isArray(n.values) && n.values.length===model[1].length && n.values.every((x,i)=>typeof x==='number' && Number.isFinite(x) && x>=model[2][i][0] && x<=model[2][i][1]);}
+      return Array.isArray(v.rgb) && v.rgb.length===3 && v.rgb.every(x=>typeof x==='number' && Number.isFinite(x) && x>=0 && x<=255);
+    };
+    if(value.kind==='solid' && !color(value))throw Error('Invalid paint color');
     if(value.kind==='gradient' && (!Array.isArray(value.stops) || value.stops.length<2 || value.stops.length>32 ||
-      value.stops.some((s,i)=>!color(s.rgb) || !Number.isInteger(s.location) || s.location<0 || s.location>4096 || i && s.location<value.stops[i-1].location)))throw Error('Invalid gradient stops');
+      value.stops.some((s,i)=>!color(s) || !Number.isInteger(s.location) || s.location<0 || s.location>4096 || i && s.location<value.stops[i-1].location)))throw Error('Invalid gradient stops');
     if(value.kind==='pattern' && (typeof value.name!=='string' || !value.name || value.name.length>128))throw Error('Invalid pattern name');
     if(value.kind==='gradient' && value.method!==undefined && !['classic','linear','perceptual'].includes(value.method))throw Error('Invalid gradient interpolation');
   }
   function build(value,previous) {
-    if(value.kind==='solid')return {_obj:'solidColorLayer',color:{_obj:'RGBColor',red:value.rgb[0],grain:value.rgb[1],blue:value.rgb[2]}};
+    if(value.kind==='solid')return {_obj:'solidColorLayer',color:colorDescriptor(value)};
     if(value.kind==='pattern') {
       if(!catalog.includes(value.name) && previous?.pattern?.name!==value.name)throw Error('图案预设已改变，请重新打开菜单');
       const next=previous?._obj==='patternLayer'?clone(previous):{_obj:'patternLayer'};
@@ -1138,7 +1161,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     if(value.method!==undefined)next.gradientsInterpolationMethod={_enum:'gradientInterpolationMethodType',_value:value.method};
     next.gradient={...old,_obj:'gradientClassEvent',name:old.name || 'Menu gradient',gradientForm:{_enum:'gradientForm',_value:'customStops'},
       interfaceIconFrameDimmed:4096,colors:value.stops.map((s,i)=>({_obj:'colorStop',
-        color:{_obj:'RGBColor',red:s.rgb[0],grain:s.rgb[1],blue:s.rgb[2]},type:{_enum:'colorStopType',_value:'userStop'},
+        color:colorDescriptor(s),type:{_enum:'colorStopType',_value:'userStop'},
         location:s.location,midpoint:old.colors?.[i]?.midpoint ?? 50})),
       transparency:old.transparency || [0,4096].map(location=>({_obj:'transferSpec',opacity:{_unit:'percentUnit',_value:100},location,midpoint:50}))};
     return next;
@@ -1146,9 +1169,10 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
   function samePaint(actual,wanted) {
     if(!actual || actual.kind!==wanted.kind || actual.enabled!==wanted.enabled)return false;
     const close=(a,b)=>a.length===b.length && a.every((v,i)=>Math.abs(v-b[i])<=1);
-    if(actual.kind==='solid')return close(actual.rgb,wanted.rgb);
+    const sameColor=(a,b)=>a.native || b.native?a.native?.model===b.native?.model && !!a.native && !!b.native && a.native.values.length===b.native.values.length && a.native.values.every((v,i)=>Math.abs(v-b.native.values[i])<=.01):close(a.rgb,b.rgb);
+    if(actual.kind==='solid')return sameColor(actual,wanted);
     if(actual.kind==='pattern')return actual.name===wanted.name;
-    return (wanted.method===undefined || actual.method===wanted.method) && actual.stops.length===wanted.stops.length && actual.stops.every((s,i)=>s.location===wanted.stops[i].location && close(s.rgb,wanted.stops[i].rgb));
+    return (wanted.method===undefined || actual.method===wanted.method) && actual.stops.length===wanted.stops.length && actual.stops.every((s,i)=>s.location===wanted.stops[i].location && sameColor(s,wanted.stops[i]));
   }
   function validateParams(params) {
     if(!params || typeof params.revision!=='string' || params.revision.length>128)throw Error('Missing shape revision');
@@ -1256,12 +1280,16 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       await stage('read-initial-paint');
       const eligibility=selectionContext(true),before=await observe(eligibility,true);
       if(!before.available || before.revision!==params.revision)throw Error('填充／描边已改变，请重新打开菜单；本次未修改');
+      if(preview && !before.live_preview)throw Error('原生颜色通道使用本地草稿，确认后写入');
       if(params.mask && (!before.vector || !before.mask))throw Error('当前图层不支持矢量蒙版羽化／密度；本次未修改');
       if(!before.vector && params.fill.kind!==before.fill.kind)throw Error('普通填充层保持PS原生类型；本次未修改');
-      if(!before.vector && (!params.fill.enabled || params.stroke.kind!==before.stroke.kind || params.stroke.enabled!==before.stroke.enabled
-          || params.stroke.width!==before.stroke.width || JSON.stringify(params.stroke.rgb)!==JSON.stringify(before.stroke.rgb)))
+      if(!before.vector && (!params.fill.enabled || valueKey(params.stroke)!==valueKey(before.stroke)))
         throw Error('普通填充层不支持形状描边或禁用填充；本次未修改');
       const original=cache.raw,doc=ps.app.activeDocument,anchor=doc.activeLayers[0];
+      // A first shapeStyle write can materialize PS's previously absent, disabled stroke in the document model.
+      const strokeMatches=value=>samePaint(value,params.stroke) || original.strokeMissing &&
+        valueKey(params.stroke)===valueKey(before.stroke) && value?.enabled===false && Math.abs(value.width-before.stroke.width)<=.01;
+      const originalColor=valueKey(documentColor(doc));
       const identity={documentID:doc.id,layerID:anchor.id};
       const target=()=>ps.app.activeDocument.id===identity.documentID && doc.activeLayers.length===1 &&
         doc.activeLayers[0].id===identity.layerID && !anchor.allLocked;
@@ -1270,7 +1298,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       const rawKey=raw=>JSON.stringify([raw.fill,raw.stroke,raw.vector]);
       let appliedRawKey=rawKey(original);
       const preparePaint=()=>{
-        const key=p=>JSON.stringify([p.kind,p.enabled,p.rgb,p.stops?.map(s=>[s.location,...s.rgb]),p.name,p.width,p.method]);
+        const key=p=>valueKey([p.kind,p.enabled,p.rgb,p.native,p.stops?.map(s=>[s.location,s.rgb,s.native]),p.name,p.width,p.method]);
         const fillChanged=key(params.fill)!==key(appliedPaint.fill),strokeChanged=key(params.stroke)!==key(appliedPaint.stroke);
         const paintChanged=fillChanged || strokeChanged;
         // Vector-backed content must use Photoshop's shapeStyle setter.
@@ -1321,7 +1349,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
           // sibling adjacency and sort capabilities on every color frame.
           const actual=await observe(selectionContext(true),true,before);
           if(!target() || !actual.available || actual.vector!==before.vector || !samePaint(actual.fill,params.fill) ||
-            !samePaint(actual.stroke,params.stroke) || Math.abs(actual.stroke.width-params.stroke.width)>.01)
+            !strokeMatches(actual.stroke) || Math.abs(actual.stroke.width-params.stroke.width)>.01)
             throw Error('Fill or stroke preview readback mismatch');
           appliedPaint=clone(params);liveColors=actual;appliedRaw=cache.raw;appliedRawKey=rawKey(appliedRaw);paintTouched=true;
         }
@@ -1371,7 +1399,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
         const wantedMask=params.mask || before.mask;
         if(wantedMask && (!after.mask || Math.abs(after.mask.feather-wantedMask.feather)>.01 ||
           Math.abs(after.mask.density-wantedMask.density)>100/255+.001))throw Error('矢量蒙版羽化／密度读回不符，已回滚');
-        if(!after.available || after.vector!==before.vector || !samePaint(after.fill,params.fill) || !samePaint(after.stroke,params.stroke) || Math.abs(after.stroke.width-params.stroke.width)>.01 ||
+        if(valueKey(documentColor(doc))!==originalColor || !after.available || after.vector!==before.vector || !samePaint(after.fill,params.fill) || !strokeMatches(after.stroke) || Math.abs(after.stroke.width-params.stroke.width)>.01 ||
           doc.activeLayers.length!==1 || doc.activeLayers[0].id!==anchor.id || (anchor.parent?.id ?? null)!==parentId ||
           Array.from(parent?parent.layers:doc.layers,l=>l.id).join(',')!==order.join(','))throw Error('形状颜色／图层身份读回不符，已回滚');
         await stage('commit-history');
@@ -1412,6 +1440,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       actual.active_layer_id!==expected.active_layer_id || actual.layer_ids.join(',')!==expected.layer_ids?.join(','))throw Error('Legacy preview target changed');
     const before=await observe(selectionContext(true),true);
     if(!before.available || before.revision!==request.paint.revision)throw Error('填充／描边已改变，请重新打开菜单；本次未修改');
+    if(!before.live_preview)throw Error('原生颜色通道使用本地草稿，确认后写入');
     if(request.paint.mask && (!before.vector || !before.mask))throw Error('Vector mask unavailable');
     if(!before.vector && (request.paint.fill.kind!==before.fill.kind || !request.paint.fill.enabled ||
       valueKey(request.paint.stroke)!==valueKey(before.stroke)))throw Error('Ordinary fill type must remain unchanged');
@@ -2461,8 +2490,11 @@ function createTextTools(ps,session,capture,readTree) {
     const wanted=plan(raw,params).value,doc=ps.app.activeDocument;
     const canvas=existing?params.object_source.canvas:{width:doc.width,height:doc.height,resolution:doc.resolution,mode:doc.mode===ps.constants.DocumentMode.RGB?'RGB':'unsupported',depth:doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT?8:0,profile:doc.colorProfileName};
     if(canvas.mode!=='RGB'||canvas.depth!==8)throw Error('矢量文字对象目前仅支持RGB8源');
+    const legacy=existing&&params.object_source.schema===2;
+    const originalXmp=existing?params.object_source.layer.xmp:row.XMPMetadataAsUTF8;
+    if(!legacy&&Object.prototype.hasOwnProperty.call(params,'list_xmp')&&params.list_xmp!==originalXmp)throw Error('请先写回普通文字列表，再生成矢量文字对象；本次未修改');
     return {kind:existing?'smart-object':'text',row,before_xmp:row.XMPMetadataAsUTF8,...(!existing?{before_text:row.textKey}:{transform:row.smartObjectMore?.transform,before_render:params.object_render}),
-      source:{schema:2,renderer:'list-v1',canvas,layer:{name:row.name,text:{...raw,...wanted},xmp:Object.prototype.hasOwnProperty.call(params,'list_xmp')?params.list_xmp:(existing?params.object_source.layer.xmp:row.XMPMetadataAsUTF8)}}};
+      source:{...(legacy?{schema:2,renderer:'list-v1'}:{schema:1}),canvas,layer:{name:row.name,text:{...raw,...wanted},xmp:Object.prototype.hasOwnProperty.call(params,'list_xmp')?params.list_xmp:originalXmp}}};
   }
   async function finishObject(request,prepared,native,expected){
     if(native.phase!=='completed'){

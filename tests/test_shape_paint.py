@@ -49,6 +49,25 @@ class ShapePaintTests(unittest.TestCase):
         self.assertEqual(self.value['fill']['rgb'][0],12)
         self.assertEqual(result['stroke']['width'],1)
 
+    def test_native_channels_preserve_values_and_reject_invalid_or_mixed_fields(self):
+        for model,values in (('cmyk',[12.345,20,30,4]),('lab',[55.5,-12.75,127]),('gray',[62.5])):
+            value=copy.deepcopy(self.value)
+            value['fill']={'kind':'solid','enabled':True,'native':{'model':model,'values':values}}
+            result=parameters(value)
+            self.assertEqual(result['fill']['native']['values'],values)
+            result['fill']['native']['values'][0]=0
+            self.assertNotEqual(value['fill']['native']['values'][0],0)
+            for bad in (True,math.nan,-129,1000):
+                invalid=copy.deepcopy(value);invalid['fill']['native']['values'][0]=bad
+                with self.assertRaises(ValueError):parameters(invalid)
+            value['fill']['rgb']=[0,0,0]
+            with self.assertRaises(ValueError):parameters(value)
+        value=copy.deepcopy(self.value)
+        value['fill']={'kind':'gradient','enabled':True,'stops':[
+            {'native':{'model':'lab','values':[50,-10,20]},'location':0},
+            {'native':{'model':'lab','values':[80,0,-20]},'location':4096}]}
+        self.assertEqual(parameters(value)['fill'],value['fill'])
+
     def test_vector_mask_ranges_and_metadata_scope(self):
         self.value['mask']={'feather':12.5,'density':62.5}
         value=parameters(self.value);value['mask']['density']=0

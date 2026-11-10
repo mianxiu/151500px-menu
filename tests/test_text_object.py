@@ -74,6 +74,8 @@ class TextObjectFlowTests(unittest.IsolatedAsyncioTestCase):
         tools=TextTools(app);tools.available=Mock();tools.snapshot={'target':target,'revision':'r','text':'one'}
         with patch('backend.text_tools.evaluate',side_effect=compute):preview=await tools.preview({'revision':'r','draft':'two','operation':'edit'})
         with self.assertRaises(ValueError):await tools.vector({'revision':'r','plan_id':'stale'})
-        guard=AsyncMock();await tools.vector({'revision':'r','plan_id':preview['plan_id']},menu_guard=guard)
+        guard=AsyncMock()
+        with patch('backend.text_object_render.edge_path',side_effect=AssertionError('Native text must not require Edge')):
+            await tools.vector({'revision':'r','plan_id':preview['plan_id']},menu_guard=guard)
         guard.assert_awaited_once();app.desktop.focus_search_result.assert_called_once_with(keep_menu=True)
         app.bridge.execute_text_object.assert_awaited_once();self.assertEqual(app.bridge.execute_text_object.call_args.args[1]['value'],'two')

@@ -56,7 +56,10 @@ async def exercise(executable, workspace, port, show_control=False):
                 deadline = time.monotonic()+30
                 while time.monotonic()<deadline:
                     if process.poll() is not None:
-                        raise RuntimeError('EXE exited before becoming ready')
+                        logs={p.name:p.read_text('utf-8',errors='replace')[-4000:] for p in data.glob('*.log')}
+                        evidence={'exit_code':process.returncode,'logs':logs}
+                        (workspace/'smoke-startup-failure.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),'utf-8')
+                        raise RuntimeError('EXE exited before becoming ready: '+json.dumps(evidence,ensure_ascii=False))
                     try:
                         response = await client.fetch(url+'/api/status',request_timeout=2)
                         status = json.loads(response.body)

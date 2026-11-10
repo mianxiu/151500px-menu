@@ -190,8 +190,8 @@ class UxpTransport:
                 if payload.get('command')=='shape.preview' and (version_tuple(heartbeat.get('photoshop_version'))<(24,1,0) or heartbeat.get('document_redraw_available') is not True):
                     raise RuntimeError('当前PS使用本地草稿，实时预览需要PS24.1及官方重绘API；未提交修改')
                 text_object=payload.get('command')=='text.object'
-                if text_object and (native_preview is None or version(heartbeat.get('probe_version'))<(0,3,90)):
-                    raise RuntimeError('智能文字对象需要正常重启PS加载UXP0.3.90；未提交操作')
+                if text_object and (native_preview is None or version(heartbeat.get('probe_version'))<(0,3,100)):
+                    raise RuntimeError('智能文字对象需要正常重启PS加载UXP0.3.100；未提交操作')
                 legacy=payload.get('command')=='shape.legacy.preview' or text_object
                 if legacy and not text_object and (preview is None or native_preview is None or not legacy_preview_available(heartbeat)):
                     raise RuntimeError('旧版独立预览能力未就绪；未提交修改')

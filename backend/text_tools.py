@@ -97,8 +97,6 @@ class TextTools:
         return await self.apply({'revision':args['revision'],'plan_id':result['plan_id']},menu_guard)
 
     async def vector(self,args,menu_guard=None):
-        from .text_object_render import edge_path
-        edge_path()
         if isinstance(args,dict) and set(args)=={'revision','plan_id'}:
             if not self.plan or (args['plan_id'],args['revision'])!=(self.plan[0],self.plan[1]['revision']) or self.plan[2]!='text.replace':raise ValueError('文字对象预览已改变')
             _,params,_=self.plan;self.plan=None

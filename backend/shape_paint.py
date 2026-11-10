@@ -4,21 +4,32 @@ import math
 def number(value,low,high):
     return type(value) in (int,float) and math.isfinite(value) and low<=value<=high
 
+def color(value):
+    if 'native' in value:
+        native=value['native']
+        if not isinstance(native,dict) or set(native)!={'model','values'}:raise ValueError('无效原生颜色')
+        limits={'cmyk':[(0,100)]*4,'lab':[(0,100),(-128,127),(-128,127)],'gray':[(0,100)]}.get(native['model']) if isinstance(native['model'],str) else None
+        values=native['values']
+        if not limits or not isinstance(values,list) or len(values)!=len(limits) or any(not number(v,*limit) for v,limit in zip(values,limits)):raise ValueError('无效原生颜色通道')
+        return {'native':{'model':native['model'],'values':list(values)}}
+    values=value.get('rgb')
+    if not isinstance(values,list) or len(values)!=3 or any(not number(v,0,255) for v in values):raise ValueError('无效RGB颜色')
+    return {'rgb':list(values)}
+
 def paint(value,stroke=False):
     if not isinstance(value,dict) or type(value.get('enabled')) is not bool:raise ValueError('无效填充／描边')
     kind=value.get('kind');keys={'kind','enabled'}|({'width'} if stroke else set())
-    def rgb(c):
-        if not isinstance(c,list) or len(c)!=3 or any(not number(v,0,255) for v in c):raise ValueError('无效RGB颜色')
-        return list(c)
     if kind=='solid':
-        keys.add('rgb');result={'kind':kind,'enabled':value['enabled'],'rgb':rgb(value.get('rgb'))}
+        channels=color(value);keys.update(channels);result={'kind':kind,'enabled':value['enabled'],**channels}
     elif kind=='gradient':
         keys.add('stops');stops=value.get('stops')
         if not isinstance(stops,list) or not 2<=len(stops)<=32:raise ValueError('渐变需要2至32个颜色节点')
         result={'kind':kind,'enabled':value['enabled'],'stops':[]};previous=-1
         for item in stops:
-            if not isinstance(item,dict) or set(item)!={'rgb','location'} or type(item['location']) is not int or not previous<=item['location']<=4096:raise ValueError('无效渐变位置')
-            result['stops'].append({'rgb':rgb(item['rgb']),'location':item['location']});previous=item['location']
+            if not isinstance(item,dict) or type(item.get('location')) is not int or not previous<=item['location']<=4096:raise ValueError('无效渐变位置')
+            channels=color(item)
+            if set(item)!=set(channels)|{'location'}:raise ValueError('无效渐变颜色')
+            result['stops'].append({**channels,'location':item['location']});previous=item['location']
         if 'method' in value:
             keys.add('method')
             if value['method'] not in ('perceptual','linear','classic'):raise ValueError('无效渐变插值方式')
@@ -75,7 +86,9 @@ def metadata(value):
         if type(live) is not bool:raise ValueError()
         engine=value.get('preview_engine')
         if engine is not None and engine!='legacy-com':raise ValueError()
-        return {'available':True,'vector':vector,'live_preview':live,**result,'patterns':list(patterns),
+        model=value.get('native_model','')
+        if model not in ('','cmyk','lab','gray'):raise ValueError()
+        return {'available':True,'vector':vector,'native_model':model,'live_preview':live,**result,'patterns':list(patterns),
                 **({'preview_engine':engine} if engine and live else {})}
     except ValueError:return {'available':False}
 

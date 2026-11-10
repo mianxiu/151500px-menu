@@ -52,6 +52,7 @@ with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as bundle:
     bundle.write(ROOT/'docs/PREVIEW-EXECUTION.md','docs/PREVIEW-EXECUTION.md')
     bundle.write(ROOT/'docs/BATCH-MASKS.md','docs/BATCH-MASKS.md')
     bundle.write(ROOT/'docs/SHAPE-PAINT-CLIPBOARD.md','docs/SHAPE-PAINT-CLIPBOARD.md')
+    bundle.write(ROOT/'docs/NATIVE-COLOR-CHANNELS.md','docs/NATIVE-COLOR-CHANNELS.md')
     bundle.write(ROOT/'docs/PERCEPTUAL-COLOR.md','docs/PERCEPTUAL-COLOR.md')
     bundle.write(ROOT/'docs/LEGACY-PREVIEW.md','docs/LEGACY-PREVIEW.md')
     bundle.write(ROOT/'docs/VERSION-HEALTH.md','docs/VERSION-HEALTH.md')

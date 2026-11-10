@@ -272,8 +272,16 @@ class Application(web.Application):
     def require_uxp_enabled(self):
         if self.updating:raise RuntimeError('应用正在更新，本次操作未接受')
         if not self.uxp.enabled:raise RuntimeError('UXP 执行已禁用，请在后台插件管理中启用')
+        stability=getattr(self,'stability',None)
+        if stability and stability.report.get('native_request',{}).get('phase') in ('submitted','unknown'):
+            raise RuntimeError('原生验收请求退出仍未知；保留原报告，未接受新的PS操作')
+        if stability and (stability.report.get('original_restore_pending') or stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown')):
+            raise RuntimeError('颜色验收的原稿恢复或正常退出仍待核对；未接受新的PS操作')
 
     def require_update_idle(self):
+        stability=getattr(self,'stability',None)
+        if stability and (stability.report.get('original_restore_pending') or stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown')):
+            raise RuntimeError('原稿恢复或正常退出仍待核对；未安装更新')
         pending=getattr(getattr(self.bridge,'transport',None),'pending',None)
         if (self.updating or self.operation_lock.locked() or self.bridge.busy or
             getattr(self.bridge,'_queue',[]) or self.photoshop_launcher.active or
@@ -422,6 +430,8 @@ class Application(web.Application):
                 return await self.photoshop_launcher.start(uxp['installed'] and uxp['enabled'] and not uxp['error'])
         if action=='uxp.status':return await asyncio.to_thread(self.uxp.status)
         if action in ('uxp.install','uxp.enable','uxp.disable','uxp.uninstall','uxp.rollback','uxp.apply-language','uxp.repair-registration'):
+            if self.stability.report.get('original_restore_pending') or self.stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown'):
+                raise RuntimeError('原稿恢复或正常退出仍待核对；未修改UXP插件')
             if self.photoshop_launcher.active or self.operation_lock.locked() or self.bridge.busy or getattr(self.bridge,'_queue',[]):
                 raise RuntimeError('请等待图层操作结束后再管理 UXP 插件；本次请求未排队')
             async with self.operation_lock:

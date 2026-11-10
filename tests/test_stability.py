@@ -36,6 +36,100 @@ class StabilityTests(unittest.IsolatedAsyncioTestCase):
         restored=StabilityTest(self.app)
         self.assertEqual(restored.snapshot()['phase'],'interrupted');self.assertFalse(restored.active);self.assertIsNone(restored.task)
 
+    async def test_text_object_profile_reserves_existing_lock_without_external_scripts(self):
+        gate=asyncio.Event()
+        with patch.object(self.test,'run',gate.wait):
+            result=await self.test.start('text-object')
+            self.assertEqual(result['rounds'],2);self.assertTrue(self.app.operation_lock.locked())
+            self.assertFalse(self.test.report['scope']['native_menu_lifecycle'])
+            gate.set();await self.test.task
+        self.test.active=False;self.app.operation_lock.release()
+
+    async def test_text_object_native_unknown_and_retained_fixture_block_restarts(self):
+        for record in ({'native_request':{'phase':'unknown'}},{'text_fixture':{'document_id':7}}):
+            self.test.report=record
+            with self.assertRaises(RuntimeError):await self.test.start('text-object')
+            self.assertFalse(self.app.operation_lock.locked())
+
+    async def test_native_color_unknown_quit_restore_and_owned_fixture_block_new_runs(self):
+        for record in ({'normal_quit':{'phase':'submitted'}},{'normal_quit':{'phase':'unknown'}},
+                       {'original_restore_pending':True},{'color_fixture':{'id':7}}):
+            self.test.report=record
+            with self.assertRaises(RuntimeError):await self.test.start('color-native')
+            self.assertFalse(self.app.operation_lock.locked())
+        from backend.main import Application
+        for record in ({'original_restore_pending':True},{'normal_quit':{'phase':'unknown'}}):
+            app=SimpleNamespace(updating=False,uxp=SimpleNamespace(enabled=True),stability=SimpleNamespace(report=record))
+            with self.assertRaises(RuntimeError):Application.require_uxp_enabled(app)
+            with self.assertRaises(RuntimeError):Application.require_update_idle(app)
+
+    async def test_text_object_native_failure_preserves_unknown_without_cleanup(self):
+        from backend.text_object_acceptance import run
+        from unittest.mock import Mock
+        self.test.report={'run_id':'a'*32,'round':0,'steps':[],'summary':{}}
+        self.test.check=Mock();self.test.save=AsyncMock()
+        with patch.object(self.bridge,'_application',side_effect=RuntimeError('COM result unknown')):
+            with self.assertRaisesRegex(RuntimeError,'COM result unknown'):await run(self.test)
+        self.assertEqual(self.test.report['native_request']['phase'],'unknown')
+        self.assertTrue(self.test.report['text_fixture']['creation_unconfirmed'])
+
+    async def test_text_object_native_explicit_rejection_is_a_returned_result(self):
+        from backend.text_object_acceptance import run
+        from unittest.mock import Mock
+        import re
+        self.test.report={'run_id':'a'*32,'round':0,'steps':[],'summary':{}}
+        self.test.check=Mock();self.test.save=AsyncMock()
+        def reject(script):
+            identity=re.search(r'id:"([a-f0-9]{32})"',script)[1]
+            self.assertNotIn('.jsx"',script);self.assertNotIn('.execute()',script)
+            return json.dumps({'id':identity,'ok':False,'error':'Native modal edit active'})
+        with patch.object(self.bridge,'_application',return_value=SimpleNamespace(DoJavaScript=reject)):
+            with self.assertRaisesRegex(RuntimeError,'Native modal edit active'):await run(self.test)
+        self.assertEqual(self.test.report['native_request']['phase'],'returned')
+
+    def test_unknown_native_acceptance_blocks_other_host_operations(self):
+        from backend.main import Application
+        app=SimpleNamespace(updating=False,uxp=SimpleNamespace(enabled=True),
+                            stability=SimpleNamespace(report={'native_request':{'phase':'unknown'}}))
+        with self.assertRaisesRegex(RuntimeError,'退出仍未知'):Application.require_uxp_enabled(app)
+        app.stability.report['native_request']['phase']='returned'
+        Application.require_uxp_enabled(app)
+
+    async def test_text_object_cleanup_uses_its_recorded_owner_and_returns_no_file_prompt(self):
+        from backend.text_object_acceptance import cleanup
+        self.test.report={'run_id':'a'*32,'round':1,'text_fixture':{'document_id':7,'documents':[], 'original':None,'tool':'moveTool'}}
+        with patch('backend.text_object_acceptance.native',AsyncMock(return_value={'closed_owned_document':True,'original_active_restored':True})) as send:
+            await cleanup(self.test)
+        script=send.call_args.args[1]
+        self.assertIn('app.activeDocument.id!==7',script)
+        self.assertIn('151500px text acceptance '+'a'*32+' 72',script)
+        self.assertNotIn('.execute()',script);self.assertNotIn('text_fixture',self.test.report)
+
+    async def test_text_object_read_uses_normal_inspection_and_preserves_pending_guard(self):
+        self.test.report={'profile':'text-object','run_id':'a'*32}
+        with patch.object(self.bridge.transport,'call',return_value={'text':{}}) as call:
+            await self.test.test_read(text_inspect=True)
+        call.assert_called_once_with('inspect',text_inspect=True)
+        self.assertFalse(self.test.report['read_request_pending'])
+
+    def test_nonfixture_json_result_does_not_break_status_or_become_cleanup_owner(self):
+        self.test.report={'cleanup':'retained-text-object-fixture','steps':[
+            {'stage':'text-object-create','state':'passed','evidence':{'result':'{"verified":true}'}}]}
+        self.assertIsNone(self.test.retained_fixture())
+        self.assertFalse(self.test.snapshot()['cleanup_available'])
+
+    async def test_native_preflight_publish_failure_proves_no_ps_call_was_started(self):
+        from backend.text_object_acceptance import native
+        from unittest.mock import Mock
+        self.test.report={'run_id':'a'*32};self.test.check=Mock()
+        self.test.save=AsyncMock(side_effect=RuntimeError('report publish failed'))
+        with patch.object(self.bridge,'_application') as application:
+            with self.assertRaisesRegex(RuntimeError,'report publish failed'):await native(self.test,'return true;')
+        application.assert_not_called()
+        result=json.loads((self.test.folder/'latest.json').read_text('utf-8'))['native_request']
+        self.assertEqual(result['phase'],'not-started');self.assertTrue(result['execution_exit']['not_started'])
+        self.assertEqual(result['execution_exit']['id'],result['id'])
+
     def retained(self):
         self.test.report={'schema':1,'run_id':'a'*32,'phase':'stopped','cleanup':'retained-for-inspection-no-automatic-cleanup',
             'original_request_pending':False,'steps':[{'stage':'fixture','state':'passed','evidence':{'result':{
