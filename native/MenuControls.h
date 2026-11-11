@@ -27,6 +27,12 @@ struct PanelStyle {
     ~PanelStyle(){ImGui::PopStyleVar(6);ImGui::PopFont();}
 };
 inline bool button(const char* label,float scale) {return ImGui::Button(label,{0,menuControlHeight*scale});}
+template<size_t N> bool choice(const char* label,const char* const (&names)[N],size_t& selected) {
+    if(!ImGui::BeginCombo(label,names[selected]))return false;
+    const size_t previous=selected;
+    for(size_t i=0;i<N;++i)if(ImGui::Selectable(names[i],i==selected))selected=i;
+    ImGui::EndCombo();return selected!=previous;
+}
 inline bool input(const char* id,const char* hint,char* value,size_t capacity,Emphasis emphasis=Emphasis::Accent) {
     ImGui::SetNextItemWidth(-1);
     if(emphasis==Emphasis::Neutral)ImGui::PushStyleColor(ImGuiCol_NavCursor,ImGui::GetStyleColorVec4(ImGuiCol_Border));

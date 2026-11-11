@@ -6,8 +6,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from backend.main import Application
-from backend.desktop import Desktop, pie_bounds
+from backend.desktop import Desktop, pie_layout
 from backend.photoshop_bridge import PhotoshopBridge
+
+
+def pie_bounds(*args, **kwargs):
+    return pie_layout(*args, **kwargs)[0]
 
 
 class MenuFocusTests(unittest.TestCase):
@@ -188,6 +192,47 @@ class MenuFocusTests(unittest.TestCase):
         self.assertEqual(pie_bounds((0,0,1920,1080),(0,0,1920,1040),(960,520),1,color_editor=True),(310,210,920,620))
         self.assertEqual(pie_bounds((0,0,1920,1080),(0,0,1920,1040),(1330,520),2,color_editor=True),(30,0,1840,1040))
         self.assertEqual(pie_bounds((0,0,1920,1080),(0,0,1920,1040),(1910,1030),1,color_editor=True),(1000,420,920,620))
+
+    def test_left_dock_keeps_radial_anchor_near_cursor_on_scaled_secondary_monitor(self):
+        ps=(-1920,0,0,1080)
+        work=(-1920,0,0,1040)
+        bounds, anchor, right_panel=pie_layout(ps,work,(-1530,520),1.5,color_editor=True)
+        self.assertTrue(right_panel)
+        self.assertEqual(bounds[0]+anchor,-1530)
+        self.assertEqual(bounds[1]+bounds[3]//2,520)
+        bounds, anchor, right_panel=pie_layout(ps,work,(-1860,520),1.5,color_editor=True)
+        self.assertTrue(right_panel)
+        self.assertEqual(bounds[0]+anchor,-1620)
+
+    def test_left_monitor_seam_preserves_original_layout_and_pointer_anchor(self):
+        ps=(3827,-29,7693,2061)
+        work=(3840,-16,7680,2048)
+        left_work=(0,0,3840,2064)
+        for x in (3839,3877,3889,3947,3981,4129):
+            for color_editor in (False,True):
+                bounds, anchor, right_panel=pie_layout(ps,work,(x,744),2,color_editor=color_editor,left_work=left_work,right_inset=181)
+                self.assertEqual(anchor,1300 if color_editor else 620)
+                self.assertEqual(bounds[0]+anchor,x)
+                self.assertFalse(right_panel)
+
+    def test_left_monitor_gap_and_taskbar_keep_menu_in_photoshop_work_area(self):
+        ps=(3827,-29,7693,2061)
+        work=(3840,-16,7680,2048)
+        for left_work in (None,(0,0,3800,2064),(0,300,3840,2064),(0,0,3840,700)):
+            bounds, anchor, _=pie_layout(ps,work,(3889,744),2,left_work=left_work)
+            self.assertEqual(bounds,(3840,244,1240,1000))
+            self.assertEqual(anchor,400)
+
+    def test_right_edge_uses_native_controls_and_shadow_width(self):
+        ps=(3827,-29,7693,2061)
+        work=(3840,-16,7680,2048)
+        for color_editor in (False,True):
+            for x, expected in ((7230,7230),(7654,7318)):
+                bounds, anchor, editor_right=pie_layout(ps,work,(x,985),2,color_editor=color_editor,right_inset=181)
+                self.assertEqual(bounds[0]+bounds[2],7680)
+                self.assertEqual(bounds[0]+anchor,expected)
+                self.assertEqual(bounds[1]+bounds[3]//2,985)
+                self.assertFalse(editor_right)
 
     def test_home_grid_uses_wider_popup_and_clamps_at_monitor_edge(self):
         self.assertEqual(pie_bounds((0,0,1920,1080),(0,0,1920,1040),(960,520),1,home=True),(690,300,820,440))

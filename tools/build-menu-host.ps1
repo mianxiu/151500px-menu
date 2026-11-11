@@ -12,6 +12,7 @@ $menuVendor = Join-Path $menuRoot 'native/vendor/imgui'
 # added by the renderer before its next frame. Keep new UI labels covered.
 $menuGlyphChars = Get-Content -LiteralPath "$menuRoot/native/MenuHost.cpp" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/ShapeColorEditor.h" -Raw -Encoding utf8
+$menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/GradientPanel.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/PerceptualPicker.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/MenuToolsPanel.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/MenuTextGroups.h" -Raw -Encoding utf8

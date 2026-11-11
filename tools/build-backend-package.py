@@ -48,6 +48,7 @@ with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as bundle:
     bundle.write(ROOT/'docs/MENU-RECOVERY.md','docs/MENU-RECOVERY.md')
     bundle.write(ROOT/'docs/SHORTCUTS.md','docs/SHORTCUTS.md')
     bundle.write(ROOT/'docs/MASK-PREVIEW.md','docs/MASK-PREVIEW.md')
+    bundle.write(ROOT/'docs/GRADIENT-EDITOR.md','docs/GRADIENT-EDITOR.md')
     bundle.write(ROOT/'docs/PREVIEW-PROGRESS.md','docs/PREVIEW-PROGRESS.md')
     bundle.write(ROOT/'docs/PREVIEW-EXECUTION.md','docs/PREVIEW-EXECUTION.md')
     bundle.write(ROOT/'docs/BATCH-MASKS.md','docs/BATCH-MASKS.md')

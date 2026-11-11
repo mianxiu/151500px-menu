@@ -12,7 +12,7 @@
 旧配置目录及插件内部身份用于识别原安装，请保留这些数据。新安装默认使用 `151500px-menu` 数据目录。0.4.310 起公开包已采用新名称；此前正式包仍为旧名称，需要按上述步骤手动迁移，下载与核验状态见[版本状态](https://github.com/mianxiu/151500px-menu/wiki/Versions)。
 
 
-当前打包版本：主程序0.4.327，内置UXP0.3.103。解压主ZIP运行151500px-menu.exe，安装／更新内置UXP后须正常重启PS并核对实际加载103。已加载匹配UXP103的本机候选仅需更新主程序。安装和打开后台不会自动启动PS。上下“单层智能对象／多层智能对象”、紧凑快捷键、Ctrl+F查找、F聚焦及Caps拆分用法见[Wiki](https://github.com/mianxiu/151500px-menu/wiki/Menu-guide)。以下旧版本段落为历史记录，安装版本以本段及实际后台为准。
+0.4.335 内置 UXP 0.3.105。解压主 ZIP 并运行 151500px-menu.exe。安装或更新内置插件后，正常重启 Photoshop 并核对实际加载版本。已加载匹配插件时可单独更新主程序。操作见[菜单指南](https://github.com/mianxiu/151500px-menu/wiki/Menu-guide)和[独立渐变编辑](GRADIENT-EDITOR.md)。
 
 v0.4.160／UXP 0.3.27 已切换本机实际入口；公开正式版仍为159，160尚未发布。更新插件须正常重启PS并核对加载0.3.27；画布目视待验收，参见[实时预览](https://github.com/mianxiu/151500px-menu/wiki/Mask-preview)。
 

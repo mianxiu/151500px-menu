@@ -16,20 +16,48 @@ def color(value):
     if not isinstance(values,list) or len(values)!=3 or any(not number(v,0,255) for v in values):raise ValueError('无效RGB颜色')
     return {'rgb':list(values)}
 
+GRADIENT_STYLES=('linear','radial','angle','reflected','diamond')
+
+def gradient_stops(value,opacity=False):
+    if not isinstance(value,list) or not 2<=len(value)<=32:raise ValueError('渐变需要2至32个节点')
+    stops=[];previous=-1
+    for item in value:
+        if not isinstance(item,dict) or type(item.get('location')) is not int or not previous<=item['location']<=4096:raise ValueError('无效渐变位置')
+        channels={'opacity':item.get('opacity')} if opacity else color(item)
+        if opacity and not number(channels['opacity'],0,100):raise ValueError('无效渐变不透明度')
+        stop={**channels,'location':item['location']}
+        if 'midpoint' in item:
+            if type(item['midpoint']) is not int or not 0<=item['midpoint']<=100:raise ValueError('无效渐变中点')
+            stop['midpoint']=item['midpoint']
+        if not opacity and 'source' in item:
+            if item['source'] not in ('userStop','foregroundColor','backgroundColor'):raise ValueError('无效色标来源')
+            stop['source']=item['source']
+        if not opacity and 'origin' in item:
+            if type(item['origin']) is not int or not 0<=item['origin']<32:raise ValueError('无效原始色标位置')
+            stop['origin']=item['origin']
+        if set(item)!=set(stop):raise ValueError('无效渐变节点参数')
+        stops.append(stop);previous=stop['location']
+    return stops
+
+def gradient_options(value):
+    if not isinstance(value,dict):raise ValueError('无效渐变属性')
+    limits={'angle':(-360,360),'scale':(1,1000),'smoothness':(0,4096)}
+    for key,v in value.items():
+        if key in limits and number(v,*limits[key]) and (key!='smoothness' or type(v) is int):continue
+        if key in ('reverse','dither','align') and type(v) is bool:continue
+        if key=='style' and v in GRADIENT_STYLES:continue
+        raise ValueError('无效渐变属性：'+key)
+    return dict(value)
+
 def paint(value,stroke=False):
     if not isinstance(value,dict) or type(value.get('enabled')) is not bool:raise ValueError('无效填充／描边')
     kind=value.get('kind');keys={'kind','enabled'}|({'width'} if stroke else set())
     if kind=='solid':
         channels=color(value);keys.update(channels);result={'kind':kind,'enabled':value['enabled'],**channels}
     elif kind=='gradient':
-        keys.add('stops');stops=value.get('stops')
-        if not isinstance(stops,list) or not 2<=len(stops)<=32:raise ValueError('渐变需要2至32个颜色节点')
-        result={'kind':kind,'enabled':value['enabled'],'stops':[]};previous=-1
-        for item in stops:
-            if not isinstance(item,dict) or type(item.get('location')) is not int or not previous<=item['location']<=4096:raise ValueError('无效渐变位置')
-            channels=color(item)
-            if set(item)!=set(channels)|{'location'}:raise ValueError('无效渐变颜色')
-            result['stops'].append({**channels,'location':item['location']});previous=item['location']
+        keys.add('stops');result={'kind':kind,'enabled':value['enabled'],'stops':gradient_stops(value.get('stops'))}
+        if 'opacity_stops' in value:keys.add('opacity_stops');result['opacity_stops']=gradient_stops(value['opacity_stops'],opacity=True)
+        if 'options' in value:keys.add('options');result['options']=gradient_options(value['options'])
         if 'method' in value:
             keys.add('method')
             if value['method'] not in ('perceptual','linear','classic'):raise ValueError('无效渐变插值方式')
@@ -89,6 +117,7 @@ def metadata(value):
         model=value.get('native_model','')
         if model not in ('','cmyk','lab','gray'):raise ValueError()
         return {'available':True,'vector':vector,'native_model':model,'live_preview':live,**result,'patterns':list(patterns),
+                **({'gradient_editor':True} if value.get('gradient_editor') is True else {}),
                 **({'preview_engine':engine} if engine and live else {})}
     except ValueError:return {'available':False}
 

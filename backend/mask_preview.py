@@ -98,7 +98,7 @@ class MaskPreview:
                 value = {**identity, 'seq': self.seq, 'phase': self.phase,
                          'lease_until_ms': int(time.time()*1000)+4000, 'paint': self.paint}
             data = json.dumps(value, separators=(',', ':'))
-            if len(data.encode('utf-8')) > 4096:
+            if len(data.encode('utf-8')) > 16384:
                 raise ValueError('预览草稿超出协议长度')
             temporary = folder/(identity['id']+'.preview.tmp')
             temporary.write_text(data, 'utf-8')
@@ -193,7 +193,7 @@ async def dispatch_preview(app, action, args):
     return {'message':'正在预览羽化／密度'}
 
 
-async def run_preview(app, preview, target):
+async def run_preview(app, preview, target, editor=None):
     stopped=asyncio.Event()
     terminal_wake=asyncio.Event()
     loop=asyncio.get_running_loop()
@@ -209,9 +209,10 @@ async def run_preview(app, preview, target):
             terminal_wake.clear()
             try:
                 if preview.execution_exited:return
-                if preview.phase=='preview' and (not app.desktop.visible or app.desktop.menu_epoch!=preview.epoch
-                        or not await asyncio.to_thread(app.desktop._scope)):
-                    preview.cancel()
+                if preview.phase=='preview':
+                    if editor:alive=await asyncio.to_thread(editor.in_scope)
+                    else:alive=app.desktop.visible and app.desktop.menu_epoch==preview.epoch and await asyncio.to_thread(app.desktop._scope)
+                    if not alive:preview.cancel()
                 await asyncio.to_thread(preview.publish)
                 feedback=getattr(app.desktop,'preview_pending_feedback',None)
                 if feedback:feedback()
@@ -233,17 +234,25 @@ async def run_preview(app, preview, target):
     publisher=asyncio.create_task(pump())
     try:
         await app.broadcast({'type':'operation','busy':True,'action':'shape.paint'})
-        await asyncio.to_thread(app.desktop.require_action_focus)
+        await asyncio.to_thread(editor.require_focus if editor else app.desktop.require_action_focus)
         prepare_guard=getattr(app.desktop,'prepare_preview_input_guard',None)
         if prepare_guard:await asyncio.to_thread(prepare_guard,preview)
         async def before_dispatch(captured):
+            if editor:
+                if preview.phase=='cancel':raise RuntimeError('渐变编辑已取消，本次未开始预览')
+                await asyncio.to_thread(editor.require_target,captured)
+                return
             if (app.desktop.menu_epoch!=preview.epoch or preview.phase=='cancel'
                     or not app.desktop.visible and preview.phase!='commit'):
                 raise RuntimeError('菜单已关闭，未开始预览')
             await asyncio.to_thread(app.desktop.require_menu_layer_target,'shape.paint',captured)
         result=await app.bridge.execute_shape(preview.paint,before_dispatch=before_dispatch,
-                                             frozen_target=target,preview=preview)
+                                             frozen_target=target,preview=preview,
+                                             **({'focus_guard':editor.require_focus} if editor else {}))
         app.desktop.layer_context=dict(app.bridge.layer_context)
+        if editor:
+            await editor.finished(result)
+            return
         native=json.loads(result.get('result','{}')) if preview.return_to_menu else {}
         menu_confirmed=bool(preview.return_to_menu and preview.phase=='commit' and native.get('verified') is True
                             and not native.get('cancelled') and not app.bridge.busy)
@@ -253,7 +262,9 @@ async def run_preview(app, preview, target):
         await app.broadcast({'type':'notice','scope':'operation','action':'shape.paint','ok':True,'message':result['message']})
     except Exception as error:
         preview.cancel()
-        if app.desktop.menu_epoch==preview.epoch and app.desktop.visible:
+        if editor:
+            await editor.failed(error)
+        elif app.desktop.menu_epoch==preview.epoch and app.desktop.visible:
             await asyncio.to_thread(app.desktop.hide,restore=False)
         await app.broadcast({'type':'notice','scope':'operation','action':'shape.paint','ok':False,'message':str(error)})
         logging.exception('Mask preview ended with error')
@@ -276,7 +287,7 @@ async def run_preview(app, preview, target):
                 await asyncio.to_thread(finish_guard,preview,host_exited,verified_terminal)
             except Exception:logging.exception('Preview input guard release pending; terminal unchanged')
         finish_focus=getattr(app.desktop,'finish_preview_focus',None)
-        if finish_focus and host_exited:
+        if finish_focus and host_exited and not editor:
             try:await asyncio.to_thread(finish_focus,preview)
             except Exception:logging.exception('Preview focus feedback failed; terminal unchanged')
         if menu_confirmed and host_exited and app.desktop.menu_epoch==preview.epoch and app.desktop.visible:
@@ -284,6 +295,7 @@ async def run_preview(app, preview, target):
         preview.close()
         app.operation_lock.release()
         app._mask_preview=app.desktop.mask_preview=None
+        if editor:editor.preview=None
         app.desktop.event({'type':'mask.preview','active':False})
         await app.broadcast({'type':'operation','busy':app.bridge.busy})
         requested=getattr(preview,'terminal_requested_at',None)
@@ -294,3 +306,4 @@ async def run_preview(app, preview, target):
                 'mailbox_ms':None if published is None else round((published-requested)*1000,3),
                 'controller_ms':round((time.perf_counter()-requested)*1000,3),
                 'execution_exited':host_exited,'busy_remaining':app.bridge.busy})
+    return menu_confirmed and host_exited

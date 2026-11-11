@@ -757,6 +757,11 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
             mapping['tools.search']='menu.tools.open'
             mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview')})
             mapping['document.new'] = 'document.new'
+            if action=='gradient.open':
+                from .gradient_editor import GradientEditor
+                if not getattr(app,'gradient_editor',None):app.gradient_editor=GradientEditor(app)
+                await app.gradient_editor.open(event_args)
+                return
             mapping.update({name:name for name in ('mask.preview.update','mask.preview.commit')})
             mapping.update({name:name for name in ('layer.frame.commit','layer.frame.restore')})
             if action.startswith('document.recent.'):
@@ -766,6 +771,8 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
             await app.dispatch(mapping.get(action, "action.execute"), event_args if action in mapping else {**event_args,"name": action})
         except Exception as exc:
             logging.exception("Desktop action failed")
+            if action=='gradient.open' and app.desktop:
+                app.desktop._send_menu_event({'type':'gradient.open.failed','epoch':event_args.get('menu_epoch'),'message':str(exc)})
             if action in ('mask.preview.update','mask.preview.commit') and not getattr(app,'_mask_preview',None) and app.desktop:
                 app.desktop.event({'type':'mask.preview','active':False})
             await app.broadcast({"type": "notice", "scope": "interaction", "ok": False, "message": str(exc)})
@@ -831,6 +838,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
         await app.stability.close()
         await app.version_health.close()
         await app.application_updates.close()
+        if getattr(app,'gradient_editor',None):await app.gradient_editor.close()
         if status_task:
             status_task.cancel()
             await asyncio.gather(status_task, return_exceptions=True)

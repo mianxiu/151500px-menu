@@ -18,7 +18,7 @@ async def native(test,code):
     return await execute_native(test,HISTORY+code)
 
 
-async def reload_plugin(test):
+async def reload_plugin(test, wanted_version):
     """Back up originals before the authorized normal PS restart needed for UXP."""
     folder=test.folder/('color-originals-'+test.report['run_id'])
     folder.mkdir(exist_ok=False)
@@ -84,7 +84,7 @@ return {closed:true,count:expected.length};''')
     while time.monotonic()<deadline:
         try:
             heartbeat=await asyncio.to_thread(read_heartbeat,test.heartbeat_folder)
-            if heartbeat.get('probe_version')=='0.3.103' and heartbeat.get('session')!=test.report['versions']['session']:
+            if heartbeat.get('probe_version')==wanted_version and heartbeat.get('session')!=test.report['versions']['session']:
                 test.host_pid,test.focus_check=await asyncio.to_thread(host_scope)
                 break
         except (OSError,ValueError,RuntimeError):pass
@@ -105,8 +105,9 @@ return {documents:rows,verified:true};''')
 
 
 async def run(test):
-    if test.report['versions']['probe_version']!='0.3.103':
-        await test.step('color-native-reload',lambda:reload_plugin(test))
+    wanted=(await asyncio.to_thread(test.app.uxp.status))['bundled_version']
+    if test.report['versions']['probe_version']!=wanted:
+        await test.step('color-native-reload',lambda:reload_plugin(test,wanted))
     from tools.quiet_ps_session import ResourceLease
     from contextlib import nullcontext
     original=await native(test,r'''var out=[];for(var i=0;i<app.documents.length;i++){var d=app.documents[i];out.push({id:d.id,history:history(d)});}return {documents:out,active:app.documents.length?app.activeDocument.id:null,tool:app.currentTool};''')

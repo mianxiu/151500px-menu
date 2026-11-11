@@ -1063,6 +1063,17 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     if(raw?._obj==='patternLayer' && typeof raw.pattern?.name==='string')return {kind:'pattern',name:raw.pattern.name};
     return null;
   }
+  const gradientStyles=['linear','radial','angle','reflected','diamond'];
+  const extendedGradient=value=>value?.kind==='gradient' && (value.options!==undefined || value.opacity_stops!==undefined || value.stops?.some(s=>s.midpoint!==undefined || s.source!==undefined || s.origin!==undefined));
+  const extendedPaint=params=>extendedGradient(params.fill) || extendedGradient(params.stroke);
+  function gradientDetail(value,raw) {
+    if(value.kind!=='gradient')return value;
+    const g=raw.gradient;
+    return {...value,stops:value.stops.map((stop,i)=>({...stop,origin:i,midpoint:g.colors[i].midpoint ?? 50,source:g.colors[i].type?._value ?? 'userStop'})),
+      opacity_stops:(g.transparency || [0,4096].map(location=>({location,opacity:{_value:100},midpoint:50}))).map(stop=>({location:stop.location,opacity:stop.opacity._value,midpoint:stop.midpoint ?? 50})),
+      options:{style:raw.type?._value ?? 'linear',angle:raw.angle?._value ?? 0,scale:raw.scale?._value ?? 100,
+        reverse:raw.reverse===true,dither:raw.dither===true,align:raw.align!==false,smoothness:g.interfaceIconFrameDimmed ?? 4096}};
+  }
   async function patterns() {
     if(Date.now()-catalogAt<30000)return catalog;
     try {
@@ -1105,12 +1116,13 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     }
     return raw;
   }
-  async function observe(context,force=false,frozenCatalog=null,checkpoint=null) {
+  async function observe(context,force=false,frozenCatalog=null,checkpoint=null,gradientDetails=false) {
     if(context.layer_ids?.length>1)return batchMasks.observe(context,checkpoint);
     if(context.kind!=='shape-fill' || context.layer_ids?.length!==1 || context.locked || !ps.app.documents.length)
       return {available:false};
     const doc=ps.app.activeDocument,id=context.layer_ids[0],key=doc.id+':'+id;
-    if(!force && cache?.key===key && Date.now()-cache.at<500)return cache.data;
+    if(context.document_id!==undefined && context.document_id!==doc.id)return {available:false};
+    if(!force && !gradientDetails && cache?.key===key && Date.now()-cache.at<500)return cache.data;
     if(!['RGB','CMYK','LAB','GRAYSCALE'].some(key=>ps.constants.DocumentMode[key]!==undefined && doc.mode===ps.constants.DocumentMode[key]) || ![ps.constants.BitsPerChannelType.EIGHT,ps.constants.BitsPerChannelType.SIXTEEN].includes(doc.bitsPerChannel))
       return {available:false};
     if(checkpoint)await checkpoint();
@@ -1128,13 +1140,18 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     if(checkpoint)await checkpoint();
     const nativePaint=p=>!!p.native || p.stops?.some(s=>s.native);
     const live=doc.mode===ps.constants.DocumentMode.RGB && !nativePaint(fill) && !nativePaint(stroke);
-    const data={available:true,vector:raw.vector,native_model:({[ps.constants.DocumentMode.CMYK]:'cmyk',[ps.constants.DocumentMode.LAB]:'lab',[ps.constants.DocumentMode.GRAYSCALE]:'gray'})[doc.mode] || '',live_preview:live && (typeof ps.core.redrawDocument==='function' || legacyPreview),
+    const data={available:true,vector:raw.vector,gradient_editor:true,native_model:({[ps.constants.DocumentMode.CMYK]:'cmyk',[ps.constants.DocumentMode.LAB]:'lab',[ps.constants.DocumentMode.GRAYSCALE]:'gray'})[doc.mode] || '',live_preview:live && (typeof ps.core.redrawDocument==='function' || legacyPreview),
       ...(live && legacyPreview && typeof ps.core.redrawDocument!=='function'?{preview_engine:'legacy-com'}:{}),revision,fill,stroke,
       patterns:frozenCatalog?frozenCatalog.patterns:await patterns(),
       pattern_catalog:frozenCatalog?frozenCatalog.pattern_catalog:catalogInfo};
     if(checkpoint)await checkpoint();
     if(raw.mask)data.mask=clone(raw.mask);
-    cache={key,at:Date.now(),signature,raw,data};return data;
+    cache={key,at:Date.now(),signature,raw,data};
+    if(!gradientDetails)return data;
+    const expanded={...data,fill:gradientDetail(fill,raw.fill),stroke:gradientDetail(stroke,raw.stroke.strokeStyleContent)};
+    if(gradientDetails!=='inspect')return expanded;
+    let documentPath='';try{if(typeof doc.path==='string')documentPath=doc.path;}catch(_){}
+    return {...expanded,baseline:signature,document_path:documentPath,document_name:doc.name,layer_name:doc.activeLayers[0].name};
   }
   function validatePaint(value) {
     if(!value || !['solid','gradient','pattern'].includes(value.kind) || typeof value.enabled!=='boolean')throw Error('Invalid paint type');
@@ -1147,6 +1164,20 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       value.stops.some((s,i)=>!color(s) || !Number.isInteger(s.location) || s.location<0 || s.location>4096 || i && s.location<value.stops[i-1].location)))throw Error('Invalid gradient stops');
     if(value.kind==='pattern' && (typeof value.name!=='string' || !value.name || value.name.length>128))throw Error('Invalid pattern name');
     if(value.kind==='gradient' && value.method!==undefined && !['classic','linear','perceptual'].includes(value.method))throw Error('Invalid gradient interpolation');
+    if(value.kind==='gradient') {
+      const midpoint=x=>Number.isInteger(x) && x>=0 && x<=100;
+      if(value.stops.some(s=>s.midpoint!==undefined && !midpoint(s.midpoint) || s.source!==undefined && !['userStop','foregroundColor','backgroundColor'].includes(s.source) ||
+        s.origin!==undefined && (!Number.isInteger(s.origin) || s.origin<0 || s.origin>=32)))throw Error('Invalid gradient stop details');
+      const opacity=value.opacity_stops;
+      if(opacity!==undefined && (!Array.isArray(opacity) || opacity.length<2 || opacity.length>32 || opacity.some((s,i)=>!s || !Number.isInteger(s.location) ||
+        s.location<0 || s.location>4096 || i && s.location<opacity[i-1].location || typeof s.opacity!=='number' || !Number.isFinite(s.opacity) || s.opacity<0 || s.opacity>100 ||
+        s.midpoint!==undefined && !midpoint(s.midpoint))))throw Error('Invalid gradient opacity stops');
+      const o=value.options;
+      if(o!==undefined && (!o || typeof o!=='object' || Array.isArray(o) || Object.entries(o).some(([k,v])=>!(
+        k==='style' && gradientStyles.includes(v) || ['reverse','dither','align'].includes(k) && typeof v==='boolean' ||
+        typeof v==='number' && Number.isFinite(v) && (k==='angle' && Math.abs(v)<=360 || k==='scale' && v>=1 && v<=1000 ||
+          k==='smoothness' && Number.isInteger(v) && v>=0 && v<=4096)))))throw Error('Invalid gradient options');
+    }
   }
   function build(value,previous) {
     if(value.kind==='solid')return {_obj:'solidColorLayer',color:colorDescriptor(value)};
@@ -1158,12 +1189,19 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     const next=previous?._obj==='gradientLayer'?clone(previous):{_obj:'gradientLayer',type:{_enum:'gradientType',_value:'linear'},
       angle:{_unit:'angleUnit',_value:0},scale:{_unit:'percentUnit',_value:100}};
     const old=next.gradient || {};
+    const options=value.options || {};
+    if(options.style!==undefined)next.type={_enum:'gradientType',_value:options.style};
+    for(const [key,unit] of [['angle','angleUnit'],['scale','percentUnit']])if(options[key]!==undefined)next[key]={_unit:unit,_value:options[key]};
+    for(const key of ['reverse','dither','align'])if(options[key]!==undefined)next[key]=options[key];
     if(value.method!==undefined)next.gradientsInterpolationMethod={_enum:'gradientInterpolationMethodType',_value:value.method};
     next.gradient={...old,_obj:'gradientClassEvent',name:old.name || 'Menu gradient',gradientForm:{_enum:'gradientForm',_value:'customStops'},
-      interfaceIconFrameDimmed:4096,colors:value.stops.map((s,i)=>({_obj:'colorStop',
-        color:colorDescriptor(s),type:{_enum:'colorStopType',_value:'userStop'},
-        location:s.location,midpoint:old.colors?.[i]?.midpoint ?? 50})),
-      transparency:old.transparency || [0,4096].map(location=>({_obj:'transferSpec',opacity:{_unit:'percentUnit',_value:100},location,midpoint:50}))};
+      interfaceIconFrameDimmed:options.smoothness ?? old.interfaceIconFrameDimmed ?? 4096,colors:value.stops.map((s,i)=>{
+        const prior=old.colors?.[s.origin ?? i],color=s.native?{native:s.native}:{rgb:s.rgb};
+        return {...prior,_obj:'colorStop',color:prior && valueKey(channels(prior.color))===valueKey(color)?clone(prior.color):colorDescriptor(s),
+          type:{_enum:'colorStopType',_value:s.source ?? 'userStop'},location:s.location,midpoint:s.midpoint ?? prior?.midpoint ?? 50};
+      }),
+      transparency:value.opacity_stops?.map(s=>({_obj:'transferSpec',opacity:{_unit:'percentUnit',_value:s.opacity},location:s.location,midpoint:s.midpoint ?? 50})) ||
+        old.transparency || [0,4096].map(location=>({_obj:'transferSpec',opacity:{_unit:'percentUnit',_value:100},location,midpoint:50}))};
     return next;
   }
   function samePaint(actual,wanted) {
@@ -1172,7 +1210,20 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     const sameColor=(a,b)=>a.native || b.native?a.native?.model===b.native?.model && !!a.native && !!b.native && a.native.values.length===b.native.values.length && a.native.values.every((v,i)=>Math.abs(v-b.native.values[i])<=.01):close(a.rgb,b.rgb);
     if(actual.kind==='solid')return sameColor(actual,wanted);
     if(actual.kind==='pattern')return actual.name===wanted.name;
-    return (wanted.method===undefined || actual.method===wanted.method) && actual.stops.length===wanted.stops.length && actual.stops.every((s,i)=>s.location===wanted.stops[i].location && sameColor(s,wanted.stops[i]));
+    if(wanted.options && (!actual.options || Object.entries(wanted.options).some(([k,v])=>{
+      const read=actual.options[k];
+      if(typeof v!=='number')return read!==v;
+      if(typeof read!=='number' || !Number.isFinite(read))return true;
+      const distance=Math.abs(read-v);
+      return (k==='angle'?Math.min(distance%360,360-distance%360):distance)>.01;
+    })))return false;
+    if(wanted.opacity_stops && (!actual.opacity_stops || actual.opacity_stops.length!==wanted.opacity_stops.length || actual.opacity_stops.some((s,i)=>{
+      const other=wanted.opacity_stops[i],quantized=Math.round(other.opacity*255/100)*100/255;
+      return s.location!==other.location || Math.min(Math.abs(s.opacity-other.opacity),Math.abs(s.opacity-quantized))>.01 || s.midpoint!==(other.midpoint ?? 50);
+    })))return false;
+    return (wanted.method===undefined || actual.method===wanted.method) && actual.stops.length===wanted.stops.length && actual.stops.every((s,i)=>{
+      const other=wanted.stops[i];return s.location===other.location && sameColor(s,other) && (other.midpoint===undefined || s.midpoint===other.midpoint) && (other.source===undefined || s.source===other.source);
+    });
   }
   function validateParams(params) {
     if(!params || typeof params.revision!=='string' || params.revision.length>128)throw Error('Missing shape revision');
@@ -1278,7 +1329,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       const actual=await capture(),expected=request.target;
       if(expected?.session!==session || actual.document_id!==expected.document_id || actual.active_layer_id!==expected.active_layer_id || actual.layer_ids.join(',')!==expected.layer_ids?.join(','))throw Error('Document or layer target changed');
       await stage('read-initial-paint');
-      const eligibility=selectionContext(true),before=await observe(eligibility,true);
+      const details=extendedPaint(params),eligibility=selectionContext(true),before=await observe(eligibility,true,null,null,details);
       if(!before.available || before.revision!==params.revision)throw Error('填充／描边已改变，请重新打开菜单；本次未修改');
       if(preview && !before.live_preview)throw Error('原生颜色通道使用本地草稿，确认后写入');
       if(params.mask && (!before.vector || !before.mask))throw Error('当前图层不支持矢量蒙版羽化／密度；本次未修改');
@@ -1298,7 +1349,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       const rawKey=raw=>JSON.stringify([raw.fill,raw.stroke,raw.vector]);
       let appliedRawKey=rawKey(original);
       const preparePaint=()=>{
-        const key=p=>valueKey([p.kind,p.enabled,p.rgb,p.native,p.stops?.map(s=>[s.location,s.rgb,s.native]),p.name,p.width,p.method]);
+        const key=valueKey;
         const fillChanged=key(params.fill)!==key(appliedPaint.fill),strokeChanged=key(params.stroke)!==key(appliedPaint.stroke);
         const paintChanged=fillChanged || strokeChanged;
         // Vector-backed content must use Photoshop's shapeStyle setter.
@@ -1347,7 +1398,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
           await stage('read-color-after');
           // Paint validation needs fresh identity/type/ancestor locks, not
           // sibling adjacency and sort capabilities on every color frame.
-          const actual=await observe(selectionContext(true),true,before);
+          const actual=await observe(selectionContext(true),true,before,null,details);
           if(!target() || !actual.available || actual.vector!==before.vector || !samePaint(actual.fill,params.fill) ||
             !strokeMatches(actual.stroke) || Math.abs(actual.stroke.width-params.stroke.width)>.01)
             throw Error('Fill or stroke preview readback mismatch');
@@ -1395,7 +1446,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
           if(params.mask.density!==anchor.vectorMaskDensity)anchor.vectorMaskDensity=params.mask.density;
         }
         await stage('verify-final');
-        const after=await observe(selectionContext(true),true,preview?before:null);
+        const after=await observe(selectionContext(true),true,preview?before:null,null,details);
         const wantedMask=params.mask || before.mask;
         if(wantedMask && (!after.mask || Math.abs(after.mask.feather-wantedMask.feather)>.01 ||
           Math.abs(after.mask.density-wantedMask.density)>100/255+.001))throw Error('矢量蒙版羽化／密度读回不符，已回滚');
@@ -1438,7 +1489,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     const actual=await capture(),expected=request.target;
     if(Date.now()>request.expires_at_ms || expected?.session!==session || actual.document_id!==expected.document_id ||
       actual.active_layer_id!==expected.active_layer_id || actual.layer_ids.join(',')!==expected.layer_ids?.join(','))throw Error('Legacy preview target changed');
-    const before=await observe(selectionContext(true),true);
+    const before=await observe(selectionContext(true),true,null,null,extendedPaint(request.paint));
     if(!before.available || before.revision!==request.paint.revision)throw Error('填充／描边已改变，请重新打开菜单；本次未修改');
     if(!before.live_preview)throw Error('原生颜色通道使用本地草稿，确认后写入');
     if(request.paint.mask && (!before.vector || !before.mask))throw Error('Vector mask unavailable');

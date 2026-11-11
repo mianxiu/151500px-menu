@@ -107,7 +107,7 @@ class StabilityTest:
             session=self.report.get('versions',{}).get('session')
             if session:return {'session':session,'document_id':fixture['document_id']}
         fixture=self.report.get('color_fixture',{})
-        if (self.report.get('profile')=='color-native' and type(fixture.get('id')) is int and
+        if (self.report.get('profile') in ('color-native','gradient-editor') and type(fixture.get('id')) is int and
                 self.report.get('native_request',{}).get('phase')=='returned'):
             session=self.report.get('versions',{}).get('session')
             if session:return {'session':session,'document_id':fixture['id']}
@@ -128,7 +128,7 @@ class StabilityTest:
         await self.app.broadcast({'type':'stability','data':self.snapshot()})
 
     async def start(self,profile='standard'):
-        if profile not in ('standard','extended','text-object','color-native'):raise ValueError('未知测试模式')
+        if profile not in ('standard','extended','text-object','color-native','gradient-editor'):raise ValueError('未知测试模式')
         if self.report.get('native_request',{}).get('phase') in ('submitted','unknown'):
             raise RuntimeError('原生验收请求退出仍未知，未开始新的测试')
         if self.report.get('text_fixture'):
@@ -155,9 +155,9 @@ class StabilityTest:
             app.operation_lock.release();raise
         self.active=True;self.finalizing=False;self.stop_requested=False
         self.report={'schema':1,'run_id':uuid.uuid4().hex,'phase':'running','message':'正在准备隔离测试',
-            'profile':profile,'rounds':2 if profile in ('text-object','color-native') else 3 if profile=='standard' else 10,'round':0,'stage':'preflight',
+            'profile':profile,'rounds':2 if profile in ('text-object','color-native','gradient-editor') else 3 if profile=='standard' else 10,'round':0,'stage':'preflight',
             'started_at':time.time(),'application_version':APP_VERSION,'steps':[],'system_samples':[],
-            'cleanup':'not-created','scope':{'native_menu_lifecycle':profile not in ('text-object','color-native'),'native_menu_read_only':True,'temporary_document_only':True,'changes_power_plan':False,
+            'cleanup':'not-created','scope':{'native_menu_lifecycle':profile not in ('text-object','color-native','gradient-editor'),'native_menu_read_only':True,'temporary_document_only':True,'changes_power_plan':False,
             'injects_input':False,'uploads':False,'original_documents_saved_or_closed':False},
             'not_tested':['physical_caps_and_UU_remote','mouse_hit_testing','visible_canvas','real_document_content',
                 'GPU_causality','thermal_throttling_causality','other_OS_or_Photoshop_versions'],
@@ -200,7 +200,7 @@ class StabilityTest:
                 check()
                 if self.stop_requested:raise Stopped('已停止尚未提交的收尾')
             check()
-            if self.report.get('profile')=='color-native':
+            if self.report.get('profile') in ('color-native','gradient-editor'):
                 from .color_native_acceptance import cleanup
                 evidence=await cleanup(self)
                 self.report.update(phase='cleaned',message='原颜色验收文档已核验并关闭',
@@ -279,7 +279,7 @@ class StabilityTest:
         # reply still cannot authorize a new cleanup mutation. Fail closed;
         # a timeout, heartbeat or menu close is not execution-exit proof.
         self.report['read_request_pending']=True
-        binding={} if self.report.get('profile') in ('text-object','color-native') else {'stability_run':self.report['run_id']}
+        binding={} if self.report.get('profile') in ('text-object','color-native','gradient-editor') else {'stability_run':self.report['run_id']}
         try:value=await asyncio.to_thread(self.app.bridge.transport.call,'inspect',**binding,**payload)
         except UxpRequestFailed:
             self.report['read_request_pending']=False
@@ -442,6 +442,11 @@ class StabilityTest:
                 from .color_native_acceptance import run
                 await run(self)
                 self.report.update(phase='completed',message='原生颜色通道隔离验收完成，报告已保存')
+                return
+            if self.report.get('profile')=='gradient-editor':
+                from .gradient_acceptance import run
+                await run(self)
+                self.report.update(phase='completed',message='渐变隔离验收完成，报告已保存')
                 return
             if self.report.get('profile')=='text-object':
                 if version(heartbeat.get('probe_version'))<(0,3,100):raise RuntimeError('文字对象验收需要UXP0.3.100')

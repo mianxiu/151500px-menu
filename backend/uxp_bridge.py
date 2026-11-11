@@ -518,8 +518,9 @@ class UxpBridge(PhotoshopBridge):
             except ValueError as error:raise UxpResultUnknown('快捷键目标收据待核对；不重发') from error
         return {**self._captured_target,'instance_binding':self._captured_app}
 
-    def _bind_menu_target(self,target):
-        if self.focus_guard:self.focus_guard()
+    def _bind_menu_target(self,target,focus_guard=None):
+        guard=focus_guard or self.focus_guard
+        if guard:guard()
         if (not isinstance(target,dict) or not isinstance(target.get('session'),str) or not target['session'] or
             type(target.get('document_id')) is not int or target['document_id']<=0 or
             not isinstance(target.get('layer_ids'),list) or len(target['layer_ids'])!=1 or
@@ -643,7 +644,7 @@ class UxpBridge(PhotoshopBridge):
             finally:self._uxp_worker_active=False
         return await self._execute_task('text.object',before_dispatch,capture=lambda:self._bind_menu_target(target),execute=write)
 
-    async def execute_shape(self, params, before_dispatch=None, frozen_target=None, preview=None, _stability_run=None):
+    async def execute_shape(self, params, before_dispatch=None, frozen_target=None, preview=None, _stability_run=None, focus_guard=None):
         from .shape_paint import parameters
         params=parameters(params)
         if self.execution_guard:self.execution_guard()
@@ -671,7 +672,9 @@ class UxpBridge(PhotoshopBridge):
                 self.layer_context=value if fresh(value) else unavailable()
                 return json.dumps(response['result'])
             finally:self._uxp_worker_active=False
-        capture=(lambda:(self._bind_batch_mask_target if params.get('mask_batch') else self._bind_menu_target)(frozen_target)) if frozen_target is not None else self._capture_target
+        capture=self._capture_target
+        if frozen_target is not None:
+            capture=(lambda:self._bind_batch_mask_target(frozen_target)) if params.get('mask_batch') else (lambda:self._bind_menu_target(frozen_target,**({'focus_guard':focus_guard} if focus_guard else {})))
         if _stability_run:capture=lambda:self._capture_stability(_stability_run)
         return await self._execute_task('shape.paint',before_dispatch,capture=capture,execute=write,interactive=preview is not None)
 

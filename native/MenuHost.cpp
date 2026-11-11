@@ -32,6 +32,7 @@
 #include "StyledMenuIcons.h"
 #include "MenuUiMetrics.h"
 #include "MenuShadow.h"
+static constexpr int pieRightInset=int(menuQuickGroupOffset+menuQuickGroupMaxCount*figmaDisplayIconWidth+menuShadow::extent);
 static std::string uiFontSize="small";
 #include "MenuTypography.h"
 static void requireText(const std::string& text);
@@ -141,6 +142,8 @@ static std::array<RECT,4> holdRows{};
 static POINT holdOrigin{};
 static bool holdMoved=false;
 static ImVec2 pieCenter{};
+static int pieAnchorX=-1;
+static bool shapePanelRight=false;
 static bool pieReady=false;
 static bool pinned=false;
 static LPARAM menuEpoch=0;
@@ -314,6 +317,11 @@ static const char* panelTitle() {
 }
 static bool rowVisible(int i) {return panelKind==4?i==0:panelKind!=3 && ((panelKind!=1 && panelKind!=0) || i<2);}
 static float scale=1;
+#include "PerceptualPicker.h"
+#include "GradientPanel.h"
+static bool gradientWindow=false;
+static bool gradientLaunching=false;
+static GradientPanel gradientPanel;
 static bool capsDividerAt(int i,POINT point) {
     if(i>=9)return layerCount>1 && (i==9?point.y<capsRows[i].top+scale:point.y>=capsRows[i].bottom-scale);
     const int first=i>=9?9:i>=7?7:panelKind==2 && i>=5?5:0;
@@ -358,9 +366,10 @@ static std::string previewProgressStage;
 static std::wstring shapeBenchmarkOutput;
 static bool selfTest=false;
 static std::vector<std::string> testedActions;
+static Json testedGradientOpen;
 static size_t labelTestActionCount=0;
 static ImVec2 bottomRow;
-static void send(const char* action) {
+static void send(const char* action,const Json& params=Json()) {
     if(stabilityInspection)return;
     for(int i:{9,10})if(std::string(action)==capsActions[i] && !capsEnabled(i))return;
     if((panelKind==0 || panelKind==1) && (std::string(action)=="moveToTop" || std::string(action)=="moveToBottom" ||
@@ -371,11 +380,12 @@ static void send(const char* action) {
         for(int i=0;i<4;++i)if(std::string(action)==actions[i])row=i;
         if(row>=0 && !rowEnabled(row))return;
     }
-    if (selfTest) {testedActions.emplace_back(action);return;}
+    if (selfTest) {testedActions.emplace_back(action);if(!params.is_null())testedGradientOpen=params;return;}
     // The foreground menu grants its own backend permission to return focus
     // to PS when it hides. Do not loosen foreground restrictions globally.
     if (backendParent) AllowSetForegroundWindow(backendParent);
     Json event={{"type","action"},{"action",action},{"session",menuEpoch}};
+    if(!params.is_null())event["params"]=params;
     std::cout<<event.dump()<<std::endl;
 }
 static std::string normalized(std::string value) {
@@ -579,6 +589,24 @@ static std::string shortcut(const std::string& raw) {
 }
 static void accept(const Json& event) {
     std::string type=event.value("type","");
+    if(gradientWindow){
+        if(type=="gradient.open"){
+            gradientPanel.open(event);
+            const auto nextTheme=event.value("theme",uiTheme),nextFont=event.value("font",uiFontSize);
+            if(knownTheme(nextTheme))uiTheme=nextTheme;
+            if(nextFont=="small" || nextFont=="medium" || nextFont=="large")uiFontSize=nextFont;
+            theme();setOpacity(1.f);
+            ShowWindow(window,SW_SHOWNORMAL);SetForegroundWindow(window);
+        }else if(type=="gradient.state"){
+            gradientPanel.receive(event);
+            if(gradientPanel.phase=="closed")DestroyWindow(window);
+        }
+        return;
+    }
+    if(type=="gradient.open.failed"){
+        if(event.value("epoch",LPARAM(0))==menuEpoch){gradientLaunching=false;notice=event.value("message","");}
+        return;
+    }
     if(type=="menu.tools.opened" || type=="menu.tools.result" || type=="menu.tools.preview.result"){
         const bool pending=menuTools.previewPending;menuTools.receive(event);
         if(type=="menu.tools.preview.result" && pending && !menuTools.previewPending && !taskBusy)busyFeedback=false;
@@ -703,6 +731,7 @@ static int holdActionAt(POINT point) {
     return -1;
 }
 static void setHoldMode(bool enabled) {
+    gradientLaunching=false;
     busyMenuWake=enabled && taskBusy && panelKind==2 && !inputFocused;
     holdMode=enabled;holdFinished=false;pinned=false;holdMoved=false;resetMenu();focusSearch=false;
     pieStarted=0;pieAnimating=enabled;
@@ -747,7 +776,41 @@ static bool focusRequestCurrent(LPARAM packet,LPARAM epoch,DWORD now) {
     const auto value=static_cast<uint64_t>(packet);const DWORD remaining=DWORD(value)-now;
     return packet>0 && (value>>32)==static_cast<uint64_t>(epoch) && remaining>0 && remaining<=500;
 }
+static constexpr DWORD gradientStyle=WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
+static constexpr DWORD gradientExStyle=WS_EX_APPWINDOW|WS_EX_NOREDIRECTIONBITMAP;
+static RECT gradientWindowBounds(RECT work,UINT dpi) {
+    const LONG inset=MulDiv(int(2*menuPanelGap),dpi,96);
+    RECT frame={0,0,MulDiv(604,dpi,96),MulDiv(410,dpi,96)};
+    static const auto adjust=reinterpret_cast<BOOL(WINAPI*)(LPRECT,DWORD,BOOL,DWORD,UINT)>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"),"AdjustWindowRectExForDpi"));
+    if(!adjust || !adjust(&frame,gradientStyle,FALSE,gradientExStyle,dpi))
+        AdjustWindowRectEx(&frame,gradientStyle,FALSE,gradientExStyle);
+    const LONG width=std::min(frame.right-frame.left,std::max(1L,work.right-work.left-2*inset));
+    const LONG height=std::min(frame.bottom-frame.top,std::max(1L,work.bottom-work.top-2*inset));
+    const LONG x=work.left+(work.right-work.left-width)/2,y=work.top+(work.bottom-work.top-height)/2;
+    return {x,y,x+width,y+height};
+}
 static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
+    if(gradientWindow){
+        if(msg==WM_CLOSE && gradientPanel.ready()){gradientPanel.finish(false);return 0;}
+        if(msg==WM_APP+32){DestroyWindow(hwnd);return 0;}
+        if(msg==WM_GETMINMAXINFO){
+            auto* limits=reinterpret_cast<MINMAXINFO*>(lp);
+            const float dpi=ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
+            limits->ptMinTrackSize={std::lround(445*dpi),std::lround(310*dpi)};
+            MONITORINFO monitor{sizeof(monitor)};
+            if(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor)){
+                const auto fit=gradientWindowBounds(monitor.rcWork,UINT(std::lround(96*dpi)));
+                limits->ptMinTrackSize.x=std::min(limits->ptMinTrackSize.x,fit.right-fit.left);
+                limits->ptMinTrackSize.y=std::min(limits->ptMinTrackSize.y,fit.bottom-fit.top);
+            }
+            return 0;
+        }
+    }
+    if(msg==WM_APP+31){
+        if(IsWindowVisible(hwnd) && GetForegroundWindow()==hwnd && lp==menuEpoch)return AllowSetForegroundWindow(static_cast<DWORD>(wp));
+        return FALSE;
+    }
     // Own both halves even when cancellation hides the window before the up.
     // The global hook normally handles this, but client blank space must also
     // work when the hook is being renewed or the menu receives input directly.
@@ -821,7 +884,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if (msg==WM_APP+19) return (busyFeedback?1:0)|(taskBusy?2:0);
     // Read-only success feedback expiry. The backend waits for preview/guard
     // release, then hides this window without querying Photoshop or replaying actions.
-    if (msg==WM_APP+24) return IsWindowVisible(hwnd) && completionReady() && (!busyMenuWake || returnInputsIdle());
+    if (msg==WM_APP+24) return IsWindowVisible(hwnd) && !gradientLaunching && completionReady() && (!busyMenuWake || returnInputsIdle());
     if (msg==WM_APP+28) return (shapeReturning || hoverReturnConfirmed)?2:busyMenuWake?1:0;
     if(msg==WM_APP+29)return (menuTools.active?1:0)|(menuTools.ready?2:0)|(menuTools.pending?4:0)|
         (menuTools.mode=="split"?8:0)|(!menuTools.revision.empty()?16:0)|(!menuTools.error.empty()?32:0)|(menuTools.split.count<<8);
@@ -838,6 +901,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     }
     // One synchronous transition: no intermediate layout or repeated round trips.
     if (msg==WM_APP+17) {
+        pieAnchorX=static_cast<int>((wp>>40)&0xffff)-1;shapePanelRight=(wp&(1ull<<56))!=0;
         panelKind=(wp&32)?4:static_cast<int>(wp&3);inputFocused=(wp&4)!=0;
         layerAware=(wp&64)!=0;layerMask=(wp>>8)&15;layerKind=(wp>>12)&15;
         layerBackground=(wp&(1u<<16))!=0;layerCount=(wp>>17)&255;
@@ -846,7 +910,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         contextMode=(wp&8)!=0;menuEpoch=lp;setHoldMode((wp&16)!=0);
         return 0;
     }
-    if (msg==WM_APP+13) {menuEpoch=lp;setHoldMode(wp!=0);return 0;}
+    if (msg==WM_APP+13) {pieAnchorX=-1;shapePanelRight=false;menuEpoch=lp;setHoldMode(wp!=0);return 0;}
     if (msg==WM_APP+16) {pinned=wp!=0;return 0;}
     if (msg==WM_APP+14) {
         POINT point{};
@@ -862,10 +926,11 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if (msg==WM_APP+10) { contextMode=wp!=0;resetMenu();return 0; }
     if (msg==WM_SHOWWINDOW) {
         opened=wp!=0;
-        if(!opened)stopShapeEyedrop();
-        if (opened) {
+        if(gradientWindow)setOpacity(opened?1.f:0.f);
+        else if (opened) {
             resetMenu();pieStarted=0;setOpacity(holdMode?0.f:1.f);
         } else {
+            stopShapeEyedrop();
             busyMenuWake=false;
             // Keep the composition surface attached while the HWND hides.
             // The next frame selects transparent pie or opaque regular mode.
@@ -1418,9 +1483,9 @@ static void drawQuickGroups(int selected,float fac) {
     if(panelKind==4 || panelKind==3 || !layerAware)return;
     auto* d=ImGui::GetWindowDrawList();
     for(int group=0;group<2;++group) {
-        const int first=group?3:0,count=group?4:3;
+        const int first=group?3:0,count=group?menuQuickGroupMaxCount:3;
         const float cell=figmaDisplayIconWidth*scale,height=figmaDisplayWidgetHeight*scale;
-        const ImVec2 a={pieCenter.x+65*scale,pieCenter.y+quickGroupY(group)*scale};
+        const ImVec2 a={pieCenter.x+menuQuickGroupOffset*scale,pieCenter.y+quickGroupY(group)*scale};
         const ImVec2 b={a.x+count*cell,a.y+height};
         const int begin=d->VtxBuffer.Size;
         menuShadow::draw(d,a,b,ImGui::GetStyle().FrameRounding,scale);
@@ -1534,6 +1599,7 @@ static void drawPie() {
     pieCenter={pos.x+size.x*.5f,pos.y+size.y*.5f};
     if((panelKind==2 || menuToolsVisible()) && size.x>700*scale)pieCenter.x=pos.x+std::max(size.x*.5f,std::min(650*scale,size.x-270*scale));
     if(panelKind==4)pieCenter.x=pos.x+270*scale;
+    if(pieAnchorX>=0)pieCenter.x=pos.x+pieAnchorX;
     if (!pieStarted) pieStarted=GetTickCount64();
     float elapsed=previewAnimationMs>=0?previewAnimationMs:selfTest?60.f:float(GetTickCount64()-pieStarted);
     const float fac=pieAnimation(elapsed);
@@ -1574,7 +1640,7 @@ static void drawPie() {
         // Palette below the centre; both sort buttons form one row above it.
         // A closer palette leaves space for the read-only footer underneath.
         float radius=(i==1?45.f:65.f)*scale;
-        if (i==0) radius=std::min(radius,std::max(20*scale,size.x*.5f-width-8*scale));
+        if (i==0) radius=std::min(radius,std::max(20*scale,pieCenter.x-pos.x-width-8*scale));
         offsets[i]=i==0?ImVec2(-radius-width*.5f,0):i==1?ImVec2(0,radius+height*.5f):
             ImVec2((i==2?-1.f:1.f)*width*.5f,-radius-height*.5f);
         ImVec2 a={pieCenter.x+offsets[i].x-width*.5f,pieCenter.y+offsets[i].y-height*.5f};
@@ -1595,7 +1661,7 @@ static void drawPie() {
     drawRecentPresets();
     // Build final hit rectangles before sampling, independent of animation.
     if(!editing && panelKind!=4 && panelKind!=3 && layerAware)for(int i=0;i<7;++i){int group=i>=3,n=group?i-3:i;
-        float x=pieCenter.x+(65+figmaDisplayIconWidth*n)*scale,y=pieCenter.y+quickGroupY(group)*scale;
+        float x=pieCenter.x+(menuQuickGroupOffset+figmaDisplayIconWidth*n)*scale,y=pieCenter.y+quickGroupY(group)*scale;
         quickRows[i]={LONG(x),LONG(y),LONG(x+figmaDisplayIconWidth*scale),LONG(y+figmaDisplayWidgetHeight*scale)};}
     if(!editing){drawCapsBar();drawToolBar();}else toolRow={};
     shapeEditorKeys();
@@ -1725,6 +1791,7 @@ static void drawBusyFeedback() {
     const auto pos=ImGui::GetWindowPos(),size=ImGui::GetWindowSize();
     pieCenter={pos.x+size.x*.5f,pos.y+size.y*.5f};
     if(panelKind==2 && size.x>700*scale)pieCenter.x=pos.x+std::max(size.x*.5f,std::min(650*scale,size.x-270*scale));
+    if(pieAnchorX>=0)pieCenter.x=pos.x+pieAnchorX;
     if (!feedbackStarted) feedbackStarted=GetTickCount64();
     float fade=selfTest?1.f:pieAnimation(float(GetTickCount64()-feedbackStarted));
     setOpacity(IsWindowVisible(window) && !holdFinished?fade:0.f);
@@ -1961,16 +2028,18 @@ static void readEvents() {
             event.release();
         }
     } catch (...) {}
-    PostMessageW(window,WM_CLOSE,0,0);
+    PostMessageW(window,gradientWindow?WM_APP+32:WM_CLOSE,0,0);
 }
 int main() {
     // Report CRT assertions to overlay.log rather than a blocking OS dialog.
     _set_error_mode(_OUT_TO_STDERR);
     int argc;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);
-    std::wstring iconPath;DWORD parent=0;POINT testOrigin{100,100};
+    std::wstring iconPath;DWORD parent=0;POINT testOrigin{100,100};HWND gradientAnchor=nullptr;
     for (int i=1;i<argc;++i) {
         std::wstring arg=argv[i];
-        if (arg==L"--preview-lifecycle") previewLifecycle=true;
+        if (arg==L"--gradient-window") gradientWindow=true;
+        else if (i+1<argc && arg==L"--gradient-anchor") gradientAnchor=reinterpret_cast<HWND>(std::stoull(argv[++i]));
+        else if (arg==L"--preview-lifecycle") previewLifecycle=true;
         else if (arg==L"--preview-live") previewLive=true;
         else if (arg==L"--self-test") selfTest=true;
         else if (i+2<argc && arg==L"--self-test-origin") {
@@ -2049,12 +2118,20 @@ int main() {
     backendParent=parent;
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc{sizeof(WNDCLASSEXW)};wc.style=CS_CLASSDC;wc.lpfnWndProc=procedure;wc.hInstance=GetModuleHandleW(nullptr);
-    wc.lpszClassName=L"PhotoshopMenuImGui";wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
+    wc.lpszClassName=gradientWindow?L"PhotoshopGradientImGui":L"PhotoshopMenuImGui";wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
     HICON iconHandle=iconPath.empty()?nullptr:static_cast<HICON>(LoadImageW(nullptr,iconPath.c_str(),IMAGE_ICON,32,32,LR_LOADFROMFILE));
     wc.hIcon=wc.hIconSm=iconHandle;RegisterClassExW(&wc);
     contextMode=previewKind=="context";
-    window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOREDIRECTIONBITMAP,wc.lpszClassName,preview.empty()?L"151500px-menu - Actions":L"151500px-menu - Preview",
-        WS_POPUP,100,100,contextMode?260:360,contextMode?240:300,nullptr,nullptr,wc.hInstance,nullptr);
+    RECT bounds={100,100,100+(contextMode?260:360),100+(contextMode?240:300)};
+    if(gradientWindow){
+        POINT cursor{};GetCursorPos(&cursor);
+        const auto monitor=gradientAnchor?MonitorFromWindow(gradientAnchor,MONITOR_DEFAULTTONEAREST):MonitorFromPoint(cursor,MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info{sizeof(info)};
+        if(!GetMonitorInfoW(monitor,&info))return 1;
+        bounds=gradientWindowBounds(info.rcWork,UINT(std::lround(96*ImGui_ImplWin32_GetDpiScaleForMonitor(monitor))));
+    }
+    window=CreateWindowExW(gradientWindow?gradientExStyle:WS_EX_TOOLWINDOW|WS_EX_NOREDIRECTIONBITMAP,wc.lpszClassName,gradientWindow?L"151500px-menu — 渐变编辑":preview.empty()?L"151500px-menu - Actions":L"151500px-menu - Preview",
+        gradientWindow?gradientStyle:WS_POPUP,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,nullptr,nullptr,wc.hInstance,nullptr);
     if (!window || !createDevice(window)) {std::cerr<<"DirectX 11 initialization failed\n";return 1;}
     IMGUI_CHECKVERSION();ImGui::CreateContext();auto& io=ImGui::GetIO();
     io.ConfigFlags|=ImGuiConfigFlags_NavEnableKeyboard|ImGuiConfigFlags_ViewportsEnable;
@@ -2119,9 +2196,9 @@ int main() {
         std::cerr<<"Unable to initialize menu renderer resources\n";return 1;
     }
     if (preview.empty() && !selfTest) {
-        std::cout<<Json({{"type","ready"},{"hwnd",reinterpret_cast<uintptr_t>(window)},{"pid",GetCurrentProcessId()},{"graphics",graphicsInfo()}}).dump()<<std::endl;
+        std::cout<<Json({{"type","ready"},{"hwnd",reinterpret_cast<uintptr_t>(window)},{"pid",GetCurrentProcessId()},{"graphics",graphicsInfo()},{"pie_right_inset",pieRightInset}}).dump()<<std::endl;
         std::thread(readEvents).detach();
-        if (parent) std::thread([parent]{HANDLE process=OpenProcess(SYNCHRONIZE,FALSE,parent);if (process){WaitForSingleObject(process,INFINITE);CloseHandle(process);}PostMessageW(window,WM_CLOSE,0,0);}).detach();
+        if (parent) std::thread([parent]{HANDLE process=OpenProcess(SYNCHRONIZE,FALSE,parent);if (process){WaitForSingleObject(process,INFINITE);CloseHandle(process);}PostMessageW(window,gradientWindow?WM_APP+32:WM_CLOSE,0,0);}).detach();
     } else {
         allowed=true;document="示例文档.psd";
         if (selfTest) {
@@ -2373,6 +2450,7 @@ int main() {
             }
             float dpi=ImGui_ImplWin32_GetDpiScaleForHwnd(window);
             requireText(document);requireText(notice);requireText(taskName);requireText(search);
+            if(gradientWindow){requireText(gradientPanel.title);requireText(gradientPanel.message);}
             for (const auto& text:shortcuts) requireText(text);
             if (selfTest && frames>=1 && frames<=3) {
                 uiFontSize=frames==1?"large":frames==2?"medium":"small";
@@ -2405,7 +2483,7 @@ int main() {
             // Deferring this until ShowWindow blocked the first CapsLock frame.
             // Preserve an acquired slot if a hide arrived during the wait.
             // Dropping it without Present can strand the next reopen.
-            if (!IsWindowVisible(window) && !selfTest) {WaitMessage();continue;}
+            if ((!IsWindowVisible(window) || gradientWindow && IsIconic(window)) && !selfTest) {WaitMessage();continue;}
             if (FAILED(device->GetDeviceRemovedReason()) || !target) {
                 if (!recoverRenderer()) throw std::runtime_error("Unable to recover removed graphics device");
                 continue;
@@ -2442,7 +2520,7 @@ int main() {
                 io.AddMousePosEvent(previewExitEditor?pieCenter.x:float(r.left+3*scale),previewExitEditor?pieCenter.y:float(r.top+3*scale));
             }
             if(!preview.empty() && previewOwningEditor && frames>=2)maskPreviewStarted=true;
-            ImGui::NewFrame();drawMenu();ImGui::Render();
+            ImGui::NewFrame();if(gradientWindow)gradientPanel.draw();else drawMenu();ImGui::Render();
             lastVisibleVertices=ImGui::GetDrawData()->TotalVtxCount;
             ++renderedFrames;
             if (!target) throw std::runtime_error("DX11 render target lost after window resize");
@@ -2768,6 +2846,55 @@ int main() {
                     io.AddKeyEvent(key,down);
                     ImGui::NewFrame();drawMenu();ImGui::Render();finishPlatformFrame();
                 };
+                {
+                    for(const auto& example:{std::pair{RECT{0,0,1920,1040},96u},std::pair{RECT{-1360,0,0,860},192u}}){
+                        const auto work=example.first,fit=gradientWindowBounds(work,example.second);
+                        if(fit.left<=work.left || fit.top<=work.top || fit.right>=work.right || fit.bottom>=work.bottom ||
+                           fit.right-fit.left>MulDiv(640,example.second,96) || fit.bottom-fit.top>MulDiv(455,example.second,96))
+                            throw std::runtime_error("The gradient window did not fit inside the monitor work area");
+                    }
+                    GradientPanel panel;
+                    panel.open(Json::parse(R"({"phase":"editing","draft":{"fill":{"kind":"gradient","stops":[{"location":0,"rgb":[0,0,0]},{"location":4096,"rgb":[200,100,50]}],"opacity_stops":[{"location":0,"opacity":100},{"location":4096,"opacity":50}]}}})"));
+                    ImVec2 from{},to{};bool pickerMode=false;
+                    auto frame=[&](bool focus=false){
+                        ImGui::NewFrame();const auto origin=ImGui::GetMainViewport()->Pos;
+                        ImGui::SetNextWindowPos(origin);ImGui::SetNextWindowSize({340*scale,(pickerMode?220:180)*scale});
+                        if(focus)ImGui::SetNextWindowFocus();
+                        ImGui::Begin("##test-gradient",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
+                        if(pickerMode){MenuControls::PanelStyle style(scale);panel.colorPicker(menuPanelWidth*scale);}
+                        else {panel.timeline(scale);from=ImGui::GetItemRectMin();to=ImGui::GetItemRectMax();}
+                        ImGui::End();ImGui::Render();finishPlatformFrame();
+                    };
+                    frame(true);frame();
+                    const ImVec2 middle={(from.x+to.x)*.5f,from.y+3.5f*menuControlHeight*scale};
+                    io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(middle.x,middle.y);frame();
+                    io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();
+                    const auto& inserted=panel.track(1).at(1);
+                    if(panel.track(1).size()!=3 || std::abs(inserted.at("location").get<int>()-2048)>1 || inserted.at("rgb")!=Json({100,50,25}))
+                        throw std::runtime_error("A single native timeline click did not insert the sampled color stop");
+                    const int insertedPosition=inserted.at("location");
+                    panel.select(0,0,true,false);const auto prior=panel.paint();const int shift=panel.shift(prior,512);panel.moveBy(prior,shift);
+                    if(shift!=512 || panel.track(0).at(0).at("location")!=512 || panel.track(1).at(1).at("location")!=insertedPosition+512)
+                        throw std::runtime_error("Grouped gradient movement lost relative spacing");
+                    const auto moved=panel.draft;panel.zoom(2,.25f);
+                    if(panel.start!=512 || panel.span!=2048 || moved!=panel.draft)
+                        throw std::runtime_error("Timeline zoom changed Photoshop draft values");
+                    pickerMode=true;panel.select(1,2,true,false);frame(true);frame();
+                    if(panel.picker.last!=PerceptualPickerState::color(panel.track(1).at(2).at("rgb")) || panel.draft!=moved)
+                        throw std::runtime_error("The shared gradient picker did not follow the clicked color stop");
+                    const RECT square=panel.picker.squareBounds;
+                    io.AddMousePosEvent(square.left+(square.right-square.left)*.75f,square.top+(square.bottom-square.top)*.25f);frame();
+                    io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();
+                    if(panel.track(1)[1]["rgb"]==moved["fill"]["stops"][1]["rgb"] || panel.track(1)[1]["rgb"]!=panel.track(1)[2]["rgb"] ||
+                       panel.track(1)[0]!=moved["fill"]["stops"][0] || panel.track(0)!=moved["fill"]["opacity_stops"])
+                        throw std::runtime_error("The shared picker did not edit only selected gradient colors");
+                    const auto recolored=panel.draft;panel.selection[1]=0;frame();
+                    io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();
+                    if(panel.draft!=recolored)throw std::runtime_error("Unselected gradient colors were editable");
+                    std::cout<<"Native gradient shared color picker passed\n";
+                    std::cout<<"Native gradient click, group movement and zoom passed\n";
+                    io.AddMousePosEvent(-1000,-1000);
+                }
                 {
                     {
                         char value[4096]="Long editable paragraph with words and 中文内容, automatic visual wrapping keeps original text intact. Long editable paragraph with words and 中文内容, automatic visual wrapping keeps original text intact.";
@@ -3303,6 +3430,26 @@ int main() {
                     if(isolated.current()["method"]!="perceptual")throw std::runtime_error("Default gradient edit did not use perceptual method");}
                 SetWindowPos(window,nullptr,0,0,int(920*scale),int(menuShapeWindowHeight*scale),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_SHOWWINDOW);
                 ImGui_ImplWin32_NewFrame();
+                const bool priorCaps=capsReady,priorSmart=individualSmartReady;
+                const unsigned priorQuick=quickMask;capsReady=individualSmartReady=true;
+                const auto rightDockLayout=2|16|64|(15<<8)|(6<<12)|(1<<17)|(127ull<<32)|((uint64_t(std::lround(200*scale))+1)<<40)|(1ull<<56);
+                procedure(window,WM_APP+17,rightDockLayout,menuEpoch);io.AddMousePosEvent(-1000,-1000);numberFrame(ImGuiKey_None,false);
+                const auto leftEdge=ImGui::GetMainViewport()->Pos.x;
+                if(std::abs(pieCenter.x-leftEdge-200*scale)>1.f || holdRows[0].right>=pieCenter.x || holdRows[2].left<leftEdge ||
+                   std::abs((holdRows[2].left+capsRows[6].right)*.5f-pieCenter.x)>1.f || capsRows[10].left<leftEdge ||
+                   capsRows[10].right>=holdRows[1].left || quickRows[0].left<=holdRows[1].right)
+                    throw std::runtime_error("Left-edge Caps changed the original control layout");
+                shapePanelOpen=true;numberFrame(ImGuiKey_None,false);
+                if(shapeEditor.bounds.left<=shapeModeBounds.right)
+                    throw std::runtime_error("Left-dock Caps menu lost the right-hand editor or pointer anchor");
+                const int rightAnchor=int(std::floor(ImGui::GetMainViewport()->Size.x-pieRightInset*scale));
+                const auto rightEdgeLayout=(rightDockLayout&((1ull<<40)-1))|((uint64_t(rightAnchor)+1)<<40);
+                procedure(window,WM_APP+17,rightEdgeLayout,menuEpoch);numberFrame(ImGuiKey_None,false);
+                const auto rightEdge=leftEdge+ImGui::GetMainViewport()->Size.x;
+                if(std::abs(quickRows[6].right+menuShadow::extent*scale-rightEdge)>2.f ||
+                   holdRows[0].right>=pieCenter.x || std::abs((holdRows[2].left+capsRows[6].right)*.5f-pieCenter.x)>1.f)
+                    throw std::runtime_error("Right-edge Caps clipped its controls or changed their layout");
+                pieAnchorX=-1;shapePanelRight=false;capsReady=priorCaps;individualSmartReady=priorSmart;quickMask=priorQuick;
                 numberFrame(ImGuiKey_None,false);holdMoved=true;
                 // Exercise the real expander path before isolated control fixtures.
                 shapePanelOpen=false;shapeHoverBounds={};io.AddMousePosEvent(-1000,-1000);numberFrame(ImGuiKey_None,false);
@@ -3745,6 +3892,29 @@ int main() {
                 if(testedActions.back()!="hide")throw std::runtime_error("Unchanged paint submitted");
                 auto resetShape=[&]{shapeEditor.prepare(shapeFixture);setHoldMode(true);shapePanelOpen=true;numberFrame(ImGuiKey_None,false);holdMoved=true;};
                 resetShape();
+                for(const bool live:{false,true}){
+                    auto gradientShape=shapeFixture;gradientShape["live_preview"]=live;gradientShape["gradient_editor"]=true;
+                    shapeEditor.prepare(gradientShape);setHoldMode(true);shapePanelOpen=true;
+                    shapeEditor.channel=1;shapeEditor.mode(1);shapeEditor.current()["stops"][0]["rgb"]={160,70,95};shapeEditor.changed();
+                    const auto draft=shapeEditor.draft;
+                    const auto actions=testedActions.size();
+                    numberFrame(ImGuiKey_None,false);
+                    const RECT entry=shapeTipRows[shapeGradientConfirmTip];
+                    io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);
+                    io.AddMousePosEvent((entry.left+entry.right)*.5f,(entry.top+entry.bottom)*.5f);numberFrame(ImGuiKey_None,false);
+                    io.AddMouseButtonEvent(0,true);numberFrame(ImGuiKey_None,false);
+                    io.AddMouseButtonEvent(0,false);numberFrame(ImGuiKey_None,false);
+                    const Json expected={{"channel","stroke"},{"draft",draft},{"preview",live}};
+                    if(!gradientLaunching || testedActions.size()!=actions+1 || testedActions.back()!="gradient.open" || testedGradientOpen!=expected)
+                        throw std::runtime_error("Adjusted Caps gradient did not request a single confirmed handoff: "+testedGradientOpen.dump());
+                    accept({{"type","gradient.open.failed"},{"epoch",menuEpoch-1}});
+                    if(!gradientLaunching)throw std::runtime_error("A stale launch failure unlocked the current gradient handoff");
+                    accept({{"type","gradient.open.failed"},{"epoch",menuEpoch}});
+                    if(gradientLaunching)throw std::runtime_error("Current gradient launch failure did not clear its pending state");
+                    testedActions.resize(actions);
+                }
+                std::cout<<"Adjusted Caps gradient handoff passed for live and draft-only paths\n";
+                resetShape();
                 // The documented 128 patterns x 128 characters is valid
                 // editor data. Python's ASCII JSON encoding can exceed 64KiB;
                 // its completed snapshot may replace the brief basic result.
@@ -3856,10 +4026,16 @@ int main() {
                 capsReady=true;panelKind=2;layerAware=true;layerKind=2;layerMask=15;layerCount=1;layerLocked=layerBackground=layerCrossParents=false;
                 shapeEditor.prepare(Json{{"available",false}});taskBusy=busyFeedback=false;
                 setHoldMode(true);shapePanelOpen=true;holdMoved=true;numberFrame(ImGuiKey_None,false);
+                auto* shortcutFont=menuFont(MenuTextRole::Shortcut);
                 for(int i=0;i<7;++i){
                     const auto r=capsRows[i];POINT centre={(r.left+r.right)/2,(r.top+r.bottom)/2};
                     if(r.right<=r.left || holdActionAt(centre)!=40+i || !actionTipText(40+i))throw std::runtime_error("Caps bar geometry/hit/tooltip mismatch");
                     if(i!=0 && holdActionAt({r.left,centre.y})!=-1)throw std::runtime_error("Caps separator gained a hit");
+                    if(i<5){
+                        const auto textWidth=shortcutFont->CalcTextSizeA(shortcutFont->LegacySize,FLT_MAX,0,capsKeys[i]).x;
+                        const auto width=std::max(menuShortcutMinWidth*scale,textWidth+2*menuShortcutTextInset*scale);
+                        if(std::abs(r.right-r.left-width)>1.f)throw std::runtime_error("Bottom shortcut width does not match its text and inset");
+                    }
                 }
                 if(capsRows[5].top!=holdRows[2].top || capsRows[5].bottom!=holdRows[2].bottom || capsRows[5].left!=holdRows[3].right || capsRows[6].left!=capsRows[5].right || capsRows[4].top<=capsRows[5].bottom ||
                    std::abs((capsRows[5].bottom-capsRows[5].top)-menuControlHeight*scale)>1)

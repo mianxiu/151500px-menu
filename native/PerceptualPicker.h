@@ -1,8 +1,10 @@
-// Included after shared shape controls; no host calls, no runtime assets.
+#pragma once
+#include "PerceptualColor.h"
 #include "HarmonyMarkers.h"
+static constexpr const char* perceptualPickerTips[]={"色相","饱和度／明度","主色","邻近色 −30°","邻近色 +30°","互补色"};
 struct PerceptualPickerState {
     perceptual::Color base{},last{},layoutBase{};
-    std::string key;int active=0,drag=-1;
+    std::string key;int active=0,drag=-1,hoverPart=-1;
     bool meshReady=false;
     std::array<ImU32,193> mesh{};
     RECT wheelBounds{},hueBounds{},lightnessBounds{},squareBounds{};
@@ -101,17 +103,15 @@ struct PerceptualPickerState {
             mesh[a]=ImGui::ColorConvertFloat4ToU32({r,g,b,1});}
     }
 };
-static PerceptualPickerState perceptualPicker;
 static float perceptualSquareSide(float width) {
     return std::max(40*scale,width-(2*menuPanelGap+menuHueBarWidth+menuHarmonyLaneWidth)*scale);
 }
-static bool drawPerceptualPicker(Json& rgb,float width) {
+static bool drawPerceptualPicker(PerceptualPickerState& state,Json& rgb,float width,const std::string& identity) {
     using State=PerceptualPickerState;
-    auto& state=perceptualPicker;const auto at=ImGui::GetCursorScreenPos();auto* draw=ImGui::GetWindowDrawList();
+    const auto at=ImGui::GetCursorScreenPos();auto* draw=ImGui::GetWindowDrawList();
     const float gap=menuPanelGap*scale,side=perceptualSquareSide(width),barWidth=menuHueBarWidth*scale;
     const ImVec2 lo=at,hi={at.x+side,at.y+side},barLo={hi.x+gap,lo.y},barHi={hi.x+gap+barWidth,hi.y};
     const ImVec2 lane={barHi.x+gap+menuHarmonyLaneWidth*scale*.5f,at.y+side*.5f};
-    const auto identity=std::to_string(menuEpoch)+":"+std::to_string(shapeEditor.channel)+":"+std::to_string(shapeEditor.stop);
     state.reset(rgb,identity);state.layout(lane,side*.5f,scale);bool changed=false;
     ImGui::InvisibleButton("##perceptual-hue-sv",{width,side});
     state.wheelBounds={LONG(at.x),LONG(at.y),LONG(at.x+width),LONG(at.y+side)};
@@ -119,20 +119,11 @@ static bool drawPerceptualPicker(Json& rgb,float width) {
     state.hueBounds={LONG(barLo.x),LONG(barLo.y),LONG(barHi.x),LONG(barHi.y)};state.lightnessBounds={};
     const auto mouse=ImGui::GetIO().MousePos;
     const int hovered=ImGui::IsItemHovered()?state.hit(mouse,scale):-1;
-    // All anchors remain available while the visual waits 60ms to change text.
-    // Neutral space between the hue strip and markers has no tooltip target.
-    shapeTipRows[23]=state.hueBounds;shapeTipRows[24]=state.squareBounds;
-    for(int i=0;i<perceptual::wheelCount;++i){
-        const auto p=state.points[i];const float hit=(State::markerExtent(i)+2.5f)*scale;
-        shapeTipRows[25+i]={LONG(p.x-hit),LONG(p.y-hit),LONG(p.x+hit),LONG(p.y+hit)};
-    }
     auto inSquare=[&](ImVec2 p){return p.x>=lo.x && p.x<=hi.x && p.y>=lo.y && p.y<=hi.y;};
     auto inHue=[&](ImVec2 p){return p.x>=barLo.x && p.x<=barHi.x && p.y>=barLo.y && p.y<=barHi.y;};
-    if(ImGui::IsItemHovered() && !ImGui::IsItemActive()){
-        if(hovered>=0)shapeTipCandidate=225+hovered;
-        else if(inSquare(mouse))shapeTipCandidate=224;
-        else if(inHue(mouse))shapeTipCandidate=223;
-    }
+    state.hoverPart=-1;
+    if(ImGui::IsItemHovered() && !ImGui::IsItemActive())
+        state.hoverPart=hovered>=0?2+hovered:inSquare(mouse)?1:inHue(mouse)?0:-1;
     if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(0)){
         state.dragHandle=hovered>=0;
         state.drag=hovered>=0?hovered:inSquare(mouse)?-2:inHue(mouse)?0:-1;

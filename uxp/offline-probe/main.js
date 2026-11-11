@@ -401,7 +401,7 @@ async function probe(reason) {
     if (!heartbeatValue) {
       heartbeatValue={
         ...await metadata(),
-        probe_version: '0.3.103', session, transport: 'plugin-data-files',
+        probe_version: '0.3.105', session, transport: 'plugin-data-files',
         photoshop_version: hostVersion,
         extended_label_colors:labels.extendedLabelColors,
         uxp_version: optional(() => uxp.versions.uxp),
@@ -477,7 +477,7 @@ async function probe(reason) {
       lastRequest=request.id;return;
     }
     seen.add(request.id); // Consume before any write; never retry after an uncertain response.
-    const response = {schema:1,session,id: request.id, probe_version: '0.3.103', operation: request.operation,
+    const response = {schema:1,session,id: request.id, probe_version: '0.3.105', operation: request.operation,
       transport: 'plugin-data-files',
       completed_at_ms: Date.now(), phase: 'completed'};
     const timingStarted=Date.now(),timings={};
@@ -534,7 +534,12 @@ async function probe(reason) {
         if(request.stability_run && request.native_feedback_compare===true)response.feedback_comparison=await labels.feedbackReadComparison(request.stability_run,request.native_read_order===undefined?0:request.native_read_order,request.native_read_cooperative===true?idleCheckpoint:null);
         if(request.stability_run && request.label_inheritance_compare===true)response.label_inheritance_comparison=await labels.labelInheritanceComparison(request.stability_run,request.native_read_order===undefined?0:request.native_read_order);
         if(request.stability_run && request.style_read_compare===true)response.style_read_comparison=await labels.styleReadComparison(request.stability_run,request.native_read_order===undefined?0:request.native_read_order);
-        if(request.shape_inspect)response.shape_editor=await labels.observeShape(await labels.selectionContextFresh(),true);
+        if(request.shape_inspect){
+          const selected=await labels.selectionContextFresh();
+          response.shape_editor=await labels.observeShape(selected,true,null,null,request.gradient_details===true?'inspect':false);
+          if(request.gradient_details===true && response.shape_editor.available && selected.layer_ids.length===1)
+            response.gradient_target={session,document_id:selected.document_id,layer_ids:selected.layer_ids,active_layer_id:selected.layer_ids[0]};
+        }
       }
       if (request.operation === 'capture') response.target = await labels.capture();
       if(request.operation==='set_label' && ['shape.legacy.preview','text.object'].includes(request.command)) {
@@ -579,7 +584,7 @@ async function probe(reason) {
             await publishHeartbeat(folder,'mask-preview',1000,{phase:'preview'});
             try {
               const raw=await (await folder.getEntry('mask-preview-'+request.id+'.json')).read();
-              if(raw.length>4096)throw Error('Preview mailbox exceeds limit');
+              if(raw.length>16384)throw Error('Preview mailbox exceeds limit');
               return JSON.parse(raw);
             } catch(error) {
               // A transient filesystem read cannot renew the preview lease.

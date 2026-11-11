@@ -7,7 +7,7 @@ async function main(){
  let stroke={_obj:'strokeStyle',strokeStyleVersion:2,strokeEnabled:false,fillEnabled:true,
   strokeStyleLineWidth:{_unit:'pointsUnit',_value:1},strokeStyleLineCapType:{_enum:'strokeStyleLineCapType',_value:'strokeStyleRoundCap'},
   strokeStyleContent:{_obj:'solidColorLayer',color:{_obj:'RGBColor',red:0,grain:0,blue:0}}};
- let gets=0,sets=0,history=0,rollbacks=0,vector=true,mismatch=false,rollbackFailure=false,saved;
+ let gets=0,sets=0,history=0,rollbacks=0,vector=true,mismatch=false,rollbackFailure=false,saved,quantizeOpacity=false;
  let missingStroke=false,materializedStroke=null;
  let maskFeather=0,maskDensity=100,maskReads=0,maskSetFailure=false;
  Object.defineProperties(layer,{
@@ -19,6 +19,7 @@ async function main(){
   if(c._obj==='set'){
    if(vector && c.to._obj!=='shapeStyle')throw Error('Set unavailable on vector-backed fill');
    sets++;if(c.to._obj==='shapeStyle'){if(c.to.fillContents)fill=copy(c.to.fillContents);if(c.to.strokeStyle)stroke=copy(c.to.strokeStyle);}else fill=copy(c.to);
+   if(quantizeOpacity)for(const stop of fill.gradient.transparency)stop.opacity._value=Math.round(stop.opacity._value*255/100)*100/255;
    if(materializedStroke){stroke=copy(materializedStroke);missingStroke=false;}if(mismatch==='armed')mismatch=true;return {};
   }
   gets++;const key=c._target[0]._property;
@@ -68,6 +69,18 @@ async function main(){
  await assert.rejects(api.setLabel(r),/已改变/);assert.equal(history,perceptualHistory);
  data=await inspect();r=request(data);r.paint.fill.method='linear';await api.setLabel(r);assert.equal(fill.gradientsInterpolationMethod._value,'linear');
  assert.equal(fill.angle._value,40);assert.equal(fill.gradient.colors[0].midpoint,37);assert.equal(fill.gradient.transparency[0].opacity._value,80);
+ const expanded=()=>api.observeShape(api.selectionContext(),true,null,null,true);
+ fill.gradient.colors[0].color={_obj:'RGBColor',redFloat:-.2,greenFloat:.2,blueFloat:1.1};
+ fill.gradient.interfaceIconFrameDimmed=3072;
+ data=await expanded();r=request(data);
+ r.paint.fill.stops[0].location=128;r.paint.fill.stops[0].midpoint=64;
+ r.paint.fill.opacity_stops[0].opacity=47.5;
+ Object.assign(r.paint.fill.options,{style:'radial',angle:42,scale:120,reverse:true});
+ quantizeOpacity=true;await api.setLabel(r);quantizeOpacity=false;
+ data=await expanded();assert.equal(data.fill.stops[0].location,128);assert.equal(data.fill.stops[0].midpoint,64);
+ assert.equal(data.fill.opacity_stops[0].opacity,121*100/255);assert.equal(data.fill.options.smoothness,3072);
+ assert.equal(data.fill.options.style,'radial');assert.equal(data.fill.options.reverse,true);
+ assert.deepEqual(fill.gradient.colors[0].color,{_obj:'RGBColor',redFloat:-.2,greenFloat:.2,blueFloat:1.1});
  data=await inspect();r=request(data);r.paint.fill={kind:'pattern',enabled:true,name:'Loaded Pattern'};await api.setLabel(r);assert.equal(fill.pattern.name,'Loaded Pattern');
  data=await inspect();r=request(data);r.paint.fill.name='Removed Pattern';const before=history;await assert.rejects(api.setLabel(r),/图案预设/);assert.equal(history,before);
  layer.allLocked=true;assert.equal((await inspect()).available,false);layer.allLocked=false;

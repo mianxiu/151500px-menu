@@ -33,7 +33,7 @@
     }
     // Parse mailbox data, never eval it. Bound size, depth, duplicate keys and numbers.
     function decode(text) {
-        if (text.length > 4096) throw Error('Mailbox size limit');
+        if (text.length > 16384) throw Error('Mailbox size limit');
         var at = 0;
         function ws() { while (/\s/.test(text.charAt(at)) && at < text.length) at++; }
         function str() {
@@ -123,14 +123,45 @@
     function order() { var out = [], layers = anchor.parent.layers, i; for (i = 0; i < layers.length; i++) out.push(layers[i].id); return out; }
     function parentID() { return anchor.parent.typename === 'LayerSet' ? anchor.parent.id : null; }
     function pixelMask(d) { return {exists:d.hasKey(s('hasUserMask')) && d.getBoolean(s('hasUserMask')), feather:d.hasKey(s('userMaskFeather')) ? d.getDouble(s('userMaskFeather')) : null, density:d.hasKey(s('userMaskDensity')) ? d.getInteger(s('userMaskDensity')) : null}; }
-    function rgb(d) { return [d.getDouble(s('red')), d.getDouble(s('grain')), d.getDouble(s('blue'))]; }
-    function paint(d, type) {
+    function rgb(d) {
+        var keys=['red','grain','blue'], scale=1, result=[];
+        if(d.hasKey(s('redFloat'))){keys=['redFloat','greenFloat','blueFloat'];scale=255;}
+        for(var i=0;i<3;i++)result.push(Math.round(Math.max(0,Math.min(255,d.getDouble(s(keys[i]))*scale))));
+        return result;
+    }
+    function gradientDetails(value) {
+        if(value.kind!=='gradient')return false;
+        if(value.options || value.opacity_stops)return true;
+        for(var i=0;i<value.stops.length;i++)if(value.stops[i].midpoint!==undefined || value.stops[i].source!==undefined || value.stops[i].origin!==undefined)return true;
+        return false;
+    }
+    function paint(d, type, details) {
         if (type === s('solidColorLayer')) return {kind:'solid', rgb:rgb(d.getObjectValue(c('Clr ')))};
         if (type === s('patternLayer')) return {kind:'pattern', name:d.getObjectValue(s('pattern')).getString(c('Nm  '))};
         if (type !== s('gradientLayer')) throw Error('Unsupported paint kind');
-        var colors = d.getObjectValue(s('gradient')).getList(s('colors')), stops = [], i, stop;
-        for (i = 0; i < colors.count; i++) { stop = colors.getObjectValue(i); stops.push({rgb:rgb(stop.getObjectValue(c('Clr '))), location:stop.getInteger(s('location'))}); }
-        return {kind:'gradient', stops:stops, method:d.hasKey(s('gradientsInterpolationMethod'))?typeIDToStringID(d.getEnumerationValue(s('gradientsInterpolationMethod'))):'classic'};
+        var g=d.getObjectValue(s('gradient')),colors=g.getList(s('colors')),stops=[],i,stop;
+        for(i=0;i<colors.count;i++) {
+            stop=colors.getObjectValue(i);
+            var value={rgb:rgb(stop.getObjectValue(c('Clr '))),location:stop.getInteger(s('location'))};
+            if(details){value.midpoint=stop.getInteger(s('midpoint'));value.source=stop.hasKey(c('Type'))?name(stop.getEnumerationValue(c('Type'))):'userStop';}
+            stops.push(value);
+        }
+        var result={kind:'gradient',stops:stops,method:d.hasKey(s('gradientsInterpolationMethod'))?name(d.getEnumerationValue(s('gradientsInterpolationMethod'))):'classic'};
+        if(details){
+            result.options={style:d.hasKey(c('Type'))?name(d.getEnumerationValue(c('Type'))):'linear',
+                angle:d.hasKey(c('Angl'))?d.getUnitDoubleValue(c('Angl')):0,scale:d.hasKey(c('Scl '))?d.getUnitDoubleValue(c('Scl ')):100,
+                reverse:d.hasKey(s('reverse')) && d.getBoolean(s('reverse')),dither:d.hasKey(s('dither')) && d.getBoolean(s('dither')),
+                align:d.hasKey(s('align'))?d.getBoolean(s('align')):true,smoothness:g.hasKey(s('interfaceIconFrameDimmed'))?g.getInteger(s('interfaceIconFrameDimmed')):4096};
+            result.opacity_stops=[];
+            if(g.hasKey(s('transparency'))){
+                var alpha=g.getList(s('transparency'));
+                for(i=0;i<alpha.count;i++){
+                    stop=alpha.getObjectValue(i);result.opacity_stops.push({location:stop.getInteger(s('location')),
+                        opacity:stop.getUnitDoubleValue(c('Opct')),midpoint:stop.getInteger(s('midpoint'))});
+                }
+            }else result.opacity_stops=[{location:0,opacity:100,midpoint:50},{location:4096,opacity:100,midpoint:50}];
+        }
+        return result;
     }
     function samePaint(actual, wanted) {
         if (actual.kind !== wanted.kind) return false;
@@ -138,20 +169,71 @@
         if (actual.kind === 'solid') return colors(actual.rgb, wanted.rgb);
         if (actual.kind === 'pattern') return actual.name === wanted.name;
         if (wanted.method !== undefined && actual.method !== wanted.method) return false;
+        if(wanted.options)for(var key in wanted.options)if(wanted.options.hasOwnProperty(key)){
+            var a=actual.options[key],b=wanted.options[key];
+            if(typeof b==='number'){
+                if(typeof a!=='number')return false;
+                var delta=Math.abs(a-b);
+                if(key==='angle'){delta=delta%360;delta=Math.min(delta,360-delta);}
+                if(delta>.01)return false;
+            }else if(a!==b)return false;
+        }
+        if(wanted.opacity_stops){
+            if(actual.opacity_stops.length!==wanted.opacity_stops.length)return false;
+            for(var n=0;n<wanted.opacity_stops.length;n++){
+                var from=actual.opacity_stops[n],to=wanted.opacity_stops[n];
+                // Photoshop can store gradient opacity in 255 discrete steps.
+                var quantized=Math.round(to.opacity*255/100)*100/255;
+                if(from.location!==to.location || Math.min(Math.abs(from.opacity-to.opacity),Math.abs(from.opacity-quantized))>.01 || from.midpoint!==(to.midpoint===undefined?50:to.midpoint))return false;
+            }
+        }
         if (actual.stops.length !== wanted.stops.length) return false;
-        for (var i = 0; i < actual.stops.length; i++) if (actual.stops[i].location !== wanted.stops[i].location || !colors(actual.stops[i].rgb, wanted.stops[i].rgb)) return false;
+        for(var i=0;i<actual.stops.length;i++){
+            var first=actual.stops[i],second=wanted.stops[i];
+            if(first.location!==second.location || !colors(first.rgb,second.rgb))return false;
+            if(second.midpoint!==undefined && first.midpoint!==second.midpoint)return false;
+            if(second.source!==undefined && first.source!==second.source)return false;
+        }
         return true;
     }
     function validate(p) {
         if (!p || p.revision !== request.paint.revision || typeof p.fill !== 'object' || typeof p.stroke !== 'object' || (p.hasOwnProperty('mask') !== request.paint.hasOwnProperty('mask'))) throw Error('Preview revision changed');
         function color(v) { return v instanceof Array && v.length === 3 && range(v[0],0,255) && range(v[1],0,255) && range(v[2],0,255); }
+        function integer(v,lo,hi){return range(v,lo,hi) && Math.floor(v)===v;}
+        function stops(values,opacity){
+            if(!(values instanceof Array) || values.length<2 || values.length>32)throw Error('Invalid gradient stops');
+            for(var i=0;i<values.length;i++){
+                var stop=values[i];
+                if(!stop || !integer(stop.location,0,4096))throw Error('Invalid stop position');
+                if(i && stop.location<values[i-1].location)throw Error('Unordered stops');
+                if(stop.midpoint!==undefined && !integer(stop.midpoint,0,100))throw Error('Invalid midpoint');
+                if(opacity){if(!range(stop.opacity,0,100))throw Error('Invalid opacity');}
+                else {
+                    if(!color(stop.rgb))throw Error('Invalid RGB');
+                    if(stop.origin!==undefined && !integer(stop.origin,0,31))throw Error('Invalid stop origin');
+                    if(stop.source!==undefined && !/^(userStop|foregroundColor|backgroundColor)$/.test(stop.source))throw Error('Invalid stop source');
+                }
+            }
+        }
         function one(v) {
             if (!v || typeof v.enabled !== 'boolean') throw Error('Invalid paint');
             if (v.kind === 'solid') { if (!color(v.rgb)) throw Error('Invalid RGB'); }
             else if (v.kind === 'gradient') {
                 if (v.method !== undefined && v.method!=='classic' && v.method!=='linear' && v.method!=='perceptual') throw Error('Invalid gradient interpolation');
-                if (!(v.stops instanceof Array) || v.stops.length < 2 || v.stops.length > 32) throw Error('Invalid gradient');
-                for (var i=0;i<v.stops.length;i++) if (!color(v.stops[i].rgb) || !range(v.stops[i].location,0,4096) || Math.floor(v.stops[i].location)!==v.stops[i].location || (i && v.stops[i].location<v.stops[i-1].location)) throw Error('Invalid gradient stop');
+                stops(v.stops,false);
+                if(v.opacity_stops!==undefined)stops(v.opacity_stops,true);
+                if(v.options!==undefined){
+                    if(!v.options || typeof v.options!=='object' || v.options instanceof Array)throw Error('Invalid options');
+                    for(var key in v.options)if(v.options.hasOwnProperty(key)){
+                        var value=v.options[key];
+                        if(key==='style' && /^(linear|radial|angle|reflected|diamond)$/.test(value))continue;
+                        if(key==='angle' && range(value,-360,360))continue;
+                        if(key==='scale' && range(value,1,1000))continue;
+                        if(key==='smoothness' && integer(value,0,4096))continue;
+                        if(/^(reverse|dither|align)$/.test(key) && typeof value==='boolean')continue;
+                        throw Error('Invalid gradient option');
+                    }
+                }
             } else if (v.kind === 'pattern') { if (typeof v.name !== 'string' || !v.name || v.name.length > 128) throw Error('Invalid pattern'); }
             else throw Error('Invalid paint kind');
         }
@@ -176,13 +258,37 @@
         } else {
             if (value.method !== undefined) d.putEnumerated(s('gradientsInterpolationMethod'),s('gradientInterpolationMethodType'),s(value.method));
             if (type !== previousType) { d.putEnumerated(c('Type'),s('gradientType'),s('linear')); d.putUnitDouble(c('Angl'),c('#Ang'),0); d.putUnitDouble(c('Scl '),c('#Prc'),100); }
+            var opts=value.options || {};
+            if(opts.style!==undefined)d.putEnumerated(c('Type'),s('gradientType'),s(opts.style));
+            if(opts.angle!==undefined)d.putUnitDouble(c('Angl'),c('#Ang'),opts.angle);
+            if(opts.scale!==undefined)d.putUnitDouble(c('Scl '),c('#Prc'),opts.scale);
+            var flags=['reverse','dither','align'];for(var f=0;f<flags.length;f++)if(opts[flags[f]]!==undefined)d.putBoolean(s(flags[f]),opts[flags[f]]);
             var g = d.hasKey(s('gradient')) ? clone(d.getObjectValue(s('gradient'))) : new ActionDescriptor();
             if (!g.hasKey(c('Nm  '))) g.putString(c('Nm  '),'Menu gradient');
-            g.putEnumerated(s('gradientForm'),s('gradientForm'),s('customStops')); g.putInteger(s('interfaceIconFrameDimmed'),4096);
-            var old = g.hasKey(s('colors')) ? g.getList(s('colors')) : null, colors = new ActionList(), stop, midpoint;
-            for (var n=0;n<value.stops.length;n++) { stop=new ActionDescriptor(); midpoint=old && n<old.count ? old.getObjectValue(n).getInteger(s('midpoint')) : 50; stop.putObject(c('Clr '),s('RGBColor'),rgbDescriptor(value.stops[n].rgb)); stop.putEnumerated(c('Type'),s('colorStopType'),s('userStop')); stop.putInteger(s('location'),value.stops[n].location); stop.putInteger(s('midpoint'),midpoint); colors.putObject(s('colorStop'),stop); }
+            g.putEnumerated(s('gradientForm'),s('gradientForm'),s('customStops'));
+            if(opts.smoothness!==undefined)g.putInteger(s('interfaceIconFrameDimmed'),opts.smoothness);
+            else if(!g.hasKey(s('interfaceIconFrameDimmed')))g.putInteger(s('interfaceIconFrameDimmed'),4096);
+            var old=g.hasKey(s('colors'))?g.getList(s('colors')):null,colors=new ActionList(),stop;
+            for(var n=0;n<value.stops.length;n++){
+                var wanted=value.stops[n],index=wanted.origin===undefined?n:wanted.origin;
+                var prior=old && index<old.count?old.getObjectValue(index):null;
+                stop=prior?clone(prior):new ActionDescriptor();
+                if(!prior || !same(rgb(prior.getObjectValue(c('Clr '))),wanted.rgb))stop.putObject(c('Clr '),s('RGBColor'),rgbDescriptor(wanted.rgb));
+                stop.putEnumerated(c('Type'),s('colorStopType'),s(wanted.source || 'userStop'));
+                stop.putInteger(s('location'),wanted.location);
+                stop.putInteger(s('midpoint'),wanted.midpoint===undefined?(prior?prior.getInteger(s('midpoint')):50):wanted.midpoint);
+                colors.putObject(s('colorStop'),stop);
+            }
             g.putList(s('colors'),colors);
-            if (!g.hasKey(s('transparency'))) { var transparency=new ActionList(); for(var k=0;k<2;k++){stop=new ActionDescriptor();stop.putUnitDouble(c('Opct'),c('#Prc'),100);stop.putInteger(s('location'),k*4096);stop.putInteger(s('midpoint'),50);transparency.putObject(s('transferSpec'),stop);}g.putList(s('transparency'),transparency); }
+            if(value.opacity_stops || !g.hasKey(s('transparency'))){
+                var opacity=value.opacity_stops || [{location:0,opacity:100},{location:4096,opacity:100}],transparency=new ActionList();
+                for(var k=0;k<opacity.length;k++){
+                    stop=new ActionDescriptor();stop.putUnitDouble(c('Opct'),c('#Prc'),opacity[k].opacity);
+                    stop.putInteger(s('location'),opacity[k].location);stop.putInteger(s('midpoint'),opacity[k].midpoint===undefined?50:opacity[k].midpoint);
+                    transparency.putObject(s('transferSpec'),stop);
+                }
+                g.putList(s('transparency'),transparency);
+            }
             d.putObject(s('gradient'),s('gradientClassEvent'),g);
         }
         return {type:type, descriptor:d};
@@ -191,10 +297,10 @@
         var d=new ActionDescriptor();d.putInteger(s('strokeStyleVersion'),2);d.putBoolean(s('strokeEnabled'),false);d.putBoolean(s('fillEnabled'),true);d.putUnitDouble(s('strokeStyleLineWidth'),c('#Pxl'),1);var fill=new ActionDescriptor();fill.putObject(c('Clr '),s('RGBColor'),rgbDescriptor([0,0,0]));d.putObject(s('strokeStyleContent'),s('solidColorLayer'),fill);return d;
     }
     function verifyPaint(d, wanted) {
-        var list=d.getList(s('adjustment')), fill=paint(list.getObjectValue(0),list.getObjectType(0));
+        var list=d.getList(s('adjustment')), fill=paint(list.getObjectValue(0),list.getObjectType(0),gradientDetails(wanted.fill));
         var stroke=d.hasKey(s('AGMStrokeStyleInfo'))?d.getObjectValue(s('AGMStrokeStyleInfo')):defaultStroke();
-        if (!samePaint(fill,wanted.fill)) throw Error('Fill readback mismatch');
-        if(prepared.raw.vector){var actual=paint(stroke.getObjectValue(s('strokeStyleContent')),stroke.getObjectType(s('strokeStyleContent')));if(!samePaint(actual,wanted.stroke) || stroke.getBoolean(s('strokeEnabled'))!==wanted.stroke.enabled || stroke.getBoolean(s('fillEnabled'))!==wanted.fill.enabled)throw Error('Stroke readback mismatch');var width=stroke.getUnitDoubleValue(s('strokeStyleLineWidth'));if(stroke.getUnitDoubleType(s('strokeStyleLineWidth'))===c('#Pnt'))width*=doc.resolution/72;if(Math.abs(width-wanted.stroke.width)>.01)throw Error('Stroke width mismatch');}
+        if (!samePaint(fill,wanted.fill)) throw Error('Fill readback mismatch'+(request.preview_trace && gradientDetails(wanted.fill)?': '+encode(fill):''));
+        if(prepared.raw.vector){var actual=paint(stroke.getObjectValue(s('strokeStyleContent')),stroke.getObjectType(s('strokeStyleContent')),gradientDetails(wanted.stroke));if(!samePaint(actual,wanted.stroke) || stroke.getBoolean(s('strokeEnabled'))!==wanted.stroke.enabled || stroke.getBoolean(s('fillEnabled'))!==wanted.fill.enabled)throw Error('Stroke readback mismatch');var width=stroke.getUnitDoubleValue(s('strokeStyleLineWidth'));if(stroke.getUnitDoubleType(s('strokeStyleLineWidth'))===c('#Pnt'))width*=doc.resolution/72;if(Math.abs(width-wanted.stroke.width)>.01)throw Error('Stroke width mismatch');}
         if(wanted.mask && !maskClose(mask(d),wanted.mask))throw Error('Mask readback mismatch');
     }
     function setMaskProperty(key, unitID, value) { stage='write-'+key;target();var d=new ActionDescriptor(),r=new ActionReference(),v=new ActionDescriptor();r.putIdentifier(c('Lyr '),anchor.id);d.putReference(c('null'),r);v.putUnitDouble(s(key),c(unitID),value);d.putObject(c('T   '),c('Lyr '),v);executeAction(c('setd'),d,DialogModes.NO); }

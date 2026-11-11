@@ -12,7 +12,7 @@
 | 图层搜索与聚焦 | Ctrl+F搜索并定位；F短按聚焦，长按显示边框，松开恢复视图 |
 | 智能对象 | 上“单层智能对象”合成一个；下“多层智能对象”各自转换，单选仅上项 |
 | 文本拆分 | 把一个文字层按行分组，生成多个可编辑文字层 |
-| 颜色与蒙版 | 编辑填充、描边、渐变、羽化／密度，支持相应预览与取消 |
+| 颜色、渐变与蒙版 | 编辑填充、描边和羽化／密度。独立渐变窗口支持多选、缩放时间轴、取色和保存草稿 |
 | 后台管理 | 配置快捷键、管理 PS 执行插件、更新、查看任务与导出诊断 |
 
 菜单根据鼠标区域、图层类型和选择数量显示可用操作。**短按 CapsLock 固定后点击；长按划向按钮后松开执行，回中心或空白处松开取消。**
@@ -36,7 +36,7 @@
 
 ## 查找说明
 
-[菜单与默认按键](https://github.com/mianxiu/151500px-menu/wiki/Menu-guide) · [颜色与蒙版](https://github.com/mianxiu/151500px-menu/wiki/Mask-preview) · [更新方法](https://github.com/mianxiu/151500px-menu/wiki/Updates) · [故障排查](https://github.com/mianxiu/151500px-menu/wiki/Troubleshooting)
+[菜单与默认按键](https://github.com/mianxiu/151500px-menu/wiki/Menu-guide) · [颜色与蒙版](https://github.com/mianxiu/151500px-menu/wiki/Mask-preview) · [独立渐变编辑](https://github.com/mianxiu/151500px-menu/wiki/Gradient-editor) · [更新方法](https://github.com/mianxiu/151500px-menu/wiki/Updates) · [故障排查](https://github.com/mianxiu/151500px-menu/wiki/Troubleshooting)
 
 正式下载与开发候选分开说明，见[版本状态](https://github.com/mianxiu/151500px-menu/wiki/Versions)。源码中可能包含尚未发布的改动。
 

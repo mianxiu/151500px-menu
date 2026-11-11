@@ -3,6 +3,7 @@ import ctypes
 import copy
 from ctypes import wintypes as W
 import logging
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -135,13 +136,47 @@ def panel_bounds(ps_rect, work_rect, cursor, width, height):
     return max(left, min(cursor[0], right-width)), max(top, min(cursor[1], bottom-height)), width, height
 
 
-def pie_bounds(ps_rect, work_rect, cursor, scale, home=False, color_editor=False):
+def pie_layout(ps_rect, work_rect, cursor, scale, home=False, color_editor=False, left_work=None, right_inset=None):
     width, height = round((920 if color_editor else 820 if home else 620)*scale), round((620 if color_editor else 440 if home else 500)*scale)
     # The color editor is left of the radial controls. Reserve asymmetric
     # space instead of forcing the mouse to the middle of the entire window.
     anchor = round(650*scale) if color_editor else round(270*scale) if home else width//2
-    return panel_bounds(ps_rect, work_rect,
-                        (cursor[0]-anchor, cursor[1]-height//2), width, height)
+    bounds = panel_bounds(ps_rect, work_rect, (cursor[0]-anchor, cursor[1]-height//2), width, height)
+    if (not home and left_work and ps_rect[0] <= work_rect[0] == left_work[2]
+            and cursor[0]-anchor < work_rect[0] and left_work[1] <= bounds[1]
+            and bounds[1]+bounds[3] <= left_work[3]):
+        ps_rect = (left_work[0], *ps_rect[1:])
+        work_rect = (left_work[0], *work_rect[1:])
+        bounds = panel_bounds(ps_rect, work_rect, (cursor[0]-anchor, cursor[1]-height//2), width, height)
+    editor_right = False
+    if color_editor:
+        side = min(round(230*scale), bounds[2]//2)
+        anchor = max(side, min(anchor, bounds[2]-side))
+        if cursor[0] < bounds[0]+anchor:
+            bounds = panel_bounds(ps_rect, work_rect, (cursor[0]-side, cursor[1]-height//2), width, height)
+            anchor, editor_right = side, True
+    else:
+        anchor = min(anchor,bounds[2]//2)
+    if not home:
+        inset = min(round(200*scale), anchor)
+        right_limit = anchor if editor_right or right_inset is None else max(anchor, bounds[2]-math.ceil(right_inset*scale))
+        anchor = max(inset, min(right_limit, cursor[0]-bounds[0]))
+    return bounds, anchor, editor_right
+
+
+def adjacent_left_work(work, bounds, dpi):
+    import win32api
+    for monitor, _, rect in win32api.EnumDisplayMonitors():
+        if rect[2] != work[0]:continue
+        adjacent = win32api.GetMonitorInfo(monitor)['Work']
+        if adjacent[2] != work[0] or adjacent[1] > bounds[1] or adjacent[3] < bounds[1]+bounds[3]:continue
+        read = ctypes.WinDLL('shcore').GetDpiForMonitor
+        read.argtypes = [W.HANDLE, ctypes.c_int, ctypes.POINTER(W.UINT), ctypes.POINTER(W.UINT)]
+        read.restype = ctypes.c_long
+        x, y = W.UINT(), W.UINT()
+        if read(int(monitor), 0, ctypes.byref(x), ctypes.byref(y)) == 0 and x.value == y.value == dpi:
+            return adjacent
+    return None
 
 
 def show_popup(gui, hwnd, owner, bounds, activate=True):
@@ -165,6 +200,7 @@ class Desktop:
         self.restore_pending = False
         self.menu_epoch = 0
         self.menu_context_requester=None
+        self.pie_right_inset=None
         self.menu_context_pending=None
         self.menu_context_active=None
         self.menu_context_delivery={'phase':'idle'}
@@ -474,6 +510,8 @@ class Desktop:
                 if event.get('type') == 'ready':
                     self.graphics=event.get('graphics',{})
                     self.attach(event['hwnd'], event['pid'], self.token)
+                    inset=event.get('pie_right_inset')
+                    self.pie_right_inset=inset if type(inset) is int and 0<inset<310 else None
                     self.menu_ready.set()
                 elif event.get('type') == 'graphics':
                     self.graphics=event.get('graphics',{})
@@ -913,17 +951,17 @@ class Desktop:
         if not self.settings["enabled"] or not self._is_photoshop(hwnd):
             raise RuntimeError("请先让 Photoshop 主窗口获得焦点，再唤出操作菜单")
         from .photoshop_windows import workspace_root
-        cursor = _inspection["cursor"] if _inspection else win32api.GetCursorPos()
+        cursor = _inspection["cursor"] if _inspection else tuple(origin) if hold and origin is not None else win32api.GetCursorPos()
         root = workspace_root(self.gui, hwnd)
         rect = self.gui.GetWindowRect(root)
         hovered = self.gui.WindowFromPoint(cursor)
-        if workspace_root(self.gui, hovered) == root:
+        over_workspace = workspace_root(self.gui, hovered) == root
+        if over_workspace:
             floating = self.gui.GetWindowRect(self.gui.GetAncestor(hovered, 2))
             rect = (min(rect[0], floating[0]), min(rect[1], floating[1]),
                     max(rect[2], floating[2]), max(rect[3], floating[3]))
         if not (rect[0] <= cursor[0] < rect[2] and rect[1] <= cursor[1] < rect[3]):
             if not keyboard_anchor:raise RuntimeError("鼠标需要位于 Photoshop 窗口内")
-        if hold and origin is not None:cursor=tuple(origin)
         self.target = root
         self.caption_window = hwnd
         self._refresh_document_name()
@@ -932,8 +970,11 @@ class Desktop:
             raise RuntimeError("操作菜单正在初始化，请稍后再试")
         u = ctypes.WinDLL("user32", use_last_error=True)
         u.GetDpiForWindow.argtypes, u.GetDpiForWindow.restype = [W.HWND], W.UINT
-        scale = (u.GetDpiForWindow(hwnd) or 96) / 96
-        work = win32api.GetMonitorInfo(win32api.MonitorFromWindow(root,c.MONITOR_DEFAULTTONEAREST) if keyboard_anchor else win32api.MonitorFromPoint(cursor,c.MONITOR_DEFAULTTONEAREST))["Work"]
+        dpi_window = hovered if over_workspace else hwnd
+        scale = (u.GetDpiForWindow(dpi_window) or 96) / 96
+        monitor = (win32api.MonitorFromWindow(root,c.MONITOR_DEFAULTTONEAREST) if keyboard_anchor or not over_workspace
+                   else win32api.MonitorFromPoint(cursor,c.MONITOR_DEFAULTTONEAREST))
+        work = win32api.GetMonitorInfo(monitor)["Work"]
         panel = _inspection['panel'] if _inspection else self.panel_context.snapshot(hwnd) if self.panel_context else {'kind': 'generic'}
         self.menu_layer_context=None
         if self.layer_context_provider and panel.get('kind')!='home':
@@ -955,15 +996,23 @@ class Desktop:
         width = min(self.settings["menu_width"],260) if context else self.settings["menu_width"]
         height = min(self.settings["menu_height"],240) if context else self.settings["menu_height"]
         bounds = panel_bounds(rect, work, cursor, round(width*scale), round(height*scale))
+        anchor, editor_right = bounds[2]//2, False
         if hold:
-            bounds = pie_bounds(rect, work, cursor, scale, home=panel.get('kind')=='home',color_editor=self.color_editor_active or bool(self.menu_context_pending))
+            home = panel.get('kind') == 'home'
+            color_editor = self.color_editor_active or bool(self.menu_context_pending)
+            bounds, anchor, editor_right = pie_layout(rect, work, cursor, scale, home=home, color_editor=color_editor,
+                                                     right_inset=self.pie_right_inset)
+            if not home and rect[0] <= bounds[0] == work[0] and cursor[0]-work[0] < (650 if color_editor else 310)*scale:
+                left = adjacent_left_work(work, bounds, round(scale*96))
+                if left:
+                    bounds, anchor, editor_right = pie_layout(rect, work, cursor, scale, color_editor=color_editor, left_work=left,
+                                                             right_inset=self.pie_right_inset)
         # Recheck after setup: focus can change while a hotkey request is queued.
         if self.gui.GetForegroundWindow() != foreground or not self._is_photoshop(hwnd):
             raise RuntimeError("Photoshop 焦点已改变，已取消唤出")
         self.menu_tools_active = False
         self.visible = True
-        self.preview_hint_anchor=[round(bounds[0]+(max(bounds[2]*.5,min(650*scale,bounds[2]-270*scale))
-            if panel.get('kind')=='layers' and bounds[2]>700*scale else bounds[2]*.5)),
+        self.preview_hint_anchor=[bounds[0]+anchor,
             round(bounds[1]+bounds[3]*.5)]
         self.preview_pending_feedback()
         self.restore_pending = False
@@ -976,6 +1025,7 @@ class Desktop:
         if self.menu_layer_context is not None:
             from .layer_context import flags as layer_flags
             flags |= layer_flags(self.menu_layer_context)
+        if hold:flags |= (min(65534,anchor)+1)<<40 | int(editor_right)<<56
         self.gui.SendMessage(self.hwnd, 0x8011, flags, self.menu_epoch)
         if hold and origin is not None:self.gui.SendMessage(self.hwnd,0x8017,origin[0],origin[1])
         class CopyData(ctypes.Structure):
@@ -992,6 +1042,8 @@ class Desktop:
             pass
         self._native_config()
         logging.info('Menu shown: hwnd=%s foreground=%s target=%s', self.hwnd, self.gui.GetForegroundWindow(), hwnd)
+        if hold:logging.info('Caps placement: cursor=%s centre=%s work=%s bounds=%s dpi=%s editor_right=%s',
+                             cursor,self.preview_hint_anchor,work,bounds,round(scale*96),editor_right)
         logging.info('Menu open timing: setup/context=%.1fms show=%.1fms total=%.1fms',
                      (context_ready-open_started)*1000, (time.perf_counter()-context_ready)*1000,
                      (time.perf_counter()-open_started)*1000)
@@ -1263,8 +1315,8 @@ class Desktop:
         return {"message": "操作菜单已收起"}
 
     @window_transition
-    def hide_if_epoch(self,epoch):
-        if self.visible and self.menu_epoch==epoch:return self.hide()
+    def hide_if_epoch(self,epoch,restore=True):
+        if self.visible and self.menu_epoch==epoch:return self.hide(restore=restore)
 
     def dismiss(self):
         with self.window_lock:
