@@ -209,6 +209,14 @@ static constexpr FigmaPathCommand styledPath39_0[] = {
     {'C', 6.50000000f, 8.00000000f, 2.50000000f, 8.00000000f, 0.50000000f, 4.50000000f},
     {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
 };
+static constexpr FigmaPathCommand styledPath41_0[] = {
+    {'M', 1.50000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.50000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath41_1[] = {
+    {'M', 7.50000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.50000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
 
 static void styledPath(ImDrawList* draw,const FigmaPathCommand* path,int count,ImVec2 at,float unit,ImU32 ink,float stroke) {
     auto point=[&](float x,float y){return ImVec2{at.x+x*unit,at.y+y*unit};};
@@ -453,6 +461,10 @@ static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,Im
         draw->AddCircleFilled(p(2.50000000f,4.50000000f),0.55000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(4.50000000f,4.50000000f),0.55000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(6.50000000f,4.50000000f),0.55000000f*unit,color(0.00000000f),32);
+        break;
+    case 41:
+        styledPath(draw,styledPath41_0,sizeof(styledPath41_0)/sizeof(*styledPath41_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath41_1,sizeof(styledPath41_1)/sizeof(*styledPath41_1),at,unit,color(0.00000000f),1.00000000f);
         break;
     }
 }

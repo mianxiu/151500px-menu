@@ -232,6 +232,10 @@ class Desktop:
         self.input_focus = None
         self.layer_context_provider=None
         self.layer_monitor=None
+        self.layer_wake=threading.Event()
+        self.window_wake=threading.Event()
+        self.foreground_changed=None
+        self.photoshop_foreground=False
         self.layer_context={}
         self.menu_layer_context=None
         self.preview_hint_serial=0
@@ -441,6 +445,13 @@ class Desktop:
                     if self.input_language:self.input_language.protect()
                     if self.input_focus:self.input_focus.protect(event.get('input_epoch'))
                 elif event.get('type') == 'input.language.activity':
+                    if event.get('hwnd'):
+                        foreground=self._is_photoshop(self.gui.GetForegroundWindow())
+                        if foreground != self.photoshop_foreground:
+                            self.photoshop_foreground=foreground
+                            self.layer_wake.set()
+                            self.window_wake.set()
+                            if self.foreground_changed:self.foreground_changed()
                     if self.input_language:self.input_language.activity()
                     if self.input_focus:
                         if event.get('hwnd'):self.input_focus.focus_changed(event['hwnd'],event.get('input_epoch'))
@@ -817,19 +828,30 @@ class Desktop:
         # lookup must not leave the next menu with old selection eligibility.
         from .layer_context import unavailable
         while not self.stop.is_set():
+            delay=.04
             try:
-                self.layer_context=self.layer_context_provider()
+                if self.visible or self._is_photoshop(self.gui.GetForegroundWindow()):
+                    self.layer_context=self.layer_context_provider()
+                else:
+                    self.layer_context=unavailable()
+                    delay=2
                 self._cancel_closed_menu_context()
                 self._publish_menu_context()
                 self._finish_menu_context()
             except Exception:
                 self.layer_context=unavailable()
                 logging.exception('Layer cache monitor failed')
-            if self.stop.wait(.04):break
+            self.layer_wake.wait(delay)
+            self.layer_wake.clear()
 
     def _monitor(self):
         next_icon_refresh = 0
-        while not self.stop.wait(.1):
+        delay=.1
+        while not self.stop.is_set():
+            self.window_wake.wait(delay)
+            self.window_wake.clear()
+            if self.stop.is_set():break
+            delay=.1
             try:
                 panel_target=None
                 with self.window_lock:
@@ -856,6 +878,8 @@ class Desktop:
                     self._native_config()
                 self.maintain_preview_input_guard()
                 self._close_completed_menu()
+                if not scoped and not self.visible and not self.preview_input_guard:
+                    delay=2
             except Exception:
                 logging.exception("Window monitor failed")
 
@@ -986,6 +1010,7 @@ class Desktop:
             # before showing. Windows read-sharing retries run on the existing
             # layer monitor, outside the window/input lock.
             self.menu_context_pending={'epoch':self.menu_epoch+1,'unpublished':True,'deadline':time.monotonic()+10}
+            self.layer_wake.set()
             self.menu_context_delivery={'phase':'queued','epoch':self.menu_epoch+1}
             from .layer_context import unavailable
             self.menu_layer_context=unavailable()
@@ -1366,6 +1391,10 @@ class Desktop:
 
     def close(self):
         self.stop.set()
+        self.layer_wake.set()
+        self.window_wake.set()
+        for guard in (self.input_language,self.input_focus):
+            if guard:guard.wake.set()
         if self.input_language:self.input_language.thread.join(2)
         if self.input_focus:self.input_focus.thread.join(2)
         if self.native:

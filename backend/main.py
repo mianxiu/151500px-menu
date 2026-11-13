@@ -97,6 +97,7 @@ class WSHandler(websocket.WebSocketHandler):
             return
         self._requests=set()
         self.application.clients.add(self)
+        self.application.status_wake.set()
         self.write_message({"type": "connected", "actions": ACTIONS})
 
     def on_message(self, message):
@@ -198,6 +199,7 @@ class Application(web.Application):
             self.bridge.replace_scripts(load_scripts(self.plugins.folder()))
         self.clients = set()
         self.stop_event = asyncio.Event()
+        self.status_wake = asyncio.Event()
         self.desktop = self.tray = None
         self.control = ControlWindow(f"http://127.0.0.1:{port}", self.runtime)
         self.panel_lock = asyncio.Lock()
@@ -780,23 +782,29 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
         loop.call_soon_threadsafe(lambda: asyncio.create_task(notification(action)))
     async def poll_status():
         while not app.stop_event.is_set():
+            app.status_wake.clear()
             try:await app.sync_uxp_auto()
             except Exception:logging.exception('UXP follow update check failed')
             try:
-                await app.broadcast({"type": "status", "data": await app.dispatch("status", {})})
+                status=await app.dispatch("status", {})
+                await app.broadcast({"type": "status", "data": status})
             except Exception:
                 logging.exception('Status observation failed')
                 app.version_health.observe({'version':APP_VERSION, '_status_unavailable':True})
                 await app.broadcast({'type':'version-health','data':app.version_health.snapshot()})
             await asyncio.to_thread(app.control.refresh_icon)
+            desktop=app.desktop
+            idle=desktop and not desktop.photoshop_foreground and not desktop.visible and not app.clients and not (
+                app.bridge.busy or app.operation_lock.locked() or app.photoshop_launcher.active or app.stability.active)
             try:
-                await asyncio.wait_for(app.stop_event.wait(), 3)
+                await asyncio.wait_for(app.status_wake.wait(),15 if idle else 3)
             except asyncio.TimeoutError:
                 pass
     status_task = None
     try:
         if os.name == "nt" and not no_desktop:
             app.desktop, app.tray = Desktop(f"http://127.0.0.1:{port}", notify, app.preferences.get(), app.runtime), Tray(notify)
+            app.desktop.foreground_changed=lambda:loop.call_soon_threadsafe(app.status_wake.set)
             app.bridge.focus_guard = app.desktop.require_action_focus
             if isinstance(app.bridge,UxpBridge):app.bridge.document_guard=app.desktop.require_home
             if isinstance(app.bridge,UxpBridge):

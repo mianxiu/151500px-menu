@@ -90,6 +90,7 @@ class GradientEditor:
             command = overlay_command(desktop.url, desktop.token, self.app.runtime)
             self.process = process = await asyncio.create_subprocess_exec(
                 *command, '--gradient-window', '--gradient-anchor', str(desktop.hwnd),
+                '--gradient-owner', str(self.owner),
                 '--render-mode', desktop.settings.get('render_mode','auto'),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=log, creationflags=0x08000000)
         try:

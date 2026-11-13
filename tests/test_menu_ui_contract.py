@@ -65,7 +65,7 @@ class MenuUiContractTests(unittest.TestCase):
         for path in (ROOT/'native').glob('*Panel.h'):
             source=path.read_text('utf-8')
             with self.subTest(panel=path.name):
-                self.assertNotRegex(source,r'ImGui::(?:Button|Selectable|InputText\w*)\s*\(')
+                self.assertNotRegex(source,r'ImGui::(?:Button|Selectable|InputText\w*|Checkbox|DragScalar)\s*\(')
                 self.assertNotRegex(source,r'ImGui::PushStyleVar|IM_COL32\(|ImVec4\(')
                 self.assertIn('MenuControls::PanelStyle',source)
         source=(ROOT/'native/MenuToolsPanel.h').read_text('utf-8')

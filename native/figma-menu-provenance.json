@@ -423,11 +423,18 @@
       "asset": "native/figma-inspired-assets/layers-other.svg",
       "sha256": "57f9850cb422fb629474285b5275200846f7ddd492e9bc3c5e5f3b2dc1fb3ddd",
       "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "window.close",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/window-close.svg",
+      "sha256": "7b553bc2fc4b8ceedc4db6d1fc433e5365dc316e81b24dca9d448384f92dc62c",
+      "adaptation": "Window close mark drawn on the shared nine-unit grid with two one-unit diagonals."
     }
   ],
   "extension_source": {
     "file": "native/figma-inspired-icons.json",
-    "sha256": "0bfe141a3f577e2e52a43f84587e9b7f2c5f3b7cadb78b934e5602953d68ae2b",
+    "sha256": "992f650fbd4ddc8e23a437c2ca2040b13509d31e431e2e62b9c65f85e505d6a2",
     "reference_nodes": [
       "809:619",
       "346:6",

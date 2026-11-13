@@ -137,9 +137,11 @@ class InputFocus(InputLanguage):
                 import logging
                 logging.exception('Shortcut input observer initialization failed')
             client_refresh=-1;next_uia_check=time.monotonic()+1
+            delay=.05
             while not self.desktop.stop.is_set():
-                self.wake.wait(.05);self.wake.clear()
+                self.wake.wait(delay);self.wake.clear()
                 if self.desktop.stop.is_set():break
+                delay=.05
                 try:
                     if not getattr(self.desktop,'settings',{'enabled':True}).get('enabled',False):
                         self.publish('unknown',{},self.snapshot()[0]);context=None;tool=None;examined=None
@@ -197,6 +199,8 @@ class InputFocus(InputLanguage):
                         if self.verification and refresh<self.verification[2]:continue
                     self.publish(state,sample,serial)
                     self.complete_verification(state,sample,serial,refresh)
+                    if sample.get('state')=='outside' and fresh.get('state')=='outside':
+                        delay=2  # The native foreground event wakes the worker immediately on return.
                     self.report.update(tool=tool.get('classID') if isinstance(tool,dict) else None,
                                        tool_modal=tool.get('isModal') if isinstance(tool,dict) else None)
                     self.report.pop('error_type',None)

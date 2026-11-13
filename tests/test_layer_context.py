@@ -88,6 +88,8 @@ class LayerContextTests(unittest.TestCase):
             bridge.executor.shutdown(wait=True)
     def test_type_cache_updates_while_ui_window_lock_is_busy(self):
         d=Desktop('http://localhost',Mock());updated=threading.Event()
+        d.gui=SimpleNamespace(GetForegroundWindow=lambda:42)
+        d._is_photoshop=lambda hwnd:hwnd==42
         def provider():updated.set();return dict(self.value)
         d.layer_context_provider=provider
         worker=threading.Thread(target=d._monitor_layer_context)
@@ -98,8 +100,39 @@ class LayerContextTests(unittest.TestCase):
                 deadline=time.monotonic()+.5
                 while not d.layer_context and time.monotonic()<deadline:time.sleep(.001)
                 self.assertEqual(d.layer_context['mask'],15)
-        finally:d.stop.set();worker.join(1)
+        finally:d.stop.set();d.layer_wake.set();worker.join(1)
         self.assertFalse(worker.is_alive())
+    def test_type_monitor_skips_uxp_discovery_outside_photoshop(self):
+        d=Desktop('http://localhost',Mock())
+        d.gui=SimpleNamespace(GetForegroundWindow=Mock(side_effect=[17,42,17]))
+        d._is_photoshop=lambda hwnd:hwnd==42
+        d.stop=Mock()
+        d.stop.is_set.side_effect=[False,False,False,True]
+        d.layer_wake=Mock()
+        d.layer_context_provider=Mock(return_value=dict(self.value))
+        d._monitor_layer_context()
+        d.layer_context_provider.assert_called_once_with()
+        self.assertEqual([call.args[0] for call in d.layer_wake.wait.call_args_list],[2,.04,2])
+        self.assertEqual(d.layer_context['kind'],'unknown')
+
+    def test_native_focus_transitions_wake_sleeping_observers(self):
+        d=Desktop('http://localhost',Mock())
+        d.gui=SimpleNamespace(GetForegroundWindow=Mock(side_effect=[42,42,17]))
+        d._is_photoshop=lambda hwnd:hwnd==42
+        d.foreground_changed=Mock()
+        d.layer_wake=Mock()
+        d.window_wake=Mock()
+        d.input_language=Mock()
+        d.input_focus=Mock()
+        d.native=SimpleNamespace(stdout=[json.dumps({'type':'input.language.activity','hwnd':hwnd})
+                                         for hwnd in (42,43,17)])
+        d._read_native_events()
+        self.assertEqual(d.foreground_changed.call_count,2)
+        self.assertEqual(d.layer_wake.set.call_count,2)
+        self.assertEqual(d.window_wake.set.call_count,2)
+        self.assertEqual(d.input_language.activity.call_count,3)
+        self.assertEqual(d.input_focus.focus_changed.call_count,3)
+        self.assertFalse(d.photoshop_foreground)
 
 if __name__=='__main__':unittest.main()
 

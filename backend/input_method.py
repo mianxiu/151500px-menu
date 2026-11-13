@@ -428,9 +428,11 @@ class InputMethod(InputLanguage):
             examined=None;tool=None;context_before=None;episode=0;blocked_before=False;retry_after=0
             revision_before=None;next_tool_check=0;recovering=False;recovery_after=0;stable=None;stable_at=0
             next_uia_check=time.monotonic()+1;tool_event=None
+            delay=.05
             while not self.desktop.stop.is_set():
-                self.wake.wait(.05);self.wake.clear()
+                self.wake.wait(delay);self.wake.clear()
                 if self.desktop.stop.is_set():break
+                delay=.05
                 try:
                     serial,epoch,protected,_=self.snapshot();sample=self.sample()
                     if not self.desktop.settings['enabled'] and self.focus_policy:self.stop_focus_policy()
@@ -595,6 +597,9 @@ class InputMethod(InputLanguage):
                     saved=self.saved()
                     if saved!=persisted:atomic_json(path,saved);persisted=json.loads(json.dumps(saved))
                     self.complete_verification(sample,serial)
+                    if (sample.get('state')=='outside' and not self.focus_policy and
+                            not self.policy.owned and not self.policy.pending and not self.legacy and not self.verification):
+                        delay=2
                     if old_context and not self.policy.owned and not self.policy.pending:
                         self.ime=NativeImeContext(self.user,lambda:getattr(self.desktop,'frame_host',0) if self.desktop.settings['enabled'] else 0);self.context_schema=2;old_context=False;examined=None
                         self.report['mechanism']='ps-thread-context-association'

@@ -14,7 +14,7 @@ class PanelContextTests(unittest.TestCase):
             d.open_menu_tools('search',input_guard={'root':10,'focus':11,'epoch':1})
         d.hide.assert_not_called();self.assertTrue(d.visible)
         d.hide_if_epoch(8);d.hide.assert_not_called()
-        d.hide_if_epoch(9);d.hide.assert_called_once_with()
+        d.hide_if_epoch(9);d.hide.assert_called_once_with(restore=True)
 
     def test_search_close_revalidates_ime_only_on_own_photoshop_handoff(self):
         from backend.desktop import Desktop
@@ -79,7 +79,8 @@ class PanelContextTests(unittest.TestCase):
             desktop = Desktop('http://localhost', lambda action:None)
             desktop.visible = visible
             desktop.target = 10
-            desktop.stop = Mock(wait=Mock(side_effect=[False, True]))
+            desktop.stop = Mock(is_set=Mock(side_effect=[False,False,True]))
+            desktop.window_wake = Mock()
             desktop._scope = Mock(return_value=True)
             desktop._is_photoshop = Mock(return_value=True)
             desktop._native_config = Mock()
@@ -123,7 +124,7 @@ class PanelContextTests(unittest.TestCase):
         import threading
         desktop=Desktop('http://localhost',lambda action:None)
         desktop.window_lock=threading.Lock();desktop.target=10
-        desktop.stop=Mock(wait=Mock(side_effect=[False,True]));desktop._scope=Mock(return_value=True)
+        desktop.stop=Mock(is_set=Mock(side_effect=[False,False,True]));desktop.window_wake=Mock();desktop._scope=Mock(return_value=True)
         desktop._is_photoshop=Mock(return_value=True);desktop._native_config=Mock()
         desktop.gui=SimpleNamespace(GetForegroundWindow=lambda:10)
         desktop.panel_context=Mock()
@@ -138,7 +139,7 @@ class PanelContextTests(unittest.TestCase):
         from backend.desktop import Desktop
         from types import SimpleNamespace
         desktop=Desktop('http://localhost',lambda action:None)
-        desktop.target=10;desktop.stop=Mock(wait=Mock(side_effect=[False,True]))
+        desktop.target=10;desktop.stop=Mock(is_set=Mock(side_effect=[False,False,True]));desktop.window_wake=Mock()
         desktop._scope=Mock(return_value=True);desktop._is_photoshop=Mock(return_value=True)
         desktop.gui=SimpleNamespace(GetForegroundWindow=lambda:10)
         desktop.panel_context=Mock();desktop.panel_context.current={'kind':'generic'}

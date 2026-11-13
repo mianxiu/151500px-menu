@@ -15,6 +15,7 @@ class StatusDelivery:
         # These are full status/task snapshots, not an operation queue. Keep
         # ordering for responsive clients; a stalled client reconnects and
         # fetches current state instead of delaying document execution.
+        if not self.clients:return
         encoded=json.dumps(event,ensure_ascii=False)
         size=len(encoded.encode('utf-8'))
         for client in tuple(self.clients):

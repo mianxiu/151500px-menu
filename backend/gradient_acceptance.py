@@ -160,6 +160,7 @@ async def case(test, vector):
     last[key]['opacity_stops'][1]['opacity'] = 63
     last[key]['stops'][1]['location'] = 1960
     last[key]['stops'][1]['rgb'] = [166,48,93]
+    last[key]['options'].update(style='reflected' if vector else 'radial',angle=-45 if vector else 90)
     checked_draft(base,last)
     draft = draft_path(test.folder/('draft-'+test.report['run_id']),target,shape)
     await asyncio.to_thread(atomic_json,draft,last)
@@ -176,7 +177,8 @@ async def case(test, vector):
     actual, _ = await read()
     opacity = actual[key]['opacity_stops'][1]['opacity']
     added = actual[key]['stops'][2]
-    if (actual[key]['stops'][1]['location'] != 1960 or actual[key]['stops'][1]['rgb'] != [166,48,93] or
+    if (actual[key]['options'] != last[key]['options'] or
+            actual[key]['stops'][1]['location'] != 1960 or actual[key]['stops'][1]['rgb'] != [166,48,93] or
             added['location'] != 3200 or added['rgb'] != [112,137,92] or
             min(abs(opacity-63), abs(opacity-round(63*255/100)*100/255))>.01):
         raise RuntimeError('已确认渐变末值读回不符')

@@ -9,6 +9,11 @@ inline void surface(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale,bool shadow=t
 inline void outline(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale) {
     draw->AddRect(a,b,ImGui::GetColorU32(ImGuiCol_Border),ImGui::GetStyle().FrameRounding,0,menuControlBorder*scale);
 }
+inline void panelFrame(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale) {
+    draw->AddRectFilled(a,b,ImGui::GetColorU32(ImGuiCol_WindowBg),ImGui::GetStyle().FrameRounding);
+    const float inset=menuControlBorder*scale*.5f;
+    outline(draw,{a.x+inset,a.y+inset},{b.x-inset,b.y-inset},scale);
+}
 inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool highlighted,float scale,bool vertical=false) {
     if(highlighted)draw->AddRectFilled(a,b,ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding,
         first && last?ImDrawFlags_RoundCornersAll:first?(vertical?ImDrawFlags_RoundCornersTop:ImDrawFlags_RoundCornersLeft):last?(vertical?ImDrawFlags_RoundCornersBottom:ImDrawFlags_RoundCornersRight):ImDrawFlags_RoundCornersNone);
@@ -27,6 +32,10 @@ struct PanelStyle {
     ~PanelStyle(){ImGui::PopStyleVar(6);ImGui::PopFont();}
 };
 inline bool button(const char* label,float scale) {return ImGui::Button(label,{0,menuControlHeight*scale});}
+inline bool number(const char* label,double& value,float width,float step,double low,double high,const char* format) {
+    ImGui::SetNextItemWidth(width);
+    return ImGui::DragScalar(label,ImGuiDataType_Double,&value,step,&low,&high,format,ImGuiSliderFlags_AlwaysClamp);
+}
 template<size_t N> bool choice(const char* label,const char* const (&names)[N],size_t& selected) {
     if(!ImGui::BeginCombo(label,names[selected]))return false;
     const size_t previous=selected;
@@ -104,6 +113,34 @@ struct TipStyle {
 };
 inline void tip(const char* text,float scale) {
     TipStyle style(scale);ImGui::BeginTooltip();ImGui::TextUnformatted(text);ImGui::EndTooltip();
+}
+inline void detailLine(const char* value,float scale,float reserve=0) {
+    MenuTextStyle text(MenuTextRole::Secondary);
+    const auto at=ImGui::GetCursorScreenPos();
+    const float width=std::max(1.f,ImGui::GetContentRegionAvail().x-reserve),height=ImGui::GetTextLineHeight();
+    const char* end=value+strcspn(value,"\r\n");
+    const auto measured=ImGui::CalcTextSize(value,end);
+    ImGui::Dummy({width,height});
+    ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(),at,{at.x+width,at.y+height},at.x+width,value,end,&measured);
+    if((*end || measured.x>width) && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)){
+        TipStyle style(scale);ImGui::BeginTooltip();ImGui::PushTextWrapPos(2*menuPanelWidth*scale);
+        ImGui::TextUnformatted(value);ImGui::PopTextWrapPos();ImGui::EndTooltip();
+    }
+}
+inline bool iconButton(const char* label,int icon,float scale) {
+    const auto a=ImGui::GetCursorScreenPos();
+    const float side=menuControlHeight*scale,glyph=figmaDisplayIconSize*scale,inset=(side-glyph)*.5f;
+    const ImVec2 b={a.x+side,a.y+side};
+    const bool clicked=ImGui::InvisibleButton(label,{side,side},ImGuiButtonFlags_EnableNav);
+    const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
+    auto* draw=ImGui::GetWindowDrawList();
+    surface(draw,a,b,scale,false);
+    if(!disabled && (ImGui::IsItemHovered() || ImGui::IsItemActive()))segment(draw,a,b,true,true,true,scale);
+    outline(draw,a,b,scale);
+    drawStyledMenuIcon(draw,icon,{a.x+inset,a.y+inset},glyph,ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
+    ImGui::RenderNavCursor(ImRect(a,b),ImGui::GetItemID());
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))tip(label,scale);
+    return clicked;
 }
 template<size_t N> bool iconSegments(const char* id,const char* const (&names)[N],const int (&icons)[N],int& selected,float scale) {
     const auto origin=ImGui::GetCursorScreenPos();
@@ -183,7 +220,8 @@ template<size_t N> float segmentsHeight(const char* const (&names)[N],float widt
     return rows*menuControlHeight*scale+(rows-1)*menuPanelGap*scale;
 }
 
-template<size_t N> bool segments(const char* id,const char* const (&names)[N],int& selected,float scale) {
+template<size_t N,typename IsSelected,typename Activate>
+bool textSegments(const char* id,const char* const (&names)[N],float scale,IsSelected isSelected,Activate activate) {
     const auto origin=ImGui::GetCursorScreenPos();const float width=ImGui::GetContentRegionAvail().x,h=menuControlHeight*scale;
     if(width<=0){ImGui::Dummy({0,h});return false;}
     std::array<float,N> widths{};for(size_t i=0;i<N;++i)widths[i]=std::min(width,ImGui::CalcTextSize(names[i]).x+2*menuControlTextInset*scale);
@@ -197,16 +235,22 @@ template<size_t N> bool segments(const char* id,const char* const (&names)[N],in
             const auto mouse=ImGui::GetIO().MousePos;
             const bool seam=i>first && mouse.x<x+scale || i<last && mouse.x>=x+widths[i]-scale;
             const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
-            segment(draw,{x,y},{x+widths[i],y+h},i==first,i==last,!disabled && ((!seam && ImGui::IsItemHovered()) || selected==int(i)),scale);
+            segment(draw,{x,y},{x+widths[i],y+h},i==first,i==last,!disabled && ((!seam && ImGui::IsItemHovered()) || isSelected(i)),scale);
             const auto text=ImGui::CalcTextSize(names[i]);
             draw->AddText({x+(widths[i]-text.x)*.5f,y+(h-text.y)*.5f},ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),names[i]);
             ImGui::RenderNavCursor(ImRect({x,y},{x+widths[i],y+h}),ImGui::GetItemID());
-            if(clicked && (!seam || !ImGui::IsMouseReleased(ImGuiMouseButton_Left)) && !disabled){selected=int(i);changed=true;}
+            if(clicked && (!seam || !ImGui::IsMouseReleased(ImGuiMouseButton_Left)) && !disabled){activate(i);changed=true;}
             ImGui::PopID();x+=widths[i];
         }
         outline(draw,{origin.x,y},{origin.x+total,y+h},scale);first=last+1;
         if(first<N)y+=h+menuPanelGap*scale;
     }
     ImGui::PopID();ImGui::SetCursorScreenPos(origin);ImGui::Dummy({width,y-origin.y+h});return changed;
+}
+template<size_t N> bool segments(const char* id,const char* const (&names)[N],int& selected,float scale) {
+    return textSegments(id,names,scale,[&](size_t i){return selected==int(i);},[&](size_t i){selected=int(i);});
+}
+template<size_t N> bool toggles(const char* id,const char* const (&names)[N],std::array<bool,N>& selected,float scale) {
+    return textSegments(id,names,scale,[&](size_t i){return selected[i];},[&](size_t i){selected[i]=!selected[i];});
 }
 }

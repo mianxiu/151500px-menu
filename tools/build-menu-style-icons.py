@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 source = ROOT / 'native/figma-inspired-icons.json'
 data = json.loads(source.read_text('utf-8'))
 assert data['grid'] == 9 and data['stroke'] == 1
-assert {icon['index'] for icon in data['icons']} == {0, 1, 2, 3, 5, 6, 7, 8, 9, 10} | set(range(11,41))
+assert {icon['index'] for icon in data['icons']} == {0, 1, 2, 3, 5, 6, 7, 8, 9, 10} | set(range(11,42))
 
 
 def number(value):
