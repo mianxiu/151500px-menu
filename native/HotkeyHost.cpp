@@ -200,12 +200,15 @@ struct ActivationGate {
         if (!scoped) {active=false;allowed=false;return;}
         if (!active) {allowed=clicked && now-clicked<=2000;active=true;clicked=0;}
     }
+    bool mayClearIntent(bool scoped,bool sameOrigin) const {
+        return !scoped && !sameOrigin && clicked && !switching && !taskbarSwitching && !directSwitching;
+    }
     void observeForeground(bool scoped,bool sameOrigin,bool taskbar,ULONGLONG now,bool transition=false) {
         // GetForegroundWindow can temporarily return NULL during activation.
         // That is no foreign application and must not consume a real click.
         // Qualification still requires a scoped HWND and bounded click age.
         if (transition) return;
-        if (!scoped && !switching && !taskbarSwitching && !directSwitching && clicked && !sameOrigin && !taskbar)
+        if (mayClearIntent(scoped,sameOrigin) && !taskbar)
             clicked=0;
         observe(scoped,now);
     }
@@ -242,7 +245,9 @@ struct ActivationGate {
 static ActivationGate activation;
 static HWND activationOrigin=nullptr;
 static LONGLONG counterFrequency=1;
-static std::atomic<ULONGLONG> droppedEvents{0},callbackPeakUs{0};
+static std::atomic<ULONGLONG> droppedEvents{0};
+// These peaks are recorded and drained on the hook message thread.
+static ULONGLONG keyboardPeakUs=0,pointerPeakUs=0,nextHookPeakUs=0;
 static ULONGLONG microseconds() {
     LARGE_INTEGER value{};QueryPerformanceCounter(&value);
     return static_cast<ULONGLONG>((value.QuadPart/counterFrequency)*1000000+
@@ -256,19 +261,34 @@ static int measurementKind=0;
 static bool measureDirectMode=false;
 #endif
 struct CallbackTiming {
+    ULONGLONG& peak;
     ULONGLONG start=microseconds();
-    ULONGLONG elapsed() const {return microseconds()-start;}
-    ~CallbackTiming() {
-        auto elapsed=microseconds()-start;
-        if (elapsed>callbackPeakUs.load(std::memory_order_relaxed)) callbackPeakUs.store(elapsed,std::memory_order_relaxed);
+    ULONGLONG forwardedUs=0;
+    bool finished=false;
+    ULONGLONG elapsed() const {return microseconds()-start-forwardedUs;}
+    void finish(ULONGLONG end) {
+        const auto duration=end-start-forwardedUs;
+        if(duration>peak)peak=duration;
+        finished=true;
     }
+    LRESULT next(int code,WPARAM message,LPARAM data,bool terminal=true) {
+        const auto before=microseconds();
+        if(terminal)finish(before);
+        const auto result=CallNextHookEx(nullptr,code,message,data);
+        const auto duration=microseconds()-before;
+        if(!terminal)forwardedUs+=duration;
+        if(duration>nextHookPeakUs)nextHookPeakUs=duration;
+        return result;
+    }
+    ~CallbackTiming() {if(!finished)finish(microseconds());}
 };
 // Single producer (hook thread), single consumer (pipe writer).
 struct HookEvent {
     Action action=None; HWND hwnd=nullptr,root=nullptr; POINT cursor{};
     DWORD pid=0,flags=0,time=0;UINT message=0; int key=0,modifiers=0,matched=0;
     bool command=false,process=false,enabled=false,repeat=false,owned=false,blocked=false;
-    ULONGLONG decisionUs=0,scanUs=0,renewUs=0,gapMs=0,peakUs=0,dropped=0;
+    ULONGLONG decisionUs=0,scanUs=0,renewUs=0,gapMs=0,dropped=0;
+    ULONGLONG keyboardPeakUs=0,pointerPeakUs=0,nextHookPeakUs=0;
     DWORD ageMs=0;
     bool attempted=false,toggleOn=false,previousToggle=false;
     bool activationAllowed=false,activationActive=false,taskbarSwitching=false,directSwitching=false;
@@ -513,9 +533,11 @@ static bool taskbarWindow(HWND hwnd) {
 static void observeActivation(HWND foreground,bool scoped,ULONGLONG now) {
     // If a taskbar/Alt+Tab intent activates some other application, consume
     // it there; a subsequent hover into PS must not inherit that intent.
-    bool taskbar=taskbarWindow(foreground);
+    const bool sameOrigin=foreground==activationOrigin;
+    const bool checkTaskbar=foreground && activation.mayClearIntent(scoped,sameOrigin);
+    const bool taskbar=checkTaskbar && taskbarWindow(foreground);
     ULONGLONG before=activation.clicked;
-    activation.observeForeground(scoped,foreground==activationOrigin,taskbar,now,!foreground);
+    activation.observeForeground(scoped,sameOrigin,taskbar,now,!foreground);
     static HWND previous=reinterpret_cast<HWND>(-1);
     static bool previousAllowed=false,previousActive=false;
     static ULONGLONG previousIntent=0;
@@ -523,7 +545,7 @@ static void observeActivation(HWND foreground,bool scoped,ULONGLONG now) {
         unsigned next=(head.load(std::memory_order_relaxed)+1)%queue.size();
         if (next!=tail.load(std::memory_order_acquire)) {
             HookEvent event{};event.action=ActivationTrace;event.hwnd=foreground;event.root=activationOrigin;
-            event.time=static_cast<DWORD>(now);event.process=scoped;event.command=taskbar;event.gapMs=before;
+            event.time=static_cast<DWORD>(now);event.process=scoped;event.command=checkTaskbar?taskbar:taskbarWindow(foreground);event.gapMs=before;
             GetWindowThreadProcessId(foreground,&event.pid);GetClassNameW(foreground,event.windowClass,64);
             event.activationAllowed=activation.allowed;event.activationActive=activation.active;
             event.taskbarSwitching=activation.taskbarSwitching;event.directSwitching=activation.directSwitching;
@@ -693,7 +715,7 @@ static unsigned physicalModifiers(bool altDown=false) {
     return down;
 }
 static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
-    CallbackTiming timing;
+    CallbackTiming timing{keyboardPeakUs};
     if (code>=0) {
         lastInputTick=GetTickCount64();
         const auto& input=*reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
@@ -802,7 +824,7 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
                 event.inputEpoch=inputEpoch;event.guardEpoch=localConfig.searchEpoch;event.guardAllowed=localConfig.searchAllowed;
                 event.activationAllowed=activation.allowed;event.activationActive=activation.active;
                 event.taskbarSwitching=activation.taskbarSwitching;event.activationIntent=activation.clicked;
-                event.decisionUs=microseconds()-timing.start;
+                event.decisionUs=timing.elapsed();
                 event.ageMs=GetTickCount()-input.time;
                 event.dropped=droppedEvents.load(std::memory_order_relaxed);
                 queue[head.load(std::memory_order_relaxed)]=event;
@@ -811,7 +833,7 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
         }
         if (blocked) {
             // Other hooks need the F pair too, or they can mistake Ctrl+F for double Ctrl.
-            if(input.vkCode=='F' && (searchOwned || keys.searchConsumed))CallNextHookEx(nullptr,code,message,data);
+            if(input.vkCode=='F' && (searchOwned || keys.searchConsumed))timing.next(code,message,data,false);
             if((action==FrameCommit || action==FrameRestore) && nativeFrameCommonId==keys.frameId)finishNativeFrame();
             emit(action,(action==SearchLayers || action==FrameLayers)?localConfig.searchFocus:nullptr,(action==SearchLayers || action==FrameLayers)?localConfig.searchRoot:nullptr); return 1;
         }
@@ -821,10 +843,10 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
     measureHookSample(timing.elapsed(),measurementKind);
     if(measureDirectMode)return 0;
 #endif
-    return CallNextHookEx(nullptr,code,message,data);
+    return timing.next(code,message,data);
 }
 static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
-    CallbackTiming timing;
+    CallbackTiming timing{pointerPeakUs};
     if (code>=0) {
         lastInputTick=GetTickCount64();
         HWND foreground=GetForegroundWindow();
@@ -840,7 +862,7 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
         if(sampleRoute==2)return 1;
         // Leave sampling to the menu's real capture. It is neither an outside
         // dismiss, a taskbar activation nor a right-click menu cancellation.
-        if(sampleRoute==1)return CallNextHookEx(nullptr,code,message,data);
+        if(sampleRoute==1)return timing.next(code,message,data);
         if(message==WM_MOUSEMOVE && keys.pending!=-1 && !keys.used && !intentRevealed && !(mouse.flags&LLMHF_INJECTED)) {
             const long long dx=mouse.pt.x-intentOrigin.x,dy=mouse.pt.y-intentOrigin.y;
             if(dx*dx+dy*dy>=144){intentRevealed=true;emit(HoldReveal);}
@@ -918,7 +940,7 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
     measureHookSample(timing.elapsed(),measurementKind);
     if(measureDirectMode)return 0;
 #endif
-    return CallNextHookEx(nullptr,code,message,data);
+    return timing.next(code,message,data);
 }
 static void stop() {
     closing.store(true); PostThreadMessageW(hookThread,WM_QUIT,0,0); SetEvent(available);
@@ -1045,7 +1067,9 @@ static void writeActions() {
             if (action==HookHealth) {
                 line="{\"type\":\"hook.health\",\"scan_us\":"+std::to_string(event.scanUs)+
                     ",\"renew_us\":"+std::to_string(event.renewUs)+",\"timer_gap_ms\":"+std::to_string(event.gapMs)+
-                    ",\"callback_peak_us\":"+std::to_string(event.peakUs)+",\"dropped_total\":"+std::to_string(event.dropped)+
+                    ",\"callback_peak_us\":"+std::to_string((std::max)(event.keyboardPeakUs,event.pointerPeakUs))+
+                    ",\"keyboard_peak_us\":"+std::to_string(event.keyboardPeakUs)+",\"pointer_peak_us\":"+std::to_string(event.pointerPeakUs)+
+                    ",\"next_hook_peak_us\":"+std::to_string(event.nextHookPeakUs)+",\"dropped_total\":"+std::to_string(event.dropped)+
                     ",\"renew_ok\":"+(event.blocked?"true":"false")+",\"renew_attempted\":"+(event.attempted?"true":"false")+
                     ",\"input_epoch\":"+std::to_string(event.inputEpoch)+",\"frame_id\":"+std::to_string(event.frameId)+",\"frame_phase\":"+std::to_string(event.framePhase)+",\"scan_on_worker\":true}\n";
                 DWORD written=0;
@@ -1118,6 +1142,16 @@ static void sampleCapsState(bool force=false) {
     } else droppedEvents.fetch_add(1,std::memory_order_relaxed);
 }
 static int selfTest() {
+    {
+        ULONGLONG peak=0;
+        CallbackTiming pass{peak};
+        pass.forwardedUs=20;
+        pass.finish(pass.start+23);
+        check(peak==3);
+        CallbackTiming shorter{peak};
+        shorter.finish(shorter.start+2);
+        check(peak==3);
+    }
     {
         Config c;c.enabled=true;c.bindings[0]={Toggle,{VK_CAPITAL},1};Action action;
         for(int side=0;side<6;++side) {
@@ -1886,13 +1920,16 @@ int main(int argc,char** argv) {
                     HookEvent event{};event.action=HookHealth;event.scanUs=lastScanUs;event.renewUs=finished-started;event.attempted=attempted;
                     event.inputEpoch=inputEpoch;
                     event.frameId=keys.frameId;event.framePhase=keys.framePhase;
-                    event.gapMs=now-previousMaintenance;event.peakUs=callbackPeakUs.exchange(0,std::memory_order_relaxed);
+                    event.gapMs=now-previousMaintenance;
+                    event.keyboardPeakUs=std::exchange(keyboardPeakUs,0);
+                    event.pointerPeakUs=std::exchange(pointerPeakUs,0);
+                    event.nextHookPeakUs=std::exchange(nextHookPeakUs,0);
                     event.dropped=dropped;event.blocked=renewed;
                     queue[head.load(std::memory_order_relaxed)]=event;
                     head.store(next,std::memory_order_release);SetEvent(available);
                 } else droppedEvents.fetch_add(1,std::memory_order_relaxed);
                 reportedDrops=dropped;
-            } else callbackPeakUs.store(0,std::memory_order_relaxed);
+            }
             previousMaintenance=now;
             sampleCapsState();
         } else if (message.message==WM_APP) {

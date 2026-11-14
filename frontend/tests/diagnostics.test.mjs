@@ -22,6 +22,13 @@ test('scoped checks and uncertain loader evidence are explicit',()=>{
  assert.equal(diagnosticFinding('untrusted secret'),'检测结果待核对');
  assert.equal(diagnosticClock({phase:'collecting',stage:'uxp',message:'uxp',remaining_ms:0},10).label,'uxp');
 });
+test('hook latency distinguishes local callbacks from downstream time',()=>{
+ const rows=inputHealthRows({health:{keyboard_peak_us:20,pointer_peak_us:0,next_hook_peak_us:283}});
+ const peaks=rows.filter(([label])=>label.includes('微秒'));
+ assert.deepEqual(peaks.map(([,value])=>value),[20,0,283]);
+ for(const [label] of peaks)assert.notEqual(translate(label,'en'),label);
+ assert.equal(new Map(inputHealthRows({health:{callback_peak_us:45}})).get('回调峰值（微秒）'),45);
+});
 test('countdown advances locally and zero never claims completion',()=>{
  const d={phase:'collecting',stage:'prepare',remaining_ms:5000,received_at:1000,message:'prepare'};
  assert.equal(diagnosticClock(d,1000).seconds,5);

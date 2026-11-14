@@ -22,7 +22,7 @@ def input_report(desktop):
     observation=focus.get('observation') or {}
     return {'read_only':True,'state':state,'process_running':running,'pid':native.pid if native else None,
         'generation':getattr(desktop,'hook_generation',0),'health_age_ms':age,
-        'health':pick(health[1] if health else {},('scan_us','renew_us','timer_gap_ms','callback_peak_us','dropped_total','renew_ok','renew_attempted','input_epoch')),
+        'health':pick(health[1] if health else {},('scan_us','renew_us','timer_gap_ms','callback_peak_us','keyboard_peak_us','pointer_peak_us','next_hook_peak_us','dropped_total','renew_ok','renew_attempted','input_epoch')),
         'configuration':{'sent':desktop.native_sequence,'applied':desktop.native_applied_sequence,
                          'acknowledged':running and desktop.native_sequence>0 and desktop.native_applied_sequence>=desktop.native_sequence},
         'trace_active':bool(getattr(desktop,'diagnostic_trace',False)),

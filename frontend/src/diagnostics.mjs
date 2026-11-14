@@ -31,7 +31,11 @@ export function inputHealthRows(value={}){
   ['配置已生效',yes(config.acknowledged)],
   ['Hook重新挂载',health.renew_attempted===false?'本轮未尝试':yes(health.renew_ok)],
   ['事件丢失累计',health.dropped_total ?? '—'],
-  ['回调峰值（微秒）',health.callback_peak_us ?? '—'],
+  ...(health.keyboard_peak_us==null ? [['回调峰值（微秒）',health.callback_peak_us ?? '—']] : [
+    ['键盘回调峰值（微秒）',health.keyboard_peak_us],
+    ['鼠标回调峰值（微秒）',health.pointer_peak_us ?? '—'],
+    ['后续 Hook 峰值（微秒）',health.next_hook_peak_us ?? '—']
+  ]),
   ['最近菜单键',decision(lastKey(20) || [...(value.events || [])].reverse().find(e=>e.type==='trigger.trace' && (e.message===256 || e.message===260)))],
   ['最近 F',decision(lastKey(70))],
   ['焦点保护',focusNames[focus.state] || '等待状态'],

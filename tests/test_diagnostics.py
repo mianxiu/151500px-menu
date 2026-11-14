@@ -13,10 +13,12 @@ class DiagnosticTests(unittest.IsolatedAsyncioTestCase):
         d.native.poll.return_value=None
         self.assertEqual(input_report(d)['state'],'starting')
         d.ready.set();self.assertEqual(input_report(d)['state'],'awaiting-health')
-        d.hook_health=(100,{'renew_ok':True,'renew_attempted':False,'dropped_total':7})
+        peaks={'keyboard_peak_us':33,'pointer_peak_us':0,'next_hook_peak_us':137}
+        d.hook_health=(100,{'renew_ok':True,'renew_attempted':False,'dropped_total':7,**peaks})
         with patch('backend.diagnostics.time.monotonic',return_value=101):
             r=input_report(d);self.assertEqual(r['state'],'reporting');self.assertFalse(r['configuration']['acknowledged'])
             self.assertEqual(r['events'],[]);self.assertEqual(r['health_age_ms'],1000)
+            self.assertEqual({key:r['health'][key] for key in peaks},peaks)
         with patch('backend.diagnostics.time.monotonic',return_value=104):self.assertEqual(input_report(d)['state'],'stale')
         d.native.poll.return_value=0;self.assertEqual(input_report(d)['state'],'stopped')
         self.assertFalse(input_report(d)['configuration']['acknowledged'])
