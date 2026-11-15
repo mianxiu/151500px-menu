@@ -152,6 +152,9 @@
                 angle:d.hasKey(c('Angl'))?d.getUnitDoubleValue(c('Angl')):0,scale:d.hasKey(c('Scl '))?d.getUnitDoubleValue(c('Scl ')):100,
                 reverse:d.hasKey(s('reverse')) && d.getBoolean(s('reverse')),dither:d.hasKey(s('dither')) && d.getBoolean(s('dither')),
                 align:d.hasKey(s('align'))?d.getBoolean(s('align')):true,smoothness:g.hasKey(s('interfaceIconFrameDimmed'))?g.getInteger(s('interfaceIconFrameDimmed')):4096};
+            var offset=d.hasKey(s('offset'))?d.getObjectValue(s('offset')):new ActionDescriptor();
+            result.options.offset_x=offset.hasKey(s('horizontal'))?offset.getUnitDoubleValue(s('horizontal')):0;
+            result.options.offset_y=offset.hasKey(s('vertical'))?offset.getUnitDoubleValue(s('vertical')):0;
             result.opacity_stops=[];
             if(g.hasKey(s('transparency'))){
                 var alpha=g.getList(s('transparency'));
@@ -229,6 +232,7 @@
                         if(key==='style' && /^(linear|radial|angle|reflected|diamond)$/.test(value))continue;
                         if(key==='angle' && range(value,-360,360))continue;
                         if(key==='scale' && range(value,1,1000))continue;
+                        if((key==='offset_x'||key==='offset_y') && range(value,-1000,1000))continue;
                         if(key==='smoothness' && integer(value,0,4096))continue;
                         if(/^(reverse|dither|align)$/.test(key) && typeof value==='boolean')continue;
                         throw Error('Invalid gradient option');
@@ -262,6 +266,12 @@
             if(opts.style!==undefined)d.putEnumerated(c('Type'),s('gradientType'),s(opts.style));
             if(opts.angle!==undefined)d.putUnitDouble(c('Angl'),c('#Ang'),opts.angle);
             if(opts.scale!==undefined)d.putUnitDouble(c('Scl '),c('#Prc'),opts.scale);
+            if(opts.offset_x!==undefined||opts.offset_y!==undefined){
+                var offset=d.hasKey(s('offset'))?clone(d.getObjectValue(s('offset'))):new ActionDescriptor();
+                if(opts.offset_x!==undefined)offset.putUnitDouble(s('horizontal'),c('#Prc'),opts.offset_x);
+                if(opts.offset_y!==undefined)offset.putUnitDouble(s('vertical'),c('#Prc'),opts.offset_y);
+                d.putObject(s('offset'),s('paint'),offset);
+            }
             var flags=['reverse','dither','align'];for(var f=0;f<flags.length;f++)if(opts[flags[f]]!==undefined)d.putBoolean(s(flags[f]),opts[flags[f]]);
             var g = d.hasKey(s('gradient')) ? clone(d.getObjectValue(s('gradient'))) : new ActionDescriptor();
             if (!g.hasKey(c('Nm  '))) g.putString(c('Nm  '),'Menu gradient');

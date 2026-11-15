@@ -18,6 +18,7 @@ static constexpr float menuQuickGroupOffset=65.f;
 static constexpr int menuQuickGroupMaxCount=4;
 static constexpr float menuGradientBarHeight=menuControlHeight;
 static constexpr float menuGradientHandleSize=menuCheckSize;
+static constexpr float menuGradientOverviewRailHeight=4.f;
 static constexpr float menuGradientEditorHeight=menuGradientBarHeight+menuCompactGap+menuGradientHandleSize;
 
 static constexpr float menuShapeWindowHeight=620.f;

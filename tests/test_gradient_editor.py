@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from backend.gradient_acceptance import MAKE_GRADIENT
-from backend.gradient_editor import GradientEditor, checked_draft, draft_path, load_draft
+from backend.gradient_editor import GradientEditor, VIEW_SCRIPT, checked_draft, checked_view, draft_path, load_draft
 
 BASE = {
     'revision':'initial:1',
@@ -23,6 +23,32 @@ BASE = {
 }
 
 class GradientEditorTests(unittest.TestCase):
+    def test_overlay_refuses_unusable_photoshop_geometry(self):
+        view={'matrix':[0, .5, -.5, 0, -75, 60],'viewport':[-960,30,0,900],
+              'document':[600,400],'layer':[100,100,400,350]}
+        self.assertEqual(checked_view(view),view)
+        for invalid in ({'matrix':[1,2,1,2,0,0]},{'viewport':[0,0,-20,50]},
+                        {'layer':[1,2,3,float('inf')]},{'document':[True,10]}):
+            with self.assertRaises(ValueError):checked_view({**view,**invalid})
+
+    def test_old_draft_inherits_only_new_center_fields(self):
+        base=deepcopy(BASE)
+        base['fill']['options'].update(offset_x=25.5,offset_y=-37.25)
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'draft.json'
+            old=deepcopy(BASE)
+            old['fill']['options']['scale']=125
+            path.write_text(json.dumps(old),'utf-8')
+            actual=load_draft(path,base)
+            self.assertEqual(actual['fill']['options'],{**base['fill']['options'],'scale':125})
+            for value in (1001,-1001,True,'0',None,float('nan')):
+                invalid=deepcopy(actual)
+                invalid['fill']['options']['offset_x']=value
+                with self.assertRaises(ValueError):checked_draft(base,invalid)
+            old['fill']['options'].pop('angle')
+            path.write_text(json.dumps(old),'utf-8')
+            with self.assertRaises(ValueError):load_draft(path,base)
+
     def test_resume_matches_saved_target_and_original_style(self):
         target={'session':'first','document_id':5,'active_layer_id':4}
         snapshot={'baseline':'unchanged','document_path':r'C:\Art','document_name':'same.psd'}
@@ -58,11 +84,137 @@ class GradientEditorTests(unittest.TestCase):
     def test_fixed_fixture_and_legacy_preview_parse(self):
         legacy=(Path(__file__).resolve().parents[1]/'jsx/legacy_shape_preview.jsx').read_text('utf-8')
         check=subprocess.run(['node','-e',"for(const s of JSON.parse(require('node:fs').readFileSync(0,'utf8')))new (require('node:vm').Script)(s);"],
-                             input=json.dumps(['(function(){'+MAKE_GRADIENT+'})()',legacy]),capture_output=True,text=True,timeout=10,creationflags=0x08000000)
+                             input=json.dumps(['(function(){'+MAKE_GRADIENT+'})()',legacy,VIEW_SCRIPT]),capture_output=True,text=True,timeout=10,creationflags=0x08000000)
         self.assertEqual(check.returncode,0,check.stderr)
 
 
 class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_rollback_refreshes_host_revision_without_replacing_draft_identity(self):
+        shape = {**deepcopy(BASE), 'available':True, 'revision':'fresh:2', 'baseline':'raw-original'}
+        call = Mock(return_value={'shape_editor':shape, 'gradient_target':{'document_id':5}})
+        editor = GradientEditor(SimpleNamespace(bridge=SimpleNamespace(transport=SimpleNamespace(call=call))))
+        editor.base = deepcopy(BASE)
+        editor.draft = deepcopy(BASE)
+        editor.target = {'document_id':5}
+        editor.baseline = 'raw-original'
+        editor.revision = BASE['revision']
+        editor.require_focus = Mock()
+        editor.hwnd = 1
+        editor.phase = 'preview'
+        await editor.finished({'result':json.dumps({'verified':True,'cancelled':True,'rollback_verified':True})})
+        await editor.refresh_restored_revision()
+        self.assertEqual(editor.revision, 'fresh:2')
+        self.assertEqual(editor.base['revision'], BASE['revision'])
+        self.assertEqual(editor.draft['revision'], BASE['revision'])
+        self.assertFalse(editor.refresh_revision)
+        editor.phase = 'preview'
+        editor.preview = Mock()
+        editor.in_scope = Mock(return_value=True)
+        editor.save = AsyncMock()
+        value = deepcopy(BASE)
+        value['fill']['options']['angle'] = 25
+        await editor.request('gradient.update', {'draft':value})
+        editor.preview.update.assert_called_once_with({**value,'revision':'fresh:2'}, commit=False)
+
+    async def test_revision_refresh_refuses_external_changes_and_target_switches(self):
+        shape = {**deepcopy(BASE), 'available':True, 'revision':'fresh:2', 'baseline':'raw-original'}
+        target = {'document_id':5}
+        call = Mock()
+        editor = GradientEditor(SimpleNamespace(bridge=SimpleNamespace(transport=SimpleNamespace(call=call))))
+        editor.base, editor.target = deepcopy(BASE), target
+        editor.baseline, editor.revision = 'raw-original', BASE['revision']
+        editor.require_focus = Mock()
+        editor.refresh_revision = True
+        changed = deepcopy(shape)
+        changed['fill']['options']['angle'] = 90
+        for observed, actual in (({**shape,'baseline':'external'}, target),
+                                 (shape, {'document_id':6}), (changed, target)):
+            call.return_value = {'shape_editor':observed, 'gradient_target':actual}
+            with self.assertRaises(RuntimeError):
+                await editor.refresh_restored_revision()
+            self.assertTrue(editor.refresh_revision)
+            self.assertEqual(editor.revision, BASE['revision'])
+
+    async def test_only_transient_com_rejection_retries_the_view(self):
+        editor = GradientEditor(SimpleNamespace(operation_lock=asyncio.Lock()))
+        editor.phase = 'editing'
+        editor.require_focus = Mock()
+        editor.send = AsyncMock()
+        busy = OSError('Photoshop is busy')
+        busy.hresult = -2147417846
+        view = {'tool':'moveTool'}
+        editor.read_view = AsyncMock(side_effect=[busy, view, RuntimeError('target changed')])
+        with patch('backend.gradient_editor.require_available'):
+            await editor.request_view({'serial':1,'refresh':False,'entering':True})
+            busy_result = editor.send.await_args.args[0]
+            self.assertTrue(busy_result['retry'])
+            self.assertIsNone(busy_result['view'])
+            await editor.request_view({'serial':2,'refresh':True,'entering':True})
+            self.assertEqual(editor.send.await_args.args[0]['view'], view)
+            await editor.request_view({'serial':3,'refresh':True})
+            self.assertNotIn('retry', editor.send.await_args.args[0])
+            self.assertIsNone(editor.send.await_args.args[0]['view'])
+
+    async def test_temporary_hand_tool_keeps_overlay_but_settled_tool_change_closes_it(self):
+        editor = GradientEditor(SimpleNamespace(operation_lock=asyncio.Lock()))
+        editor.phase = 'editing'
+        editor.require_focus = Mock()
+        editor.send = AsyncMock()
+        editor.request = AsyncMock()
+        editor.read_view = AsyncMock(side_effect=[
+            {'tool':'moveTool'}, {'tool':'handTool'}, {'tool':'moveTool'}, {'tool':'cropTool'},
+        ])
+        editor.resume_preview_after_view = False
+        with patch('backend.gradient_editor.require_available'):
+            await editor.request_view({'serial':1,'refresh':False,'entering':True})
+            await editor.request_view({'serial':2,'refresh':True,'tracking':True})
+            self.assertEqual(editor.send.await_args.args[0]['view']['tool'],'handTool')
+            await editor.request_view({'serial':3,'refresh':True})
+            self.assertEqual(editor.send.await_args.args[0]['view']['tool'],'moveTool')
+            editor.resume_preview_after_view = True
+            await editor.request_view({'serial':4,'refresh':True})
+        self.assertEqual(editor.send.await_args.args[0],{'type':'gradient.view','serial':4,'tool_changed':True})
+        editor.request.assert_not_awaited()
+        self.assertFalse(editor.resume_preview_after_view)
+
+    async def test_view_motion_reprojects_without_restarting_preview_until_settled(self):
+        app = SimpleNamespace(operation_lock=asyncio.Lock())
+        editor = GradientEditor(app)
+        editor.phase = 'preview'
+        preview = editor.preview = Mock()
+        editor.base, editor.draft = {}, {'edited': True}
+        editor.require_focus = Mock()
+        editor.send = AsyncMock()
+        editor.request = AsyncMock()
+        editor.read_view = AsyncMock(side_effect=[{'matrix':[2,0,0,2,0,0]}, {'matrix':[1,0,0,1,4,6]}])
+
+        async def rollback():
+            editor.preview = None
+            editor.phase = 'editing'
+
+        editor.task = asyncio.create_task(rollback())
+        with patch('backend.gradient_editor.require_available'):
+            await editor.request_view({'serial':1,'refresh':True,'tracking':True})
+            preview.cancel.assert_called_once_with()
+            editor.request.assert_not_awaited()
+            self.assertEqual(editor.send.await_args.args[0]['view']['matrix'],[2,0,0,2,0,0])
+            await editor.request_view({'serial':2,'refresh':True,'tracking':False})
+        editor.request.assert_awaited_once_with('gradient.update', {'draft':editor.draft})
+        self.assertEqual(editor.send.await_args.args[0]['view']['matrix'],[1,0,0,1,4,6])
+
+    async def test_mode_switch_keeps_live_preview_and_uses_same_view(self):
+        editor=GradientEditor(None)
+        editor.phase='preview'
+        editor.preview=Mock()
+        editor.view={'matrix':[1,0,0,1,0,0]}
+        editor.require_focus=Mock()
+        editor.send=AsyncMock()
+        editor.read_view=AsyncMock()
+        await editor.request_view({'serial':1,'refresh':False})
+        editor.preview.cancel.assert_not_called()
+        editor.read_view.assert_not_awaited()
+        editor.send.assert_awaited_once_with({'type':'gradient.view','serial':1,'view':editor.view,'message':''})
+
     async def test_caps_adjustment_opens_only_after_verified_confirmation(self):
         for live, verified in ((False,True),(True,True),(True,False)):
             with self.subTest(live=live,verified=verified), tempfile.TemporaryDirectory() as root:

@@ -430,11 +430,46 @@
       "asset": "native/figma-inspired-assets/window-close.svg",
       "sha256": "7b553bc2fc4b8ceedc4db6d1fc433e5365dc316e81b24dca9d448384f92dc62c",
       "adaptation": "Window close mark drawn on the shared nine-unit grid with two one-unit diagonals."
+    },
+    {
+      "operation": "tool.rectangle",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/tool-rectangle.svg",
+      "sha256": "b30f51f4711287284af08ad5fa1ceb64a8dfecf0c39cef1eb1850d00f1ea2457",
+      "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill."
+    },
+    {
+      "operation": "tool.ellipse",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/tool-ellipse.svg",
+      "sha256": "a1692a5a0a240532810c833d9097dca2a62e93ac2040216898095bd06b0ce158",
+      "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill."
+    },
+    {
+      "operation": "tool.triangle",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/tool-triangle.svg",
+      "sha256": "44538709609cc05e279e1a1bd160b68247a74388f075d8b0e4afa29257cabfe9",
+      "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill."
+    },
+    {
+      "operation": "tool.polygon",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/tool-polygon.svg",
+      "sha256": "660ee695e2594a8093180361e43bb77f041bc2a69e9249808a1d048009c989e4",
+      "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill."
+    },
+    {
+      "operation": "tool.line",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/tool-line.svg",
+      "sha256": "599149f39a9f5d792744d12a9c05abff32e92c223ba5e13c99eed5346e7b7ea5",
+      "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with matching one-unit diagonal stroke."
     }
   ],
   "extension_source": {
     "file": "native/figma-inspired-icons.json",
-    "sha256": "992f650fbd4ddc8e23a437c2ca2040b13509d31e431e2e62b9c65f85e505d6a2",
+    "sha256": "16fae0b8c77ca85ac6985e863ab14c5887e014cfba74a4703a0dedf2f5814d43",
     "reference_nodes": [
       "809:619",
       "346:6",

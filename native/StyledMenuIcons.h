@@ -217,6 +217,56 @@ static constexpr FigmaPathCommand styledPath41_1[] = {
     {'M', 7.50000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
     {'L', 1.50000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
 };
+static constexpr FigmaPathCommand styledPath43_0[] = {
+    {'M', 8.75000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'C', 8.75000000f, 6.54350000f, 6.84720000f, 8.20000000f, 4.50000000f, 8.20000000f},
+    {'C', 2.15280000f, 8.20000000f, 0.25000000f, 6.54350000f, 0.25000000f, 4.50000000f},
+    {'C', 0.25000000f, 2.45650000f, 2.15280000f, 0.80000000f, 4.50000000f, 0.80000000f},
+    {'C', 6.84720000f, 0.80000000f, 8.75000000f, 2.45650000f, 8.75000000f, 4.50000000f},
+    {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath43_1[] = {
+    {'M', 7.75000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'C', 7.75000000f, 5.99120000f, 6.29490000f, 7.20000000f, 4.50000000f, 7.20000000f},
+    {'C', 2.70510000f, 7.20000000f, 1.25000000f, 5.99120000f, 1.25000000f, 4.50000000f},
+    {'C', 1.25000000f, 3.00880000f, 2.70510000f, 1.80000000f, 4.50000000f, 1.80000000f},
+    {'C', 6.29490000f, 1.80000000f, 7.75000000f, 3.00880000f, 7.75000000f, 4.50000000f},
+    {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath44_0[] = {
+    {'M', 4.50000000f, 0.70000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.90000000f, 8.40000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 0.10000000f, 8.40000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath44_1[] = {
+    {'M', 4.50000000f, 2.72000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.18000000f, 7.40000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.82000000f, 7.40000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath45_0[] = {
+    {'M', 2.34000000f, 0.90000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.66000000f, 0.90000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.82000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.66000000f, 8.10000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.34000000f, 8.10000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 0.18000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath45_1[] = {
+    {'M', 2.91000000f, 1.90000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.09000000f, 1.90000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.65000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.09000000f, 7.10000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.91000000f, 7.10000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.35000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'Z', 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath46_0[] = {
+    {'M', 0.55000000f, 8.45000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.45000000f, 0.55000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
 
 static void styledPath(ImDrawList* draw,const FigmaPathCommand* path,int count,ImVec2 at,float unit,ImU32 ink,float stroke) {
     auto point=[&](float x,float y){return ImVec2{at.x+x*unit,at.y+y*unit};};
@@ -465,6 +515,25 @@ static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,Im
     case 41:
         styledPath(draw,styledPath41_0,sizeof(styledPath41_0)/sizeof(*styledPath41_0),at,unit,color(0.00000000f),1.00000000f);
         styledPath(draw,styledPath41_1,sizeof(styledPath41_1)/sizeof(*styledPath41_1),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 42:
+        draw->AddRectFilled(p(0.25000000f,1.10000000f),p(8.75000000f,7.90000000f),color(0.67431195f),0.00000000f*unit);
+        draw->AddRect(p(0.75000000f,1.60000000f),p(8.25000000f,7.40000000f),ink,0,0,1.00000000f*unit);
+        break;
+    case 43:
+        styledPath(draw,styledPath43_0,sizeof(styledPath43_0)/sizeof(*styledPath43_0),at,unit,color(0.00000000f),0.00000000f);
+        styledPath(draw,styledPath43_1,sizeof(styledPath43_1)/sizeof(*styledPath43_1),at,unit,color(0.67431195f),0.00000000f);
+        break;
+    case 44:
+        styledPath(draw,styledPath44_0,sizeof(styledPath44_0)/sizeof(*styledPath44_0),at,unit,color(0.00000000f),0.00000000f);
+        styledPath(draw,styledPath44_1,sizeof(styledPath44_1)/sizeof(*styledPath44_1),at,unit,color(0.67431195f),0.00000000f);
+        break;
+    case 45:
+        styledPath(draw,styledPath45_0,sizeof(styledPath45_0)/sizeof(*styledPath45_0),at,unit,color(0.00000000f),0.00000000f);
+        styledPath(draw,styledPath45_1,sizeof(styledPath45_1)/sizeof(*styledPath45_1),at,unit,color(0.67431195f),0.00000000f);
+        break;
+    case 46:
+        styledPath(draw,styledPath46_0,sizeof(styledPath46_0)/sizeof(*styledPath46_0),at,unit,color(0.00000000f),1.00000000f);
         break;
     }
 }

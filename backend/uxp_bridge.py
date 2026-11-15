@@ -8,6 +8,7 @@ import secrets
 import time
 import threading
 from .photoshop_bridge import PhotoshopBridge
+from .commands import SHAPE_TOOLS
 from .photoshop_version import MIN_PHOTOSHOP_TEXT, require_version, version_tuple
 from .plugins import version
 from .layer_context import unavailable,validate,fresh
@@ -158,6 +159,8 @@ class UxpTransport:
                 if payload.get('command')=='layer.thumbnail':
                     raise RuntimeError('非静默缩略图已停用，未提交操作')
                 if payload.get('command')=='layer.frame' and version(heartbeat.get('probe_version'))<(0,3,99):raise RuntimeError('F聚焦需要正常重启PS加载UXP0.3.99')
+                if payload.get('command') in SHAPE_TOOLS and version(heartbeat.get('probe_version'))<(0,3,107):
+                    raise RuntimeError('形状工具需要更新并重启PS加载UXP0.3.107')
                 if payload.get('command')=='layer.focus' and (version(heartbeat.get('probe_version'))<(0,3,57) or payload.get('target',{}).get('session')!=heartbeat.get('session')):
                     raise RuntimeError('搜索会话或UXP版本已改变，请重新搜索')
                 if payload.get('stability_run') and version(heartbeat.get('probe_version'))<(0,3,47):
@@ -493,8 +496,11 @@ class UxpBridge(PhotoshopBridge):
             # The plugin captured this selection after the mutation, before its
             # final receipt. Hand it to the desktop before completion feedback;
             # do not reuse the pre-creation cache in a freshly opened menu.
-            context=validate(response.get('layer_context'),self._captured_app)
-            self.layer_context=context if fresh(context) else unavailable()
+            if action not in SHAPE_TOOLS or 'layer_context' in response:
+                context=validate(response.get('layer_context'),self._captured_app)
+                self.layer_context=context if fresh(context) else unavailable()
+            elif self.layer_context.get('session')!=self._captured_app or not fresh(self.layer_context):
+                self.layer_context=unavailable()
             if action=='shape.copyPaint' and response.get('result',{}).get('shape_clipboard_available') is True:
                 self._paint_clipboard_session=self._captured_app
             return json.dumps({**response['result'],**({'captured_target':bound} if direct else {})})

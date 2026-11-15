@@ -30,7 +30,14 @@ CAPS_ACTIONS = {
     "convertSmartObject":{"label":"转换为智能对象"},
     "convertSmartObjectsIndividually":{"label":"逐层转智能对象"},
 }
-COMMANDS = {**CAPS_ACTIONS,**ACTIONS, **LABEL_ACTIONS, **QUICK_ACTIONS,'shape.paint':{'label':'调整形状填充与描边'},
+SHAPE_TOOLS = {
+    'tool.rectangle': {'label': '矩形工具'},
+    'tool.ellipse': {'label': '椭圆工具'},
+    'tool.triangle': {'label': '三角形工具'},
+    'tool.polygon': {'label': '多边形工具'},
+    'tool.line': {'label': '直线工具'},
+}
+COMMANDS = {**CAPS_ACTIONS,**ACTIONS, **LABEL_ACTIONS, **QUICK_ACTIONS, **SHAPE_TOOLS,'shape.paint':{'label':'调整形状填充与描边'},
     'layer.focus':{'label':'定位图层'},
     'layer.frame':{'label':'聚焦所选图层'},
     'text.replace':{'label':'文本查找替换'},
@@ -62,10 +69,12 @@ REGISTRY = MappingProxyType({
     **{
     name: Command(name, info["label"],
                   "selected-layer-colors-read-back" if name in LABEL_ACTIONS else "script-returned; document-effect-not-verified")
-    for name, info in COMMANDS.items() if name not in QUICK_ACTIONS and name not in CAPS_ACTIONS
+    for name, info in COMMANDS.items() if name not in QUICK_ACTIONS and name not in CAPS_ACTIONS and name not in SHAPE_TOOLS
     },
     **{name:Command(name,info['label'],'selection-style-or-order-read-back' if name in CAPS_ACTIONS else 'created-layer-kind-and-group-members-read-back',
         channel='uxp-local-files') for name,info in {**QUICK_ACTIONS,**CAPS_ACTIONS}.items()},
+    **{name:Command(name,info['label'],'current-tool-read-back',channel='uxp-local-files')
+       for name,info in SHAPE_TOOLS.items()},
     'document.recent': Command('document.recent','按最近预设新建文档','new-document-dimensions-returned',
         channel='uxp-local-files', conditions=('uxp-ready','photoshop-home','action-focus','not-busy'),
         target_document='captured-UXP-session-and-document-set; cancel-if-changed', target_layers='not-applicable'),

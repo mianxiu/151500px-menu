@@ -6,13 +6,13 @@ async function host(){
  const files=new Map(),control={now:Date.now(),cost:0,reads:0,shapes:0,kind:'shape-fill',ids:[7],changed:false};
  let poll,release,releaseRead;
  const context=()=>{control.reads++;control.now+=control.cost;return {session:control.session,schema:1,document_id:1,layer_ids:control.ids,kind:control.kind,mask:15,quick_mask:127};};
- const folder={async getEntry(name){if(!files.has(name))throw Error('missing');return {async read(){return files.get(name);}};},async createFile(name){return {async write(raw){files.set(name,raw);}};}};
- const labels={capture:async()=>{control.captures=(control.captures||0)+1;return {session:control.session,document_id:1,layer_ids:[7],active_layer_id:7};},
+ const folder={async getEntry(name){if(name==='menu-context-cancel.json')control.cancelChecks=(control.cancelChecks||0)+1;if(!files.has(name))throw Error('missing');return {async read(){return files.get(name);}};},async createFile(name){return {async write(raw){files.set(name,raw);}};}};
+ const labels={isShapeTool:()=>false,capture:async()=>{control.captures=(control.captures||0)+1;return {session:control.session,document_id:1,layer_ids:[7],active_layer_id:7};},
    setLabel:async request=>{control.writes=(control.writes||0)+1;
      if(request.capture_current){const saved=JSON.parse(files.get('result-'+request.id+'.json'));assert.equal(saved.phase,'accepted');assert.deepEqual(saved.captured_target,request.target);assert.equal(request.target.active_layer_id,7);}
      return {verified:true,selection_context:context()};},
-   selectionContext:context,selectionContextFresh:async checkpoint=>{if(control.readBlock)await new Promise(r=>{releaseRead=r;});if(checkpoint)await checkpoint();return context();},selectionMatches:()=>!control.changed,interfacePreferences:async()=>({}),
-   observeShape:async(context,force,catalog,checkpoint)=>{control.shapes++;if(control.block)await new Promise(r=>{release=r;});if(checkpoint)await checkpoint();control.afterShape=(control.afterShape||0)+1;if(control.shapeFail)throw Error('color unavailable');
+   selectionContext:context,selectionContextFresh:async checkpoint=>{if(control.readBlock)await new Promise(r=>{releaseRead=r;});if(checkpoint)await checkpoint(!!control.readBlock);for(let i=0;i<(control.extraChecks||0);i++){control.beforeCheck?.(i);await checkpoint();}return context();},selectionMatches:()=>!control.changed,interfacePreferences:async()=>({}),
+   observeShape:async(context,force,catalog,checkpoint)=>{control.shapes++;if(control.block)await new Promise(r=>{release=r;});if(checkpoint)await checkpoint(true);control.afterShape=(control.afterShape||0)+1;if(control.shapeFail)throw Error('color unavailable');
      return {available:true,revision:'s:1'};}};
  labels.captureSelection=labels.capture;
  const sandbox={console:{log(){}},module:{exports:{}},Date:class extends Date{static now(){return control.now;}},setInterval(fn,ms){if(ms===16)poll=fn;},require(name){
@@ -66,6 +66,27 @@ async function main(){
  assert.equal(h.result().menu_phase,'completed');assert.equal(h.result().mask,15);assert.equal(h.result().shape_editor.available,false);
  h=await host();h.control.kind='pixel';h.request();await h.poll();await settle();
  assert.equal(h.result().menu_phase,'completed');assert.equal(h.control.shapes,0,'Ordinary layers must not read vector metadata');
+ if(!process.argv.includes('--baseline')){
+  for(const incoming of ['none','closed','command','superseded'])for(const elapsed of [0,12]){
+   h=await host();h.control.kind='pixel';h.control.extraChecks=40;
+   const id='a'.repeat(32);
+   const close=()=>h.files.set('menu-context-cancel.json',JSON.stringify({id,session:h.control.session,token:'token'}));
+   h.request(id);h.control.cancelChecks=0;
+   h.control.beforeCheck=i=>{
+    if(i===1){
+     if(incoming==='closed')close();
+     if(incoming==='superseded')h.request('b'.repeat(32));
+     if(incoming==='command')h.files.set('probe-request.json',JSON.stringify({id:'capture-in-window',operation:'capture',token:'token',session:h.control.session,expires_at_ms:h.control.now+9000}));
+     h.control.now+=elapsed;
+    }
+    if(i>1 && elapsed && incoming!=='none')assert.fail('Reached another host checkpoint after the polling window');
+   };
+   await h.poll();await settle();
+   assert.equal(h.result().menu_phase,incoming==='none'?'completed':'reading');
+   assert.ok(h.control.cancelChecks<=3,'Fast checkpoints repeatedly hit the same files');
+   if(incoming==='command'){await h.poll();assert.equal(h.control.captures,1);}
+  }
+ }
  h=await host();h.request('b'.repeat(32),{token:'wrong'});await h.poll();await settle();assert.equal(h.files.has('menu-context-result.json'),false);
  h.request('c'.repeat(32),{expires_at_ms:h.control.now-1});await h.poll();await settle();assert.equal(h.files.has('menu-context-result.json'),false);
  h=await host();h.control.kind='pixel';h.control.readBlock=true;

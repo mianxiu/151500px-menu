@@ -1,7 +1,7 @@
 """Small immutable UXP selection cache; menu opening never performs IPC."""
 import time
 from .tasks import TaskCancelled
-from .commands import QUICK_ACTIONS, CAPS_ACTIONS
+from .commands import QUICK_ACTIONS, CAPS_ACTIONS, SHAPE_TOOLS
 
 KINDS={'unknown':0,'none':0,'background':1,'pixel':2,'group':3,'text':4,'smart':5,
        'shape-fill':6,'adjustment':7,'mixed':8,'other':9}
@@ -61,7 +61,7 @@ def require_menu_target(value,name,target):
             raise TaskCancelled('仅支持向形状图层粘贴填充与描边')
         if any(value.get(k)!=target.get(k) for k in ('session','document_id','layer_ids')):raise TaskCancelled('文档或图层选择已改变，请重新打开菜单；本次未修改图层')
         return
-    if name in CAPS_ACTIONS:
+    if name in CAPS_ACTIONS or name in SHAPE_TOOLS:
         if name=='convertSmartObjectsIndividually' and (not value or value.get('locked') or value.get('background')):
             raise TaskCancelled('请先解锁要逐层转换的图层')
         if name in ('moveDocumentTop','moveDocumentBottom') and (not value or value.get('locked') or value.get('background') or value.get('same_parent') is False):raise TaskCancelled('请先解锁并选择同一父组内的图层')

@@ -1,4 +1,11 @@
 export default {
+  "常用":"General",
+  "高级":"Advanced",
+  "渲染与兼容":"Rendering and compatibility",
+  "兼容面板尺寸":"Compatibility panel size",
+  "仅用于兼容面板；Caps 环绕菜单根据控件自动布局，不受这里的宽高影响。":"Used only by compatibility panels. The Caps radial menu sizes itself to its controls and is not affected by these dimensions.",
+  "输入保护":"Input protection",
+  "诊断详情":"Diagnostic details",
   "查找替换":"Find and replace",
   "按行拆分":"Split by lines",
   "读取文字后按原换行拆分，也可合并连续行号。确认将用独立可编辑文字层替换原层，一次撤销恢复；预览和取消不写PS。":"Read text, then split at existing line breaks or group consecutive lines. Confirmation replaces the source with editable text layers in one undo. Preview/cancel do not write to Photoshop.",

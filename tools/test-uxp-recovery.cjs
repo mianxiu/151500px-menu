@@ -21,7 +21,7 @@ function host(files,control) {
     },
     async delete(){files.delete(name);}
   };}
-  const labels={selectionContext:()=>{control.contextReads=(control.contextReads||0)+1;
+  const labels={isShapeTool:()=>false,selectionContext:()=>{control.contextReads=(control.contextReads||0)+1;
     if(control.now!==undefined)control.now+=control.contextCost||0;
     return {kind:control.executed?'pixel':'none',layer_ids:control.executed?[99]:[]};},documentTarget:()=>({document_ids:[]}),capture:async()=>({}),
     setLabel:async (request,io)=>{

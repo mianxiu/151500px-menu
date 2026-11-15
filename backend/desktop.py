@@ -201,6 +201,7 @@ class Desktop:
         self.menu_epoch = 0
         self.menu_context_requester=None
         self.pie_right_inset=None
+        self.canvas_pie_right_inset=None
         self.menu_context_pending=None
         self.menu_context_active=None
         self.menu_context_delivery={'phase':'idle'}
@@ -223,6 +224,7 @@ class Desktop:
         self.native_applied_sequence=0
         self.native_applied=threading.Condition()
         self.preview_input_guard=None
+        self.gradient_window=(0,0)
         self.menu_lock = threading.Lock()
         self.menu_thread = None
         self.menu_ready = threading.Event()
@@ -315,8 +317,10 @@ class Desktop:
             # never re-arm a guard whose known terminal already requested release.
             guard=self.preview_input_guard
             guarded=guard and not guard.get('release')
+            gradient_window,gradient_owner=self.gradient_window
             value.update(preview_guard_owner=guard['owner'] if guarded else 0,
-                         preview_guard_panel=guard['panel'] if guarded else 0)
+                         preview_guard_panel=guard['panel'] if guarded else 0,
+                         gradient_window=gradient_window,gradient_owner=gradient_owner)
             payload=json.dumps(value)
             if payload != self.native_payload:
                 try:
@@ -521,8 +525,9 @@ class Desktop:
                 if event.get('type') == 'ready':
                     self.graphics=event.get('graphics',{})
                     self.attach(event['hwnd'], event['pid'], self.token)
-                    inset=event.get('pie_right_inset')
-                    self.pie_right_inset=inset if type(inset) is int and 0<inset<310 else None
+                    for key in ('pie_right_inset','canvas_pie_right_inset'):
+                        inset=event.get(key)
+                        setattr(self,key,inset if type(inset) is int and 0<inset<310 else None)
                     self.menu_ready.set()
                 elif event.get('type') == 'graphics':
                     self.graphics=event.get('graphics',{})
@@ -1025,13 +1030,15 @@ class Desktop:
         if hold:
             home = panel.get('kind') == 'home'
             color_editor = self.color_editor_active or bool(self.menu_context_pending)
+            right_inset = (self.canvas_pie_right_inset or self.pie_right_inset
+                           if panel.get('kind') == 'canvas' else self.pie_right_inset)
             bounds, anchor, editor_right = pie_layout(rect, work, cursor, scale, home=home, color_editor=color_editor,
-                                                     right_inset=self.pie_right_inset)
+                                                     right_inset=right_inset)
             if not home and rect[0] <= bounds[0] == work[0] and cursor[0]-work[0] < (650 if color_editor else 310)*scale:
                 left = adjacent_left_work(work, bounds, round(scale*96))
                 if left:
                     bounds, anchor, editor_right = pie_layout(rect, work, cursor, scale, color_editor=color_editor, left_work=left,
-                                                             right_inset=self.pie_right_inset)
+                                                             right_inset=right_inset)
         # Recheck after setup: focus can change while a hotkey request is queued.
         if self.gui.GetForegroundWindow() != foreground or not self._is_photoshop(hwnd):
             raise RuntimeError("Photoshop 焦点已改变，已取消唤出")
@@ -1236,6 +1243,10 @@ class Desktop:
         except (OSError,ValueError,KeyError):return
 
     def require_menu_layer_target(self,name,target):
+        from .commands import SHAPE_TOOLS
+        if name in SHAPE_TOOLS and (not self.visible or not self.panel_context or self.panel_context.current['kind']!='canvas'):
+            from .tasks import TaskCancelled
+            raise TaskCancelled('形状工具仅在画布菜单可用')
         if name in ('shape.paint','shape.copyPaint','shape.pastePaint') and not getattr(self,'color_editor_active',False):
             from .tasks import TaskCancelled
             raise TaskCancelled('形状颜色仅在图层面板菜单可用；本次未修改')

@@ -15,6 +15,10 @@ module.exports = function createLabels(ps, session, options={}) {
   const stability=createStabilityFixture(ps,session,capture,documentTarget);
   const quickCommands=['layer.new','layer.solid','layer.group','adjustment.curves',
     'adjustment.hueSaturation','adjustment.colorBalance','adjustment.blackWhite'];
+  const shapeTools=new Map([
+    ['tool.rectangle','rectangleTool'],['tool.ellipse','ellipseTool'],['tool.triangle','triangleTool'],
+    ['tool.polygon','polygonTool'],['tool.line','lineTool']
+  ]);
   // Scalar lookup hints only, bounded for long sessions. A hint never supplies
   // metadata or membership: its exact ID must match in a NEW sibling collection
   // on every read. Reorder/delete/undo simply fall back to the original scan.
@@ -366,11 +370,13 @@ module.exports = function createLabels(ps, session, options={}) {
     if(request.command==='shape.paint' || request.command==='shape.preview')return shapePaint.apply(request,previewIO);
     const command = request.command || 'label';
     const quickIndex=quickCommands.indexOf(command);
-    if (!['label','select','moveToTop','moveToBottom'].includes(command) && quickIndex<0) throw Error('Unknown command');
+    const tool=shapeTools.get(command);
+    if (!tool && !['label','select','moveToTop','moveToBottom'].includes(command) && quickIndex<0) throw Error('Unknown command');
     if (command === 'label' && !colors.has(request.color)) throw Error('Unknown label color');
     if(command==='label' && ['seafoam','indigo','magenta','fuchsia'].includes(request.color) && !extendedColors)throw Error('此标签颜色需要Photoshop25.2或更新版本');
     const expected = request.target;
     if (!expected || expected.session !== session) throw Error('Plugin session changed');
+    if(tool)return selectShapeTool(request,expected,tool);
     const started=Date.now(),timings={};
     return ps.core.executeAsModal(async context => {
       timings.modal_wait_ms=Date.now()-started;
@@ -591,6 +597,44 @@ module.exports = function createLabels(ps, session, options={}) {
       }
     }, {commandName:'Menu layer label', timeOut:0});
   }
+  async function selectShapeTool(request,expected,tool) {
+    const started=Date.now(),timings={};
+    async function checkTarget() {
+      if(Date.now()>request.expires_at_ms)throw Error('Cancelled or expired');
+      if(expected.layer_ids?.length===1){
+        if(expected.active_layer_id!==expected.layer_ids[0] || !selectionMatches(expected))
+          throw Error('Document or layer target changed');
+      }else{
+        const actual=await captureSelection();
+        if(actual.document_id!==expected.document_id || actual.active_layer_id!==expected.active_layer_id ||
+            !Array.isArray(expected.layer_ids) || actual.layer_ids.join(',')!==expected.layer_ids.join(','))
+          throw Error('Document or layer target changed');
+      }
+    }
+    // Reading the selected tool is sufficient when this is already the active tool.
+    if(ps.app.currentTool.id===tool){
+      await checkTarget();
+      return {verified:true,tool,already_active:true,timings_ms:{target_ms:Date.now()-started}};
+    }
+    const result=await ps.core.executeAsModal(async context=>{
+      const entered=Date.now();
+      timings.modal_wait_ms=entered-started;
+      if(context.isCancelled)throw Error('Cancelled or expired');
+      await checkTarget();
+      if(context.isCancelled || Date.now()>request.expires_at_ms)throw Error('Cancelled or expired');
+      const selectedAt=Date.now();
+      timings.target_ms=selectedAt-entered;
+      const [response]=await ps.action.batchPlay([{_obj:'select',_target:[{_ref:tool}],
+        _options:{dialogOptions:'dontDisplay'}}],{});
+      timings.select_ms=Date.now()-selectedAt;
+      if(!response || response._obj==='error' || ps.app.currentTool.id!==tool)
+        throw Error('Photoshop 未确认所选形状工具');
+      timings.readback_ms=Date.now()-selectedAt-timings.select_ms;
+      return {verified:true,tool,timings_ms:timings};
+    },{commandName:'Menu shape tool',timeOut:0,interactive:true});
+    timings.modal_exit_ms=Date.now()-started-timings.modal_wait_ms-timings.target_ms-timings.select_ms-timings.readback_ms;
+    return result;
+  }
   function documentTarget() {
     return {session, document_ids:Array.from(ps.app.documents,d=>d.id).sort((a,b)=>a-b),
       active_document_id:ps.app.documents.length?ps.app.activeDocument.id:null};
@@ -773,7 +817,7 @@ module.exports = function createLabels(ps, session, options={}) {
     return {samples,equivalent:Object.values(samples).every(sample=>signature(sample.value)===signature(samples.dom.value)),
       constant_contract:{layer_kinds:Object.fromEntries(Object.entries(ps.constants.LayerKind))}};
   }
-  return {extendedLabelColors:extendedColors,inspectLayerView:layerView.inspect,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
+  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,inspectLayerView:layerView.inspect,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
     if(!nativeSelection)return shapePaint.observe(...args);
     // Only explicit optional editor reads enter a short read-only modal scope.
     // Idle selection polling uses batchPlay and never occupies modal execution.
@@ -1072,6 +1116,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     return {...value,stops:value.stops.map((stop,i)=>({...stop,origin:i,midpoint:g.colors[i].midpoint ?? 50,source:g.colors[i].type?._value ?? 'userStop'})),
       opacity_stops:(g.transparency || [0,4096].map(location=>({location,opacity:{_value:100},midpoint:50}))).map(stop=>({location:stop.location,opacity:stop.opacity._value,midpoint:stop.midpoint ?? 50})),
       options:{style:raw.type?._value ?? 'linear',angle:raw.angle?._value ?? 0,scale:raw.scale?._value ?? 100,
+        offset_x:raw.offset?.horizontal?._value ?? 0,offset_y:raw.offset?.vertical?._value ?? 0,
         reverse:raw.reverse===true,dither:raw.dither===true,align:raw.align!==false,smoothness:g.interfaceIconFrameDimmed ?? 4096}};
   }
   async function patterns() {
@@ -1091,7 +1136,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     const descriptors=keys.map(key=>({_obj:'get',_target:[{_ref:'property',_property:key},
       {_ref:'layer',_id:id},{_ref:'document',_id:doc.id}],_options:{dialogOptions:'dontDisplay'}}));
     const result=[];
-    if(checkpoint){for(const descriptor of descriptors){await checkpoint();result.push(...await ps.action.batchPlay([descriptor],{}));}await checkpoint();}
+    if(checkpoint){for(const descriptor of descriptors){await checkpoint(true);result.push(...await ps.action.batchPlay([descriptor],{}));}await checkpoint(true);}
     else result.push(...await ps.action.batchPlay(descriptors,{}));
     const vector=result[1]?.hasVectorMask===true;
     const fill=result[2]?.adjustment?.[0],stroke=result[3]?.AGMStrokeStyleInfo;
@@ -1176,6 +1221,7 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
       if(o!==undefined && (!o || typeof o!=='object' || Array.isArray(o) || Object.entries(o).some(([k,v])=>!(
         k==='style' && gradientStyles.includes(v) || ['reverse','dither','align'].includes(k) && typeof v==='boolean' ||
         typeof v==='number' && Number.isFinite(v) && (k==='angle' && Math.abs(v)<=360 || k==='scale' && v>=1 && v<=1000 ||
+          ['offset_x','offset_y'].includes(k) && Math.abs(v)<=1000 ||
           k==='smoothness' && Number.isInteger(v) && v>=0 && v<=4096)))))throw Error('Invalid gradient options');
     }
   }
@@ -1192,6 +1238,9 @@ function createShapePaint(ps,session,capture,selectionContext,legacyPreview=fals
     const options=value.options || {};
     if(options.style!==undefined)next.type={_enum:'gradientType',_value:options.style};
     for(const [key,unit] of [['angle','angleUnit'],['scale','percentUnit']])if(options[key]!==undefined)next[key]={_unit:unit,_value:options[key]};
+    for(const [key,axis] of [['offset_x','horizontal'],['offset_y','vertical']])if(options[key]!==undefined){
+      next.offset={_obj:'paint',...next.offset,[axis]:{_unit:'percentUnit',_value:options[key]}};
+    }
     for(const key of ['reverse','dither','align'])if(options[key]!==undefined)next[key]=options[key];
     if(value.method!==undefined)next.gradientsInterpolationMethod={_enum:'gradientInterpolationMethodType',_value:value.method};
     next.gradient={...old,_obj:'gradientClassEvent',name:old.name || 'Menu gradient',gradientForm:{_enum:'gradientForm',_value:'customStops'},
@@ -1823,7 +1872,7 @@ function createBatchMasks(ps,session,capture,selectionContext,legacyPreview) {
     if(layers.length<2 || layers.length>128 || !await checkLocks())throw Error('请选择2至128个未锁定的矢量蒙版图层');
     async function read(descriptors){
       if(!checkpoint)return ps.action.batchPlay(descriptors,{});
-      const values=[];for(let i=0;i<descriptors.length;i+=4){await checkpoint();values.push(...await ps.action.batchPlay(descriptors.slice(i,i+4),{}));}await checkpoint();return values;
+      const values=[];for(let i=0;i<descriptors.length;i+=4){await checkpoint(true);values.push(...await ps.action.batchPlay(descriptors.slice(i,i+4),{}));}await checkpoint(true);return values;
     }
     const descriptors=await read(layers.map(l=>({_obj:'get',_target:[{_ref:'layer',_id:l.id},{_ref:'document',_id:doc.id}],_options:{dialogOptions:'dontDisplay'}})));
     if(descriptors.length!==layers.length || descriptors.some((v,i)=>v?._obj==='error' || v?.layerID!==layers[i].id || v.hasVectorMask!==true))throw Error('所有选中图层都必须有矢量蒙版');

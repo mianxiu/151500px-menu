@@ -13,6 +13,7 @@ $menuVendor = Join-Path $menuRoot 'native/vendor/imgui'
 $menuGlyphChars = Get-Content -LiteralPath "$menuRoot/native/MenuHost.cpp" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/ShapeColorEditor.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/GradientPanel.h" -Raw -Encoding utf8
+$menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/GradientCanvasPanel.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/PerceptualPicker.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/MenuToolsPanel.h" -Raw -Encoding utf8
 $menuGlyphChars += Get-Content -LiteralPath "$menuRoot/native/MenuTextGroups.h" -Raw -Encoding utf8
@@ -24,5 +25,5 @@ if (!(Test-Path -LiteralPath $menuGlyphPath) -or [System.IO.File]::ReadAllText($
     [System.IO.File]::WriteAllText($menuGlyphPath, $menuGlyphHeader, [System.Text.UTF8Encoding]::new($false))
 }
 $menuSources = @('imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','backends/imgui_impl_win32.cpp','backends/imgui_impl_dx11.cpp') | ForEach-Object { Join-Path $menuVendor $_ }
-& $menuCompiler -std=c++17 -O2 -static -mwindows -DUNICODE -D_UNICODE -DIMGUI_ENABLE_WIN32_DEFAULT_IME_FUNCTIONS -finput-charset=UTF-8 "-I$menuVendor" "$menuRoot/native/MenuHost.cpp" @menuSources -o "$OutputPath" -ld3d11 -ldcomp -ld3dcompiler -ldxgi -ldwmapi -lgdi32 -limm32 -lole32 -lwindowscodecs -luuid -luser32 -lshell32
+& $menuCompiler -std=c++17 -O2 -static -mwindows -DUNICODE -D_UNICODE -DIMGUI_ENABLE_WIN32_DEFAULT_IME_FUNCTIONS -finput-charset=UTF-8 "-I$menuVendor" "$menuRoot/native/MenuHost.cpp" @menuSources -o "$OutputPath" -ld3d11 -ldcomp -ld3dcompiler -ldxgi -ldwmapi -lgdi32 -lgdiplus -limm32 -lole32 -lwindowscodecs -luuid -luser32 -lshell32
 if ($LASTEXITCODE -ne 0) { throw 'Dear ImGui menu host build failed.' }

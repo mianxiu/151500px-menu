@@ -2,11 +2,12 @@
 
 struct GradientPanel {
     static constexpr int end=4096;
-    static constexpr int minWidth=580,minHeight=480;
+    static constexpr int minWidth=580,minHeight=510,overlayHeight=156;
     static constexpr float fieldWidth=88;
     Json draft;
     std::string title,phase,message;
     bool live=false,pending=false,dirty=false,terminal=false;
+    bool overlay=false,viewWaiting=false,canOverlay=false;
     int channel=0,cursor=end/2,anchorLane=-1,anchorIndex=-1;
     int primaryColor=-1;
     PerceptualPickerState picker;
@@ -34,6 +35,7 @@ struct GradientPanel {
     bool selected(int lane,int index) const {return (selection[lane]&bit(index))!=0;}
     void open(const Json& state){
         draft=state.at("draft");title=state.value("title","");live=state.value("live",false);
+        canOverlay=state.contains("vector");
         channel=state.value("channel",std::string())=="stroke" || draft.at("fill").at("kind")!="gradient"?1:0;
         receive(state);
     }
@@ -290,23 +292,25 @@ struct GradientPanel {
         const float fullWidth=std::max(inset*3,ImGui::GetContentRegionAvail().x),width=fullWidth-inset*2,left=at.x+inset;
         ImGui::InvisibleButton("##gradient-viewport",{fullWidth,height});
         const float point=(ImGui::GetIO().MousePos.x-left)*end/width;
-        if(ImGui::IsItemActivated())
+        if(span<end && ImGui::IsItemActivated())
             overviewOffset=point>=start && point<=start+span?point-start:span*.5f;
-        if(ImGui::IsItemActive() && ImGui::IsMouseDown(0))
+        if(span<end && ImGui::IsItemActive() && ImGui::IsMouseDown(0))
             start=std::clamp(point-overviewOffset,0.f,end-span);
         auto* draw=ImGui::GetWindowDrawList();
-        const auto rounding=ImGui::GetStyle().FrameRounding;
-        const ImVec2 railA={left,at.y+2*scale},railB={left+width,at.y+height-2*scale};
+        const float railHeight=menuGradientOverviewRailHeight*scale,rounding=railHeight*.5f;
+        const ImVec2 railA={left,at.y+(height-railHeight)*.5f},railB={left+width,railA.y+railHeight};
         const auto position=[&](float location){return left+location*width/end;};
         const ImVec2 visibleA={position(start),railA.y},visibleB={position(start+span),railB.y};
         draw->AddRectFilled(railA,railB,ImGui::GetColorU32(ImGuiCol_FrameBg),rounding);
-        draw->AddRectFilled(visibleA,visibleB,ImGui::GetColorU32(ImGuiCol_CheckMark,.35f),rounding);
-        draw->AddRect(visibleA,visibleB,ImGui::GetColorU32(ImGuiCol_CheckMark),rounding,0,scale);
+        if(span<end){
+            draw->AddRectFilled(visibleA,visibleB,ImGui::GetColorU32(ImGuiCol_CheckMark,.35f),rounding);
+            draw->AddRect(visibleA,visibleB,ImGui::GetColorU32(ImGuiCol_CheckMark),rounding,0,scale);
+        }
         const auto neutral=ImGui::GetColorU32(ImGuiCol_Text),border=ImGui::GetColorU32(ImGuiCol_Border);
         const float half=1.5f*scale,stroke=menuControlBorder*scale;
         for(const auto& stop:track(1)){
             const float x=position(stop.at("location").get<int>());
-            const ImVec2 a={x-half,railA.y+stroke},b={x+half,railB.y-stroke};
+            const ImVec2 a={x-half,railA.y-stroke},b={x+half,railB.y+stroke};
             draw->AddRectFilled(a,b,swatch(stop,neutral),stroke);
             draw->AddRect(a,b,border,stroke,0,stroke);
         }
@@ -399,8 +403,9 @@ struct GradientPanel {
         if(ImGui::GetItemRectMax().x+gap+fieldWidth*scale+ImGui::CalcTextSize(label).x+gap<=x+ImGui::GetContentRegionAvail().x)
             ImGui::SameLine();
     }
-    void draw(bool checkLayout=false){
+    void draw(bool checkLayout=false,void (*switchMode)(bool)=nullptr){
         auto* viewport=ImGui::GetMainViewport();
+        ImGui::SetNextWindowViewport(viewport->ID);
         ImGui::SetNextWindowPos(viewport->Pos);
         ImGui::SetNextWindowSize(viewport->Size);
         ImGui::Begin("##gradient",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|
@@ -425,6 +430,13 @@ struct GradientPanel {
             if(MenuControls::button("应用",scale))finish(true);
             ImGui::EndDisabled();
             ImGui::SameLine();{MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextUnformatted(live?"实时更新 PS":"确认后更新 PS");}
+            if(canOverlay && switchMode){
+                ImGui::SameLine();
+                ImGui::BeginDisabled(terminal || viewWaiting || (!editable() && !overlay));
+                const char* modes[]={"独立窗口","画布叠加"};int mode=overlay?1:0;
+                if(MenuControls::segments("##gradient-edit-mode",modes,mode,scale))switchMode(mode==1);
+                ImGui::EndDisabled();
+            }
             ImGui::BeginDisabled(!editable());
             if(ImGui::BeginTable("##gradient-track-tools",2,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame)){
                 ImGui::TableSetupColumn("##zoom",ImGuiTableColumnFlags_WidthFixed,125*scale);
@@ -432,18 +444,20 @@ struct GradientPanel {
                 ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
                 char fit[16];std::snprintf(fit,sizeof(fit),"%.0f%%",end*100.f/span);
                 const char* zoomNames[]={"−",fit,"+"};int zoomAction=-1;
-                if(MenuControls::segments("##gradient-zoom",zoomNames,zoomAction,scale)){
+                if(!overlay && MenuControls::segments("##gradient-zoom",zoomNames,zoomAction,scale)){
                     if(zoomAction==1){start=0;span=end;}
                     else zoom(zoomAction==0?1.f/1.5f:1.5f,.5f);
                 }
                 if(draft["fill"]["kind"]=="gradient" && draft["stroke"]["kind"]=="gradient"){
-                    ImGui::TableSetColumnIndex(1);const char* names[]={"填充","描边"};
+                    ImGui::TableSetColumnIndex(overlay?0:1);const char* names[]={"填充","描边"};
                     if(MenuControls::segments("##gradient-channel",names,channel,scale)){selection={};anchorLane=primaryColor=-1;gesture=none;refreshBar=true;}
                 }
                 ImGui::EndTable();
             }
-            timeline(scale);
-            if(span<end)overview();
+            if(!overlay){
+                timeline(scale);
+                overview();
+            }
             ImGui::BeginDisabled(track(1).size()>=32);if(MenuControls::button("添加色标",scale))add(1,cursor);ImGui::EndDisabled();
             ImGui::SameLine();ImGui::BeginDisabled(track(0).size()>=32);if(MenuControls::button("添加不透明度节点",scale))add(0,cursor);ImGui::EndDisabled();
             ImGui::SameLine();ImGui::BeginDisabled(!canRemove());if(MenuControls::button("删除选中",scale))remove();ImGui::EndDisabled();
@@ -455,6 +469,7 @@ struct GradientPanel {
                     const Json base=paint();const int delta=shift(base,sign*(io.KeyShift?41:4));if(delta)moveBy(base,delta);
                 }
             }
+            if(!overlay){
             const bool rgb=track(1).front().contains("rgb");
             const float pickerWidth=menuPanelWidth*scale;
             const bool sideBySide=rgb && ImGui::BeginTable("##gradient-parameters",2,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame);
@@ -492,13 +507,24 @@ struct GradientPanel {
             }
             const char* methods[]={"classic","linear","perceptual"},*methodNames[]={"经典","线性","感知"};
             types();
+            const std::string type=paint()["options"]["style"];
+            const bool radial=type=="radial",angular=type=="angle";
             choice("插值",paint()["method"],methods,methodNames);
-            nextField("缩放");optionValue("缩放","scale",1,1000,.25f,"%.2f%%");
-            direction();ImGui::SameLine();optionValue("角度","angle",-360,360,.25f,"%.2f°");
+            if(!angular){
+                const char* sizeLabel=radial?"半径缩放":"缩放";
+                nextField(sizeLabel);optionValue(sizeLabel,"scale",1,1000,.25f,"%.2f%%");
+            }
+            if(!radial){direction();ImGui::SameLine();optionValue(angular?"起始角度":"方向","angle",-360,360,.25f,"%.2f°");}
             auto& smoothness=paint()["options"]["smoothness"];double smooth=smoothness.get<double>()*100/end;
             nextField("平滑度");
             if(MenuControls::number("平滑度",smooth,fieldWidth*scale,.25f,0,100,"%.1f%%")){
                 smoothness=int(std::lround(smooth*end/100));dirty=refreshBar=true;
+            }
+            if(paint()["options"].contains("offset_x") && paint()["options"].contains("offset_y")){
+                optionValue("中心 X","offset_x",-1000,1000,.25f,"%.2f%%");
+                if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("相对原点的水平偏移；0% 居中，正值向右",scale);
+                nextField("中心 Y");optionValue("中心 Y","offset_y",-1000,1000,.25f,"%.2f%%");
+                if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("相对原点的垂直偏移；0% 居中，正值向下",scale);
             }
             const char* names[]={"反向","仿色","与图层对齐"},*keys[]={"reverse","dither","align"};
             auto& options=paint()["options"];
@@ -510,12 +536,13 @@ struct GradientPanel {
             if(sideBySide){
                 ImGui::TableSetColumnIndex(1);colorPicker(pickerWidth);ImGui::EndTable();
             }
+            }
             ImGui::EndDisabled();
             MenuControls::detailLine(phase=="applying"?"正在确认 Photoshop 修改…":phase=="closing"?"正在恢复原渐变…":
-                phase=="error"?message.c_str():pending || dirty?"正在保存草稿…":message.c_str(),scale);
+                phase=="error"?message.c_str():viewWaiting?"正在核对画布位置…":pending || dirty?"正在保存草稿…":message.c_str(),scale);
             if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>viewport->Size.y ||
                 ImGui::GetScrollMaxY()>0 || ImGui::GetScrollMaxX()>0))
-                throw std::runtime_error("Gradient controls exceeded the minimum client size");
+                throw std::runtime_error("Gradient controls exceeded the minimum client size: bottom="+std::to_string(ImGui::GetCursorPosY())+", height="+std::to_string(viewport->Size.y));
         }
         flush();ImGui::End();
     }

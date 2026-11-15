@@ -14,11 +14,12 @@
 #include <vector>
 #include "ScreenSample.h"
 #include "FrameKeyProtocol.h"
+#include "GradientNavigation.h"
 
 enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers, FrameCommit, FrameRestore };
 static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame", "layer.frame.commit", "layer.frame.restore"};
 struct Binding { Action action=None; std::array<int,6> keys{}; int count=0; };
-struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false; HWND overlay=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; };
+struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false; HWND overlay=nullptr,gradient=nullptr,gradientOwner=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; };
 // Opt-in remote clicks qualify only on a matching release in the same verified
 // PS workspace. No hover, taskbar or injected Alt+Tab activation is added.
 struct RemoteClickIntent {
@@ -524,6 +525,37 @@ static HWND remoteWorkspace(HWND child) {
     GetWindowThreadProcessId(child,&childPid);GetWindowThreadProcessId(root,&rootPid);
     return childPid && childPid==rootPid?GetAncestor(root,GA_ROOTOWNER):nullptr;
 }
+static bool gradientWorkspace(HWND hwnd,const Config& settings) {
+    if(!hwnd || !settings.gradientOwner || GetAncestor(hwnd,GA_ROOTOWNER)!=settings.gradientOwner)return false;
+    const HWND root=GetAncestor(hwnd,GA_ROOT);
+    if(root!=settings.gradientOwner && !GradientNavigation::windowClass(root,L"OWL.DocumentWindow") &&
+        !GradientNavigation::windowClass(root,L"OWL.Dock"))return false;
+    DWORD pid=0,ownerPid=0;
+    GetWindowThreadProcessId(hwnd,&pid);
+    GetWindowThreadProcessId(settings.gradientOwner,&ownerPid);
+    return pid && pid==ownerPid;
+}
+static bool gradientPointerScope(HWND foreground,HWND pointed,const Config& settings,bool beganInCanvas) {
+    return (foreground==settings.gradient || gradientWorkspace(foreground,settings)) &&
+           (beganInCanvas || gradientWorkspace(pointed,settings));
+}
+static bool gradientNavigationLocked(const Config& settings) {
+    return settings.gradient && settings.gradientOwner &&
+        GetPropW(settings.gradient,GradientNavigation::ownerProperty)==settings.gradientOwner;
+}
+static bool gradientNavigationPointer(HWND pointed,const Config& settings,int button) {
+    const auto image=static_cast<HWND>(GetPropW(settings.gradient,GradientNavigation::imageProperty));
+    const HWND canvas=image?GetParent(image):nullptr;
+    if(!canvas || !IsWindowVisible(image) || !gradientWorkspace(image,settings))return false;
+    const bool onImage=pointed==image || IsChild(image,pointed);
+    const bool onScrollbar=GradientNavigation::scrollbar(pointed,canvas,image);
+    const auto tool=reinterpret_cast<ULONG_PTR>(GetPropW(settings.gradient,GradientNavigation::toolProperty));
+    const bool zoomHeld=(GetAsyncKeyState('Z')&0x8000) && GradientNavigation::key('Z',
+        (GetAsyncKeyState(VK_CONTROL)&0x8000)!=0,(GetAsyncKeyState(VK_MENU)&0x8000)!=0,
+        ((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0);
+    const bool navigating=(GetAsyncKeyState(VK_SPACE)&0x8000) || tool==2 || zoomHeld;
+    return GradientNavigation::pointer(button,onImage,onScrollbar,navigating);
+}
 static bool taskbarWindow(HWND hwnd) {
     if (!hwnd) return false;
     wchar_t name[64]{};GetClassNameW(GetAncestor(hwnd,GA_ROOT),name,64);
@@ -730,6 +762,36 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
         Action action;
         HWND foreground=GetForegroundWindow();
         bool processScope=photoshopKeyScope(foreground);
+        const bool down=message==WM_KEYDOWN || message==WM_SYSKEYDOWN;
+        static std::array<bool,256> gradientBlocked{};
+        static std::array<bool,256> pressed{};
+        const auto key=input.vkCode&255;
+        const bool repeated=std::exchange(pressed[key],down);
+        if(gradientBlocked[key]){
+            if(!down)gradientBlocked[key]=false;
+            return 1;
+        }
+        if(config.gradient && gradientWorkspace(foreground,config)){
+            const bool editing=gradientNavigationLocked(config);
+            if(down && logical==VK_ESCAPE && !(GetAsyncKeyState(VK_CONTROL)&0x8000) &&
+                !(input.flags&LLKHF_ALTDOWN) && !((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)){
+                if(!repeated)PostMessageW(config.gradient,WM_CLOSE,0,0);
+                // Let the editor restore its preview; Photoshop's Esc would abort that script.
+                gradientBlocked[key]=true;
+                return 1;
+            }
+            if(editing && !keys.consumed[logical]){
+                const bool permitted=GradientNavigation::key(logical,(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0,
+                    (input.flags&LLKHF_ALTDOWN)!=0,
+                    ((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0);
+                if(down && !permitted){
+                    if(!repeated)gradientBlocked[key]=true;
+                    return 1;
+                }
+                if(logical==VK_SPACE || logical=='Z')PostMessageW(config.gradient,WM_APP+33,0,0);
+                return timing.next(code,message,data);
+            }
+        }
         observeActivation(foreground,processScope,lastInputTick);
         // An explicit task switch is activation intent, unlike mouse hover.
         if (!(input.flags&LLKHF_INJECTED) && (message==WM_KEYDOWN || message==WM_SYSKEYDOWN) &&
@@ -792,7 +854,6 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
             passedFrameKeys[passedFrameCursor++%passedFrameKeys.size()]={input.time,GetAncestor(foreground,GA_ROOTOWNER),!keys.modified() && !keys.held[VK_CAPITAL],false};
         }
         static int pendingEditEnd=0;
-        const bool down=message==WM_KEYDOWN || message==WM_SYSKEYDOWN;
         if(!processScope)pendingEditEnd=0;
         const bool inputEvent=input.vkCode=='F' || input.vkCode=='T' || input.vkCode==VK_RETURN || input.vkCode==VK_ESCAPE || input.vkCode==VK_TAB || input.vkCode==VK_F2;
         const bool psInput=inputEvent && photoshopInputFocus(foreground);
@@ -856,6 +917,29 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                   message==WM_MBUTTONUP || message==WM_MBUTTONDOWN?2:-1;
         bool up=message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP;
         const auto& mouse=*reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        static unsigned gradientBlockedButtons=0;
+        const unsigned button=index>=0?1u<<index:0;
+        if(up && (gradientBlockedButtons&button)){
+            gradientBlockedButtons&=~button;
+            return 1;
+        }
+        if(config.gradient && (message==WM_MOUSEWHEEL || message==WM_MOUSEHWHEEL || index>=0)){
+            static HWND editor=nullptr;
+            static unsigned buttons=0;
+            if(editor!=config.gradient){editor=config.gradient;buttons=0;}
+            const bool startedHere=up && (buttons&button);
+            if(up)buttons&=~button;
+            // Windows can route an inactive window's wheel event under the pointer.
+            const HWND pointed=startedHere?nullptr:WindowFromPoint(mouse.pt);
+            if(gradientPointerScope(foreground,pointed,config,startedHere)){
+                if(!up && gradientNavigationLocked(config) && !gradientNavigationPointer(pointed,config,index)){
+                    gradientBlockedButtons|=button;
+                    return 1;
+                }
+                if(!up)buttons|=button;
+                PostMessageW(editor,WM_APP+33,0,0);
+            }
+        }
         const bool captured=config.enabled && !config.textInput && config.colorEditor &&
             index>=0 && index<2 && screenSampleCaptured(config.overlay,foreground);
         const int sampleRoute=sampleClicks.route(index,up,captured);
@@ -969,6 +1053,8 @@ static Config parse(const std::string& line) {
     if (std::regex_search(line,match,std::regex("\"diagnostic_trace\"\\s*:\\s*(true|false)"))) next.diagnostic=match[1]=="true";
     if (std::regex_search(line,match,std::regex("\"remote_compatibility\"\\s*:\\s*(true|false)"))) next.remoteCompatibility=match[1]=="true";
     next.overlay=reinterpret_cast<HWND>(std::stoull(field("hwnd","([0-9]+)")));
+    if(std::regex_search(line,match,std::regex("\"gradient_window\"\\s*:\\s*([0-9]+)")))next.gradient=reinterpret_cast<HWND>(std::stoull(match[1]));
+    if(std::regex_search(line,match,std::regex("\"gradient_owner\"\\s*:\\s*([0-9]+)")))next.gradientOwner=reinterpret_cast<HWND>(std::stoull(match[1]));
     if(std::regex_search(line,match,std::regex("\"configuration_sequence\"\\s*:\\s*([0-9]+)")))next.sequence=std::stoull(match[1]);
     if(std::regex_search(line,match,std::regex("\"preview_guard_owner\"\\s*:\\s*([0-9]+)")))next.guardOwner=reinterpret_cast<HWND>(std::stoull(match[1]));
     if(std::regex_search(line,match,std::regex("\"preview_guard_panel\"\\s*:\\s*([0-9]+)")))next.guardPanel=reinterpret_cast<HWND>(std::stoull(match[1]));
@@ -1803,6 +1889,53 @@ int main(int argc,char** argv) {
             WNDCLASSW pc{};pc.lpfnWndProc=DefWindowProcW;pc.hInstance=wc.hInstance;pc.lpszClassName=L"PSViewC";RegisterClassW(&pc);
             HWND list=CreateWindowW(L"PSViewC",L"Owned layer list",WS_CHILD|WS_VISIBLE,0,0,10,10,hwnd,nullptr,wc.hInstance,nullptr);
             HWND row=CreateWindowW(L"STATIC",L"Owned row",WS_CHILD|WS_VISIBLE,0,0,5,5,list,nullptr,wc.hInstance,nullptr);
+            HWND editor=CreateWindowW(L"STATIC",L"Gradient editor",WS_POPUP,0,0,10,10,nullptr,nullptr,wc.hInstance,nullptr);
+            HWND other=CreateWindowW(L"STATIC",L"Unrelated window",WS_POPUP,0,0,10,10,nullptr,nullptr,wc.hInstance,nullptr);
+            check(editor && other);
+            Config gradient;
+            gradient.gradient=editor;gradient.gradientOwner=hwnd;
+            check(gradientPointerScope(editor,row,gradient,false)); // Inactive Photoshop receives the wheel.
+            check(gradientPointerScope(hwnd,other,gradient,true)); // Release after a canvas drag.
+            check(!gradientPointerScope(editor,editor,gradient,false) && !gradientPointerScope(other,row,gradient,false));
+            HWND dialog=CreateWindowW(L"STATIC",L"Photoshop dialog",WS_POPUP,0,0,10,10,hwnd,nullptr,wc.hInstance,nullptr);
+            check(dialog && !gradientWorkspace(dialog,gradient));
+            DestroyWindow(dialog);
+            check(GradientNavigation::key(VK_SPACE,true,false,false) &&
+                GradientNavigation::key('Z',false,false,false) &&
+                GradientNavigation::key(VK_ESCAPE,false,false,false) &&
+                !GradientNavigation::key('Z',true,false,false) &&
+                !GradientNavigation::key('B',false,false,false));
+            check(GradientNavigation::key(VK_SNAPSHOT,false,false,false) &&
+                GradientNavigation::key(VK_SNAPSHOT,false,true,false) &&
+                GradientNavigation::key('S',false,false,true) &&
+                GradientNavigation::key('D',false,false,true) &&
+                GradientNavigation::key(VK_F4,false,true,false) &&
+                GradientNavigation::key(VK_F8,false,false,false) &&
+                !GradientNavigation::key('1',false,false,false) &&
+                !GradientNavigation::key(VK_DELETE,false,false,false) &&
+                !GradientNavigation::key(VK_RETURN,false,false,false) &&
+                !GradientNavigation::key('S',true,false,false));
+            check(GradientNavigation::pointer(-1,true,false,false) &&
+                GradientNavigation::pointer(0,false,true,false) &&
+                GradientNavigation::pointer(0,true,false,true) &&
+                !GradientNavigation::pointer(0,true,false,false) &&
+                !GradientNavigation::pointer(0,false,false,true));
+            HWND canvas=CreateWindowW(L"PSViewC",L"Isolated canvas",WS_CHILD|WS_VISIBLE,0,0,10,10,
+                hwnd,nullptr,wc.hInstance,nullptr);
+            HWND image=CreateWindowW(L"STATIC",L"Isolated canvas image",WS_CHILD|WS_VISIBLE,0,0,8,8,
+                canvas,reinterpret_cast<HMENU>(7509),wc.hInstance,nullptr);
+            HWND scrollbar=CreateWindowW(L"SCROLLBAR",nullptr,WS_CHILD|WS_VISIBLE|SBS_VERT,8,0,2,8,
+                canvas,reinterpret_cast<HMENU>(7512),wc.hInstance,nullptr);
+            RECT surface{},clip{};GetWindowRect(canvas,&surface);
+            check(GradientNavigation::findImage(canvas,surface,clip)==image);
+            check(image && SetPropW(editor,GradientNavigation::ownerProperty,hwnd) &&
+                SetPropW(editor,GradientNavigation::imageProperty,image));
+            check(gradientNavigationLocked(gradient) && gradientNavigationPointer(image,gradient,-1) &&
+                gradientNavigationPointer(scrollbar,gradient,0) && !gradientNavigationPointer(row,gradient,-1) &&
+                !gradientNavigationPointer(other,gradient,-1));
+            RemovePropW(editor,GradientNavigation::ownerProperty);
+            check(!gradientNavigationLocked(gradient));
+            DestroyWindow(other);DestroyWindow(editor);DestroyWindow(canvas);
             config.guardOwner=hwnd;config.guardPanel=list;
             bool guarded=expected && wcscmp(name,L"Photoshop")==0;
             check(previewGuardWindow(list)==guarded && previewGuardWindow(row)==guarded);
@@ -1823,7 +1956,7 @@ int main(int argc,char** argv) {
         }
         check(!photoshopProcessWindow(nullptr));
         for (auto& p:photoshopProcesses) if (p.handle) CloseHandle(p.handle);
-        std::cout<<"Process scope self-test passed: classes, disabled windows, executable identity, stale PID\n";return 0;
+        std::cout<<"Process scope self-test passed: classes, executable identity, stale PID and gradient view routing\n";return 0;
     }
     if (argc==2 && std::string(argv[1])=="--self-test-hooks") {
         HHOOK key=nullptr,mouse=nullptr;

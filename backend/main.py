@@ -537,9 +537,11 @@ class Application(web.Application):
             if name in ('text.replace','text.split'):raise ValueError('请从文本工具预览后确认')
             if name=='document.recent':raise ValueError('请从首页最近预设列表选择尺寸')
             validate_command(name, args.get("params"))
-            from .commands import CAPS_ACTIONS
+            from .commands import CAPS_ACTIONS, SHAPE_TOOLS
             if name in CAPS_ACTIONS and not isinstance(self.bridge,UxpBridge):
                 raise ValueError("参考Caps快捷键需要更新并重载UXP 0.3.16")
+            if name in SHAPE_TOOLS and (not isinstance(self.bridge,UxpBridge) or 'menu_epoch' not in args):
+                raise ValueError('请通过 Photoshop 画布菜单选择形状工具')
             if name in ('layer.frame','shape.paint','shape.copyPaint','shape.pastePaint') and not isinstance(self.bridge,UxpBridge):raise ValueError('形状颜色需要UXP执行插件')
             if name=='editStyle' and not args.get('_wait_for_dialog'):
                 if self._dialog_tasks or self.operation_lock.locked() or self.bridge.busy:

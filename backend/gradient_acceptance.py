@@ -155,12 +155,12 @@ async def case(test, vector):
     first[key]['stops'][1].update(location=1792,midpoint=57)
     first[key]['stops'].insert(2, {'location':3200,'rgb':[112,137,92],'source':'userStop','midpoint':50})
     first[key]['opacity_stops'][1].update(opacity=58,midpoint=44)
-    first[key]['options'].update(style='radial',angle=42,scale=120,reverse=True,dither=True,smoothness=3300)
+    first[key]['options'].update(style='radial',angle=42,scale=120,reverse=True,dither=True,smoothness=3300,offset_x=25.5,offset_y=-37.25)
     last = deepcopy(first)
     last[key]['opacity_stops'][1]['opacity'] = 63
     last[key]['stops'][1]['location'] = 1960
     last[key]['stops'][1]['rgb'] = [166,48,93]
-    last[key]['options'].update(style='reflected' if vector else 'radial',angle=-45 if vector else 90)
+    last[key]['options'].update(style='reflected' if vector else 'radial',angle=-45 if vector else 90,offset_x=-12.25,offset_y=18.5)
     checked_draft(base,last)
     draft = draft_path(test.folder/('draft-'+test.report['run_id']),target,shape)
     await asyncio.to_thread(atomic_json,draft,last)

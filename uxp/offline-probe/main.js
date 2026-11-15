@@ -2,6 +2,7 @@
 const {app} = require('photoshop');
 const uxp = require('uxp');
 const token = require('./probe-config.js');
+const probeVersion = '0.3.109';
 const session = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
 // Independent read-only mailbox; never enters modal execution or blocks commands.
 const inputTool=(()=>{
@@ -184,6 +185,16 @@ function boundedPreviewRead(read,timeout=250) {
     finally {clearTimeout(timer);}
   };
 }
+function layerReadCheckpoint(poll) {
+  let last=-Infinity;
+  return async function checkpoint(force=false) {
+    const now=Date.now();
+    // Consecutive host reads share a 12 ms polling window; publication always checks again.
+    if(!force && now>=last && now-last<12)return;
+    last=now;
+    await poll();
+  };
+}
 async function refreshMenuContext(folder,now) {
   let request;
   try {request=JSON.parse(await (await folder.getEntry('menu-context-request.json')).read());}catch(_){return false;}
@@ -191,7 +202,7 @@ async function refreshMenuContext(folder,now) {
   const started=Date.now(),generation=contextGeneration;
   // Yield only between read-only host calls. Never abandon a Photoshop call
   // or consume/replay an operation here: the next poll owns its normal dispatch.
-  async function checkpoint() {
+  const checkpoint=layerReadCheckpoint(async()=>{
     await readHeartbeat(folder);
     let current,cancel,command;
     try {current=JSON.parse(await(await folder.getEntry('menu-context-request.json')).read());}catch(_){}
@@ -210,7 +221,7 @@ async function refreshMenuContext(folder,now) {
         Number.isFinite(command.expires_at_ms) && command.expires_at_ms>=Date.now() && command.expires_at_ms<=Date.now()+30000)reason='command';
     if(reason){const error=Error('Menu read yielded: '+reason);error.menuReadInterrupted=true;
       menuRefreshId=request.id;observation.menu={...observation.menu,interrupted:reason,elapsed_ms:Date.now()-started,completed_at_ms:Date.now()};throw error;}
-  }
+  });
   let context;
   try {
     await checkpoint();
@@ -219,7 +230,7 @@ async function refreshMenuContext(folder,now) {
     // snapshot itself takes longer than the request acceptance window.
     await record(folder,'menu-context-result.json',{schema:1,session,
       menu_request_id:request.id,menu_phase:'reading',started_at_ms:started});
-    context=await labels.selectionContextFresh(checkpoint);await checkpoint();
+    context=await labels.selectionContextFresh(checkpoint);await checkpoint(true);
   }
   catch(error) {
     if(error.menuReadInterrupted)return true;
@@ -239,7 +250,7 @@ async function refreshMenuContext(folder,now) {
   observation.menu={selection_ms:readDone-started,completed_at_ms:readDone,phase:basic.menu_phase};
   if(needsShape) {
     let shape={available:false},error='';
-    try {await checkpoint();shape=await labels.observeShape(context,true,null,checkpoint);await checkpoint();}
+    try {await checkpoint(true);shape=await labels.observeShape(context,true,null,checkpoint);await checkpoint(true);}
     catch(e){if(e.menuReadInterrupted)return true;error=String(e).slice(0,200);}
     let nativeLatest=null;
     if(nativeSelection){try{nativeLatest=await labels.selectionContextFresh(checkpoint);}catch(e){if(e.menuReadInterrupted)return true;throw e;}}
@@ -251,7 +262,7 @@ async function refreshMenuContext(folder,now) {
       let latest;
       try {latest=nativeLatest || (done-readDone>=1000?await labels.selectionContextFresh(checkpoint):context);}
       catch(error){if(error.menuReadInterrupted)return true;throw error;}
-      try {await checkpoint();}catch(error){if(error.menuReadInterrupted)return true;throw error;}
+      try {await checkpoint(true);}catch(error){if(error.menuReadInterrupted)return true;throw error;}
       if(latest.document_id===context.document_id && latest.layer_ids.join(',')===context.layer_ids.join(','))
         await record(folder,'menu-context-result.json',{...basic,...latest,plugin_time_ms:done-readDone>=1000?Date.now():readDone,
           shape_editor:shape,menu_phase:'completed',timings_ms:{...basic.timings_ms,shape_ms:done-readDone}});
@@ -299,7 +310,11 @@ async function updateLayerContext(folder,now,force=false,prepared=null,checkpoin
   contextReadAt=now;
   let value;
   let error='';
-  try {value=prepared && !nativeSelection && labels.selectionMatches(prepared)?prepared:await labels.selectionContextFresh(checkpoint);}
+  try {
+    const readCheckpoint=checkpoint && layerReadCheckpoint(checkpoint);
+    value=prepared && !nativeSelection && labels.selectionMatches(prepared)?prepared:await labels.selectionContextFresh(readCheckpoint);
+    if(readCheckpoint)await readCheckpoint(true);
+  }
   catch(e) {if(e.menuReadInterrupted){observation.background={interrupted:e.reason,elapsed_ms:Date.now()-now,completed_at_ms:Date.now()};return;}
     error=String(e).slice(0,200);value={session,document_id:null,layer_ids:[],kind:'unknown',mask:0};}
   // Throttle from read completion: if DOM work itself takes over 100ms,
@@ -401,7 +416,7 @@ async function probe(reason) {
     if (!heartbeatValue) {
       heartbeatValue={
         ...await metadata(),
-        probe_version: '0.3.105', session, transport: 'plugin-data-files',
+        probe_version: probeVersion, session, transport: 'plugin-data-files',
         photoshop_version: hostVersion,
         extended_label_colors:labels.extendedLabelColors,
         uxp_version: optional(() => uxp.versions.uxp),
@@ -471,13 +486,13 @@ async function probe(reason) {
       // and making the caller wait forever for an outcome. Existing accepted
       // records above, other sessions and malformed packets are never changed.
       seen.add(request.id);
-      const rejected={schema:1,session,id:request.id,probe_version:'0.3.44',operation:request.operation,
+      const rejected={schema:1,session,id:request.id,probe_version:probeVersion,operation:request.operation,
         phase:'failed',error:'请求在执行前已过期；未修改 Photoshop',not_executed:true,result_unknown:false,completed_at_ms:Date.now()};
       pendingResponse=rejected;await finishResponse(folder,rejected);
       lastRequest=request.id;return;
     }
     seen.add(request.id); // Consume before any write; never retry after an uncertain response.
-    const response = {schema:1,session,id: request.id, probe_version: '0.3.105', operation: request.operation,
+    const response = {schema:1,session,id: request.id, probe_version: probeVersion, operation: request.operation,
       transport: 'plugin-data-files',
       completed_at_ms: Date.now(), phase: 'completed'};
     const timingStarted=Date.now(),timings={};
@@ -609,7 +624,7 @@ async function probe(reason) {
       // new selection before confirming completion, so an immediately reopened
       // menu cannot freeze the previous layer. This never repeats a mutation.
       pendingResponse=response;
-      if(response.phase==='completed') {
+      if(response.phase==='completed' && !labels.isShapeTool(request.command)) {
         const feedbackStarted=Date.now();
         try {response.layer_context=await updateLayerContext(folder,Date.now(),true,response.result.selection_context);}
         catch(error) {console.log('Selection feedback unavailable',String(error));}

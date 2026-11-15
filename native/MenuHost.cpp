@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <imm.h>
 #ifndef WS_EX_NOREDIRECTIONBITMAP
 #define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
@@ -12,6 +14,7 @@
 #include <shellapi.h>
 #include <array>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <iostream>
 #include <memory>
@@ -32,6 +35,7 @@
 #include "FigmaMenuIcons.h"
 #include "StyledMenuIcons.h"
 #include "MenuUiMetrics.h"
+#include "GradientNavigation.h"
 #include "MenuShadow.h"
 static constexpr int pieRightInset=int(menuQuickGroupOffset+menuQuickGroupMaxCount*figmaDisplayIconWidth+menuShadow::extent);
 static std::string uiFontSize="small";
@@ -279,6 +283,12 @@ static bool documentSortReady=false;
 static bool individualSmartReady=false;
 static bool layerSearchReady=false,textSplitReady=false,layerPreviewReady=false;
 static RECT toolRow{};
+static constexpr int shapeToolFirst=72;
+static constexpr std::array<const char*,5> shapeToolActions={"tool.rectangle","tool.ellipse","tool.triangle","tool.polygon","tool.line"};
+static constexpr std::array<const char*,5> shapeToolLabels={"矩形工具","椭圆工具","三角形工具","多边形工具","直线工具"};
+static std::array<RECT,shapeToolActions.size()> shapeToolRows{};
+static constexpr int canvasPieRightInset=int(menuQuickGroupOffset+shapeToolRows.size()*figmaDisplayIconWidth+menuShadow::extent);
+static bool shapeToolsReady=false;
 static bool menuToolsVisible();
 static int capsCount() {return panelKind==2?9:5;}
 static int capsBottomCount() {return 5;}
@@ -296,6 +306,7 @@ static bool returnInputsIdle() {
 }
 static bool canExecute() {return !menuToolsVisible() && !maskPreviewStarted && (panelKind==4?homepageCapable && !taskBusy:allowed) && !busyFeedback && !inputFocused && panelKind!=3;}
 static bool toolEnabled(int i) {return canExecute() && panelKind!=4 && (i==0?layerSearchReady:textSplitReady && layerAware && (layerKind==4 || layerKind==5) && layerCount==1 && !layerLocked);}
+static bool shapeToolsEnabled() {return panelKind==1 && shapeToolsReady && layerAware && layerCount && layerKind && canExecute();}
 static bool capsEnabled(int i) {
     if(i==9 || i==10)return (i!=9 || layerCount>1) && (i==9 || !layerCrossParents) && individualSmartReady && capsReady && canExecute() && panelKind!=3 && panelKind!=4 && layerAware && layerCount && layerKind && !layerLocked && !layerBackground;
     if(i>=capsCount() || i>=7 && !documentSortReady)return false;
@@ -318,15 +329,91 @@ static const char* panelTitle() {
 }
 static bool rowVisible(int i) {return panelKind==4?i==0:panelKind!=3 && ((panelKind!=1 && panelKind!=0) || i<2);}
 static float scale=1;
+static bool shapeToolHit(int index,POINT point) {
+    const auto& rect=shapeToolRows[index];
+    return PtInRect(&rect,point) && (index==0 || point.x>=rect.left+scale) &&
+        (index+1==int(shapeToolRows.size()) || point.x<rect.right-scale);
+}
 #include "PerceptualPicker.h"
 #include "GradientPanel.h"
+#include "GradientCanvasPanel.h"
 static bool gradientWindow=false;
 static bool gradientLaunching=false;
 static GradientPanel gradientPanel;
+static GradientCanvasPanel gradientCanvas;
 static HWND gradientAnchor=nullptr;
 static constexpr UINT_PTR gradientOwnerTimer=1;
+static RECT gradientIndependentBounds{};
+static RECT gradientOverlayBounds(RECT frame,RECT clip){
+    const LONG width=frame.right-frame.left,height=frame.bottom-frame.top;
+    const LONG x=std::clamp(frame.left,clip.left,std::max(clip.left,clip.right-width));
+    const LONG y=std::clamp(frame.top,clip.top,std::max(clip.top,clip.bottom-height));
+    return {x,y,x+width,y+height};
+}
+static int gradientViewSerial=0;
+static ULONGLONG gradientRefreshAt=0;
+static ULONGLONG gradientNavigationUntil=0;
+static ULONGLONG gradientViewRetryUntil=0;
+static constexpr ULONGLONG gradientViewRetryWindow=8000;
+static bool gradientViewDirty=false;
+static void endGradientNavigation(){
+    RemovePropW(window,GradientNavigation::ownerProperty);
+    RemovePropW(window,GradientNavigation::imageProperty);
+    RemovePropW(window,GradientNavigation::toolProperty);
+}
+static void requestGradientView(bool refresh,bool tracking=false){
+    if(gradientPanel.viewWaiting || gradientPanel.terminal)return;
+    gradientRefreshAt=0;
+    gradientPanel.viewWaiting=true;
+    std::cout<<Json{{"type","gradient.view"},{"serial",++gradientViewSerial},{"refresh",refresh},
+        {"tracking",tracking},{"entering",!gradientPanel.overlay}}.dump()<<std::endl;
+}
+static void cancelGradientEditor(){
+    gradientCanvas.hide();
+    gradientRefreshAt=gradientNavigationUntil=gradientViewRetryUntil=0;
+    if(!gradientPanel.terminal)endGradientNavigation();
+    gradientPanel.finish(false);
+}
+static void switchGradientMode(bool overlay){
+    if(overlay){
+        gradientViewRetryUntil=GetTickCount64()+gradientViewRetryWindow;
+        requestGradientView(gradientViewDirty);
+    }else{
+        gradientCanvas.hide();
+        endGradientNavigation();
+        gradientPanel.overlay=false;gradientPanel.viewWaiting=false;
+        gradientRefreshAt=gradientNavigationUntil=gradientViewRetryUntil=0;++gradientViewSerial;
+        if(!IsRectEmpty(&gradientIndependentBounds)){
+            const auto& r=gradientIndependentBounds;
+            SetWindowPos(window,HWND_NOTOPMOST,r.left,r.top,r.right-r.left,r.bottom-r.top,SWP_NOACTIVATE);
+        }
+    }
+}
+static void invalidateGradientView(){
+    if(gradientPanel.overlay || gradientPanel.viewWaiting){
+        gradientCanvas.suspendPointer();
+        const auto now=GetTickCount64();
+        gradientNavigationUntil=now+120;
+        gradientViewRetryUntil=now+gradientViewRetryWindow;
+        if(!gradientPanel.terminal && !gradientRefreshAt)gradientRefreshAt=now+20;
+    }
+    if(!gradientPanel.overlay)gradientViewDirty=true;
+}
+static void stackGradientWindows(HWND editor,HWND workspace,HWND visual,HWND hit){
+    const auto externalAbove=[editor](HWND group){
+        HWND above=GetWindow(group,GW_HWNDPREV);
+        while(above && GetAncestor(above,GA_ROOTOWNER)==editor)above=GetWindow(above,GW_HWNDPREV);
+        return above;
+    };
+    const HWND above=externalAbove(workspace);
+    // Keep the group above Photoshop and beneath the windows covering it.
+    for(HWND member:{editor,visual,hit})
+        if(member && IsWindowVisible(member) && externalAbove(member)!=above)
+            SetWindowPos(member,above?above:HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+}
 static struct GradientOwner {
     HWND hwnd=nullptr;
+    HWND previousForeground=nullptr;
     HANDLE process=nullptr;
     DWORD pid=0;
     bool hidden=false,closeRequested=false;
@@ -356,22 +443,53 @@ static struct GradientOwner {
         return (kind==L"OWL.DocumentWindow" || kind==L"OWL.Dock") && GetAncestor(top,GA_ROOTOWNER)==hwnd;
     }
     void update(HWND editor){
+        const HWND front=GetForegroundWindow();
         if(!alive()){
+            gradientCanvas.hide();
             if(IsWindowVisible(editor))ShowWindow(editor,SW_HIDE);
             if(!closeRequested && !gradientPanel.terminal){
-                closeRequested=true;gradientPanel.finish(false);
+                closeRequested=true;cancelGradientEditor();
             }
             return;
         }
-        if(!usable() || !foreground(GetForegroundWindow())){
+        if(!usable()){
+            if(!hidden)invalidateGradientView();
             if(IsWindowVisible(editor) && !IsIconic(editor)){
-                hidden=true;ShowWindow(editor,SW_HIDE);
+                hidden=true;gradientCanvas.hide();ShowWindow(editor,SW_HIDE);
             }
             // The backend saves this draft before checking its foreground write guard.
             gradientPanel.flush();
-        }else if(hidden && !gradientPanel.terminal){
-            hidden=false;
-            SetWindowPos(editor,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+        }else if(!gradientPanel.terminal){
+            DWORD foregroundPid=0;
+            if(front!=previousForeground && gradientPanel.overlay)GetWindowThreadProcessId(front,&foregroundPid);
+            if(hidden || (foregroundPid==pid && IsWindowVisible(editor) && !IsIconic(editor))){
+                hidden=false;
+                SetWindowPos(editor,HWND_TOP,0,0,0,0,
+                    SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+            }
+            if(!foreground(front)){
+                gradientCanvas.suspendPointer();
+                if(front!=previousForeground)gradientPanel.flush();
+            }
+            {
+                HWND workspace=gradientPanel.overlay?GetAncestor(gradientCanvas.view.canvas,GA_ROOT):hwnd;
+                if(!workspace)workspace=hwnd;
+                stackGradientWindows(editor,workspace,gradientCanvas.visual,gradientCanvas.hit);
+            }
+        }
+        previousForeground=front;
+        if(!hidden && gradientPanel.overlay && !gradientViewDirty && !gradientCanvas.view.current()){
+            gradientViewDirty=true;
+            gradientCanvas.hide();
+            invalidateGradientView();
+        }
+        const auto now=GetTickCount64();
+        if(!hidden && foreground(front) && gradientRefreshAt && now>=gradientRefreshAt && gradientPanel.editable() && !gradientPanel.viewWaiting){
+            const bool tracking=gradientPanel.overlay && (now<gradientNavigationUntil ||
+                ((GetAsyncKeyState(VK_SPACE)|GetAsyncKeyState('Z')|GetAsyncKeyState(VK_LBUTTON)|
+                    GetAsyncKeyState(VK_MBUTTON)|GetAsyncKeyState(VK_RBUTTON))&0x8000));
+            requestGradientView(true,tracking);
+            if(tracking)gradientRefreshAt=now+80;
         }
     }
 } gradientOwner;
@@ -428,6 +546,7 @@ static void send(const char* action,const Json& params=Json()) {
     if((panelKind==0 || panelKind==1) && (std::string(action)=="moveToTop" || std::string(action)=="moveToBottom" ||
                        std::string(action)=="moveUp" || std::string(action)=="moveDown" || std::string(action)=="moveDocumentTop" || std::string(action)=="moveDocumentBottom"))return;
     for(int i=0;i<7;++i)if(std::string(action)==quickActions[i] && !quickEnabled(i))return;
+    for(const char* tool:shapeToolActions)if(std::string_view(action)==tool && !shapeToolsEnabled())return;
     if(layerAware && panelKind!=4) {
         int row=std::string(action).rfind("label.",0)==0?1:-1;
         for(int i=0;i<4;++i)if(std::string(action)==actions[i])row=i;
@@ -601,6 +720,7 @@ static void resetMenu() {
     holdRows={};
     labelRows={};
     quickRows={};
+    shapeToolRows={};
     toolRow={};menuTools.reset();
     recentRows.clear();
     pieReady=false;
@@ -653,6 +773,7 @@ static void accept(const Json& event) {
                 }
             }
             gradientPanel.open(event);
+            gradientCanvas.vector=event.value("vector",false);
             const auto nextTheme=event.value("theme",uiTheme),nextFont=event.value("font",uiFontSize);
             if(knownTheme(nextTheme))uiTheme=nextTheme;
             if(nextFont=="small" || nextFont=="medium" || nextFont=="large")uiFontSize=nextFont;
@@ -660,7 +781,80 @@ static void accept(const Json& event) {
             ShowWindow(window,SW_SHOWNORMAL);SetForegroundWindow(window);
         }else if(type=="gradient.state"){
             gradientPanel.receive(event);
+            if(gradientPanel.phase=="closing")endGradientNavigation();
             if(gradientPanel.phase=="closed")DestroyWindow(window);
+        }else if(type=="gradient.view" && event.at("serial")==gradientViewSerial){
+            gradientPanel.viewWaiting=false;
+            if(gradientOwner.hidden || gradientPanel.terminal || (gradientRefreshAt && !gradientPanel.overlay))return;
+            if(event.value("tool_changed",false)){cancelGradientEditor();return;}
+            const auto& view=event.at("view");
+            const auto now=GetTickCount64();
+            const bool retry=view.is_null() && event.value("retry",false) && now<gradientViewRetryUntil;
+            GradientCanvasPanel::View updated;
+            if(!view.is_null() && updated.bind(view,gradientOwner.hwnd) &&
+                gradientCanvas.create(window,gradientPanel)){
+                gradientCanvas.updateView(updated);
+                if(!gradientPanel.overlay){
+                    GetWindowRect(window,&gradientIndependentBounds);
+                    const auto& clip=gradientCanvas.view.clip;
+                    const auto dpi=UINT(std::lround(gradientCanvas.view.dpi*96));
+                    const LONG w=MulDiv(GradientPanel::minWidth,dpi,96),h=MulDiv(GradientPanel::overlayHeight,dpi,96);
+                    if(w>clip.right-clip.left || h>clip.bottom-clip.top){
+                        gradientPanel.message="画布空间不足，请扩大 Photoshop 工作区";return;
+                    }
+                    const LONG gap=MulDiv(int(menuPanelGap),dpi,96);
+                    if(!SetPropW(window,GradientNavigation::ownerProperty,gradientOwner.hwnd)){
+                        gradientPanel.message="画布输入保护未能启动";return;
+                    }
+                    gradientPanel.overlay=true;
+                    if(!SetWindowPos(window,HWND_TOP,std::max(clip.left,clip.right-w-gap),
+                        std::max(clip.top,clip.bottom-h-gap),w,h,SWP_NOACTIVATE)){
+                        switchGradientMode(false);
+                        gradientPanel.message="画布叠加窗口无法显示";return;
+                    }
+                    if(GetForegroundWindow()==window)SetForegroundWindow(GetAncestor(updated.canvas,GA_ROOT));
+                }else{
+                    RECT current{};GetWindowRect(window,&current);
+                    const auto next=gradientOverlayBounds(current,updated.clip);
+                    if(next.right>updated.clip.right || next.bottom>updated.clip.bottom){
+                        switchGradientMode(false);
+                        gradientPanel.message="画布空间不足，请扩大 Photoshop 工作区";return;
+                    }
+                    if(!EqualRect(&current,&next) && !SetWindowPos(window,nullptr,next.left,next.top,0,0,
+                        SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE)){
+                        cancelGradientEditor();return;
+                    }
+                }
+                if(!SetPropW(window,GradientNavigation::imageProperty,updated.image)){
+                    cancelGradientEditor();return;
+                }
+                const auto tool=view.value("tool","");
+                if(tool=="zoomTool" || tool=="handTool"){
+                    const ULONG_PTR permission=event.value("tracking",false)?1:2;
+                    if(!SetPropW(window,GradientNavigation::toolProperty,reinterpret_cast<HANDLE>(permission))){
+                        cancelGradientEditor();return;
+                    }
+                }else RemovePropW(window,GradientNavigation::toolProperty);
+                gradientViewDirty=false;
+                gradientPanel.message="空格平移，Z 缩放，Esc 退出";
+            }else{
+                if(gradientPanel.overlay){
+                    gradientViewDirty=true;
+                    gradientCanvas.hide();
+                    RemovePropW(window,GradientNavigation::toolProperty);
+                }
+                if(retry){
+                    gradientRefreshAt=now+250;
+                    gradientPanel.message="等待 Photoshop 更新画布位置";
+                }else if(gradientPanel.overlay){
+                    gradientRefreshAt=0;
+                    gradientPanel.message="画布位置暂不可用，按 Esc 退出或重试画布叠加";
+                }else{
+                    switchGradientMode(false);
+                    gradientPanel.message=event.value("message","");
+                    if(gradientPanel.message.empty())gradientPanel.message="当前画布窗口无法安全对齐";
+                }
+            }
         }
         return;
     }
@@ -695,7 +889,7 @@ static void accept(const Json& event) {
         labelCount=supportedLabelCount(ps);
         applyLabelColors(data.value("label_colors",Json()));
         {int major=0,minor=0,patch=0;std::sscanf(ps.value("uxp_version",std::string()).c_str(),"%d.%d.%d",&major,&minor,&patch);documentSortReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=64);individualSmartReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=65);capsReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=16);}
-        {int major=0,minor=0,patch=0;std::sscanf(ps.value("uxp_version",std::string()).c_str(),"%d.%d.%d",&major,&minor,&patch);layerSearchReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=57);textSplitReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=59);}
+        {int major=0,minor=0,patch=0;std::sscanf(ps.value("uxp_version",std::string()).c_str(),"%d.%d.%d",&major,&minor,&patch);layerSearchReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=57);textSplitReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=59);shapeToolsReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=107);}
         recentReady=ps.value("uxp_ready",false) && ps.value("uxp_version",std::string())!="0.3.1";
         {int major=0,minor=0,patch=0;std::sscanf(ps.value("uxp_version",std::string()).c_str(),"%d.%d.%d",&major,&minor,&patch);shapeClipboardReady=ps.value("uxp_ready",false) && (major>0 || minor>3 || minor==3 && patch>=41);}
         shapeClipboardAvailable=ps.value("shape_clipboard_available",false);
@@ -771,6 +965,10 @@ static int holdActionAt(POINT point) {
     if (dx*dx+dy*dy<12*12*scale*scale || (!pinned && !holdMoved)) return -1;
     RECT bounds{};GetWindowRect(window,&bounds);
     if (!PtInRect(&bounds,point)) return -1;
+    if(shapeToolsEnabled() && !shapePanelVisible()){
+        for(int i=0;i<int(shapeToolRows.size());++i)if(PtInRect(&shapeToolRows[i],point))
+            return shapeToolHit(i,point)?shapeToolFirst+i:-1;
+    }
     if(toolEnabled(1) && PtInRect(&toolRow,point))return 71;
     for(int i=0;i<int(capsRows.size());++i)if(capsEnabled(i) && PtInRect(&capsRows[i],point)){
         if(capsDividerAt(i,point))return -1;
@@ -827,7 +1025,8 @@ static void finishHold(POINT point,bool requireHighlight=false,const POINT* curr
     if(chosen==100){commitShapeDraft();holdFinished=true;pieReady=false;setOpacity(0.f);return;}
     holdFinished=true;pieReady=false;
     setOpacity(0.f);
-    if(chosen>=40 && chosen<40+int(capsRows.size()))send(capsActions[chosen-40]);
+    if(chosen>=shapeToolFirst && chosen<shapeToolFirst+int(shapeToolActions.size()))send(shapeToolActions[chosen-shapeToolFirst]);
+    else if(chosen>=40 && chosen<40+int(capsRows.size()))send(capsActions[chosen-40]);
     else if (chosen>=32 && chosen<39)send(quickActions[chosen-32]);
     else if (chosen>=recentActionBase) send((std::string("document.recent.")+shownPresets.at(chosen-recentActionBase).id).c_str());
     else if (chosen>=4) send((std::string("label.")+labelColors[chosen-4].id).c_str());
@@ -839,8 +1038,8 @@ static bool focusRequestCurrent(LPARAM packet,LPARAM epoch,DWORD now) {
 }
 static constexpr DWORD gradientStyle=WS_POPUP|WS_THICKFRAME|WS_SYSMENU;
 static constexpr DWORD gradientExStyle=WS_EX_TOOLWINDOW|WS_EX_NOREDIRECTIONBITMAP;
-static SIZE gradientMinimum(UINT dpi){
-    return {MulDiv(GradientPanel::minWidth,dpi,96),MulDiv(GradientPanel::minHeight,dpi,96)};
+static SIZE gradientMinimum(UINT dpi,bool overlay=false){
+    return {MulDiv(GradientPanel::minWidth,dpi,96),MulDiv(overlay?GradientPanel::overlayHeight:GradientPanel::minHeight,dpi,96)};
 }
 static RECT gradientWindowBounds(RECT work,UINT dpi) {
     const LONG inset=MulDiv(int(2*menuPanelGap),dpi,96);
@@ -860,8 +1059,11 @@ static LRESULT gradientFrameHit(POINT point,RECT client,LONG edge,RECT dragArea)
 }
 static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if(gradientWindow){
+        if(msg==WM_APP+33 && gradientWindow){invalidateGradientView();return 0;}
         if(msg==WM_TIMER && wp==gradientOwnerTimer){gradientOwner.update(hwnd);return 0;}
-        if(msg==WM_CLOSE && gradientPanel.ready()){gradientPanel.finish(false);return 0;}
+        if(msg==WM_CLOSE && gradientPanel.ready()){cancelGradientEditor();return 0;}
+        if(msg==WM_MOUSEACTIVATE && gradientPanel.overlay && LOWORD(lp)==HTCLIENT &&
+            gradientOwner.foreground(GetForegroundWindow()))return MA_NOACTIVATE;
         if(msg==WM_APP+32){DestroyWindow(hwnd);return 0;}
         if(msg==WM_NCCALCSIZE || msg==WM_NCPAINT)return 0;
         if(msg==WM_NCACTIVATE)return DefWindowProcW(hwnd,msg,wp,-1);
@@ -873,7 +1075,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         }
         if(msg==WM_GETMINMAXINFO){
             auto* limits=reinterpret_cast<MINMAXINFO*>(lp);
-            const auto minimum=gradientMinimum(UINT(std::lround(96*ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd))));
+            const auto minimum=gradientMinimum(UINT(std::lround(96*ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd))),gradientPanel.overlay);
             limits->ptMinTrackSize={minimum.cx,minimum.cy};
             return 0;
         }
@@ -903,6 +1105,9 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         setOpacity(0.f);send("hide");return 0;
     }
     if(msg==WM_WINDOWPOSCHANGED && (reinterpret_cast<WINDOWPOS*>(lp)->flags&SWP_HIDEWINDOW))stopShapeEyedrop();
+    // SetWindowPos can restore the HWND without sending WM_SHOWWINDOW.
+    if(gradientWindow && msg==WM_WINDOWPOSCHANGED)
+        setOpacity(IsWindowVisible(hwnd)?1.f:0.f);
     if(msg==WM_APP+23){holdOrigin={static_cast<LONG>(wp),static_cast<LONG>(lp)};holdMoved=false;return 0;}
     if(msg==WM_APP+26){stabilityInspection=wp!=0;stabilityObserveBusy=wp==2;if(stabilityInspection && !stabilityObserveBusy){taskBusy=busyFeedback=taskHasResult=false;taskRecovery.clear();allowed=capable=true;}return 0;}
     if(msg==WM_APP+27){
@@ -1000,6 +1205,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         if(gradientWindow){
             setOpacity(opened?1.f:0.f);
             if(!opened){
+                gradientCanvas.hide();
                 gradientPanel.gesture=GradientPanel::none;
                 closePopups();
                 if(GetCapture()==hwnd)ReleaseCapture();
@@ -1036,13 +1242,15 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         return 0;
     case WM_DPICHANGED: {
         const auto* rect=reinterpret_cast<const RECT*>(lp);
-        const auto minimum=gradientWindow?gradientMinimum(LOWORD(wp)):SIZE{};
+        const auto minimum=gradientWindow?gradientMinimum(LOWORD(wp),gradientPanel.overlay):SIZE{};
         SetWindowPos(hwnd,nullptr,rect->left,rect->top,std::max(rect->right-rect->left,minimum.cx),
             std::max(rect->bottom-rect->top,minimum.cy),SWP_NOZORDER|SWP_NOACTIVATE); return 0;
     }
     case WM_SYSCOMMAND: if ((wp&0xfff0)==SC_KEYMENU) return 0;break;
     case WM_CLOSE: DestroyWindow(hwnd);return 0;
-    case WM_DESTROY: running=false;PostQuitMessage(0);return 0;
+    case WM_DESTROY:
+        if(gradientWindow){endGradientNavigation();gradientCanvas.hide();}
+        running=false;PostQuitMessage(0);return 0;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
@@ -1327,6 +1535,7 @@ static ImVec4 footerBounds{};
 // Secondary icons keep the confirmed compact right column beside the ring.
 static float quickGroupY(bool lower) {return 45.f+(lower?figmaDisplayWidgetHeight+quickGroupGap:0.f);}
 static const char* actionTipText(int action) {
+    if(action>=shapeToolFirst && action<shapeToolFirst+int(shapeToolLabels.size()))return shapeToolLabels[action-shapeToolFirst];
     if(action==200+shapeModeTipBase)return shapePanelOpen?(shapeEditor.batchMask?"羽化／密度":"颜色／羽化"):shapeEditor.batchMask?"展开羽化／密度":"展开颜色／羽化";
     if(action==205)return shapeEditor.channel?"无描边":"无填充";
     if(action==222){const auto method=shapeEditor.current().value("method",std::string("classic"));return method=="perceptual"?"感知渐变；点击切换线性":method=="linear"?"线性渐变；点击切换经典":"经典渐变；点击切换感知";}
@@ -1439,10 +1648,12 @@ static ImVec4 actionTipBounds(int action) {
         }
         return best;
     }
-    RECT anchor=action>=40?capsRows[action-40]:action>=32?quickRows[action-32]:action>=recentActionBase?recentRows[action-recentActionBase]:action>=4?labelRows[action-4]:holdRows[action];
+    const bool shapeTool=action>=shapeToolFirst && action<shapeToolFirst+int(shapeToolRows.size());
+    RECT anchor=shapeTool?shapeToolRows[action-shapeToolFirst]:action>=40?capsRows[action-40]:action>=32?quickRows[action-32]:action>=recentActionBase?recentRows[action-recentActionBase]:action>=4?labelRows[action-4]:holdRows[action];
     RECT group=anchor;
-    if(action>=40)group=tipGroupRect(action);
-    else if(action>=32)group={quickRows[0].left,quickRows[0].top,quickRows[6].right,quickRows[6].bottom};
+    if(shapeTool)group={shapeToolRows.front().left,group.top,shapeToolRows.back().right,group.bottom};
+    else if(!shapeTool && action>=40)group=tipGroupRect(action);
+    else if(!shapeTool && action>=32)group={quickRows[0].left,quickRows[0].top,quickRows[6].right,quickRows[6].bottom};
     if(action>=4 && action<4+labelCount)group=holdRows[1];
     if(action>=recentActionBase && action<32 && shownPresets[action-recentActionBase].name!="剪贴板")group=recentPanelBounds;
     if(tipFamily(action)==2){group=tipGroupRect(action);anchor=group;}
@@ -1455,6 +1666,7 @@ static ImVec4 actionTipBounds(int action) {
         for(int i=0;i<4;++i)if(rowVisible(i) && tipOverlaps(tip,holdRows[i],2*scale))return false;
         for(auto r:capsRows)if(tipOverlaps(tip,r,2*scale))return false;
         for(auto r:quickRows)if(tipOverlaps(tip,r,2*scale))return false;
+        for(auto r:shapeToolRows)if(tipOverlaps(tip,r,2*scale))return false;
         if(tipOverlaps(tip,toolRow,2*scale))return false;
         for(auto r:recentRows)if(tipOverlaps(tip,r,2*scale))return false;
         if(tipOverlaps(tip,shapeModeBounds,2*scale))return false;
@@ -1587,6 +1799,38 @@ static void drawQuickGroups(int selected,float fac) {
         for(int v=begin;v<d->VtxBuffer.Size;++v){d->VtxBuffer[v].pos.x+=roundf(offset.x);d->VtxBuffer[v].pos.y+=roundf(offset.y);}
     }
 }
+static void drawShapeTools(POINT cursor) {
+    if(panelKind!=1 || !shapeToolsReady || !layerAware || !layerCount || !layerKind)return;
+    const auto saved=ImGui::GetCursorScreenPos();
+    auto* draw=ImGui::GetWindowDrawList();
+    const int count=int(shapeToolRows.size());
+    const float cell=figmaDisplayIconWidth*scale,width=cell*count;
+    const float height=figmaDisplayWidgetHeight*scale;
+    const float x=pieCenter.x+menuQuickGroupOffset*scale,y=pieCenter.y+(quickGroupY(false)-quickGroupGap)*scale-height;
+    const bool enabled=shapeToolsEnabled() && !holdFinished && !pieAnimating;
+    const ImVec2 a={x,y},b={x+width,y+height};
+    MenuControls::surface(draw,a,b,scale);
+    for(int index=0;index<count;++index){
+        const ImVec2 left={x+index*cell,y},right={x+(index+1)*cell,y+height};
+        shapeToolRows[index]={LONG(left.x),LONG(left.y),LONG(right.x),LONG(right.y)};
+        const bool hover=enabled && shapeToolHit(index,cursor);
+        MenuControls::segment(draw,left,right,index==0,index+1==count,hover,scale);
+        drawStyledMenuIcon(draw,42+index,{left.x+(cell-figmaDisplayIconSize*scale)*.5f,y+(height-figmaDisplayIconSize*scale)*.5f},
+            figmaDisplayIconSize*scale,tint(enabled?ImGuiCol_Text:ImGuiCol_TextDisabled),tint(hover?ImGuiCol_HeaderHovered:ImGuiCol_Button));
+        if(pinned && enabled){
+            const auto& rect=shapeToolRows[index];
+            const float hitLeft=rect.left+(index>0?scale:0),hitRight=rect.right-(index+1<count?scale:0);
+            ImGui::PushID(index);
+            ImGui::SetCursorScreenPos({hitLeft,float(rect.top)});
+            if(ImGui::InvisibleButton("##canvas-shape",{hitRight-hitLeft,float(rect.bottom-rect.top)})){
+                holdFinished=true;send(shapeToolActions[index]);setOpacity(0.f);
+            }
+            ImGui::PopID();
+        }
+    }
+    MenuControls::outline(draw,a,b,scale);
+    ImGui::SetCursorScreenPos(saved);
+}
 static void drawCapsBar() {
     capsRows={};
     if(!capsReady || panelKind==4 || !layerAware)return;
@@ -1643,7 +1887,8 @@ static void drawToolBar() {
     toolRow={};
     if(panelKind==3 || panelKind==4 || !layerAware || (layerKind!=4 && layerKind!=5) || layerCount!=1)return;
     const char* label=layerKind==5?"文字源":"文本工具";
-    const float h=menuControlHeight*scale,y=pieCenter.y+(layerKind==5?15.f:-15.f)*scale;
+    const bool sharesShapeColumn=panelKind==1 && shapeToolsReady;
+    const float h=menuControlHeight*scale,y=pieCenter.y+(layerKind==5 && !sharesShapeColumn?15.f:-15.f)*scale;
     const auto extent=menuFont(MenuTextRole::Control)->CalcTextSizeA(basicLabelSize(),FLT_MAX,0,label);
     const float width=extent.x+2*figmaBasicLeftPadding*scale,x=pieCenter.x+65*scale;
     auto* draw=ImGui::GetWindowDrawList();POINT cursor{};GetCursorPos(&cursor);
@@ -1737,15 +1982,21 @@ static void drawPie() {
     pieReady=!holdFinished;
     drawShapeEditor();
     const bool editing=shapePanelVisible() || shapeReturning;
+    shapeToolRows={};
     if(editing){holdRows={};labelRows={};quickRows={};capsRows={};}
     drawRecentPresets();
     // Build final hit rectangles before sampling, independent of animation.
     if(!editing && panelKind!=4 && panelKind!=3 && layerAware)for(int i=0;i<7;++i){int group=i>=3,n=group?i-3:i;
         float x=pieCenter.x+(menuQuickGroupOffset+figmaDisplayIconWidth*n)*scale,y=pieCenter.y+quickGroupY(group)*scale;
         quickRows[i]={LONG(x),LONG(y),LONG(x+figmaDisplayIconWidth*scale),LONG(y+figmaDisplayWidgetHeight*scale)};}
-    if(!editing){drawCapsBar();drawToolBar();}else toolRow={};
+    if(!editing){
+        drawCapsBar();
+        drawToolBar();
+    }else toolRow={};
     shapeEditorKeys();
-    POINT cursor{};GetCursorPos(&cursor);int selected=holdActionAt(cursor);
+    POINT cursor{};GetCursorPos(&cursor);
+    if(!editing)drawShapeTools(cursor);
+    int selected=holdActionAt(cursor);
     if(!preview.empty() && previewCapsHover>=0 && previewCapsHover<int(capsRows.size()) && capsEnabled(previewCapsHover))selected=40+previewCapsHover;
     if(!preview.empty() && previewQuickHover>=0 && previewQuickHover<7 && quickEnabled(previewQuickHover))selected=32+previewQuickHover;
     if(!preview.empty() && previewRecentHover>=0 && previewRecentHover<int(recentRows.size()) && shownPresets[previewRecentHover].available)selected=recentActionBase+previewRecentHover;
@@ -2168,6 +2419,7 @@ int main() {
             capsReady=data.value("caps_ready",false);
             individualSmartReady=data.value("individual_smart_ready",false);
             layerSearchReady=textSplitReady=data.value("tools_ready",false);
+            shapeToolsReady=data.value("shape_tools_ready",false);
             layerAware=true;layerMask=data.value("mask",0);
             quickMask=data.value("quick_mask",0);
             const std::string kind=data.value("kind","unknown");
@@ -2285,7 +2537,7 @@ int main() {
         std::cerr<<"Unable to initialize menu renderer resources\n";return 1;
     }
     if (preview.empty() && !selfTest) {
-        std::cout<<Json({{"type","ready"},{"hwnd",reinterpret_cast<uintptr_t>(window)},{"pid",GetCurrentProcessId()},{"graphics",graphicsInfo()},{"pie_right_inset",pieRightInset}}).dump()<<std::endl;
+        std::cout<<Json({{"type","ready"},{"hwnd",reinterpret_cast<uintptr_t>(window)},{"pid",GetCurrentProcessId()},{"graphics",graphicsInfo()},{"pie_right_inset",pieRightInset},{"canvas_pie_right_inset",canvasPieRightInset}}).dump()<<std::endl;
         std::thread(readEvents).detach();
         if (parent) std::thread([parent]{HANDLE process=OpenProcess(SYNCHRONIZE,FALSE,parent);if (process){WaitForSingleObject(process,INFINITE);CloseHandle(process);}PostMessageW(window,gradientWindow?WM_APP+32:WM_CLOSE,0,0);}).detach();
     } else {
@@ -2609,7 +2861,18 @@ int main() {
                 io.AddMousePosEvent(previewExitEditor?pieCenter.x:float(r.left+3*scale),previewExitEditor?pieCenter.y:float(r.top+3*scale));
             }
             if(!preview.empty() && previewOwningEditor && frames>=2)maskPreviewStarted=true;
-            ImGui::NewFrame();if(gradientWindow)gradientPanel.draw();else drawMenu();ImGui::Render();
+            ImGui::NewFrame();
+            if(gradientWindow){
+                gradientPanel.draw(false,switchGradientMode);
+                if(gradientPanel.overlay && !gradientViewDirty && !gradientOwner.hidden){
+                    if(!gradientCanvas.draw(!gradientRefreshAt && !gradientPanel.viewWaiting) &&
+                        gradientCanvas.view.current() && gradientPanel.editable()){
+                        switchGradientMode(false);gradientPanel.message="当前渐变无法在画布上显示控制柄";
+                    }
+                }
+                else if(gradientCanvas.visual && IsWindowVisible(gradientCanvas.visual))gradientCanvas.hide();
+            }else drawMenu();
+            ImGui::Render();
             lastVisibleVertices=ImGui::GetDrawData()->TotalVtxCount;
             ++renderedFrames;
             if (!target) throw std::runtime_error("DX11 render target lost after window resize");
@@ -3047,6 +3310,13 @@ int main() {
                         }
                     };
                     checkOverview();
+                    const ImVec2 overviewMin=from,overviewMax=to;
+                    panel.start=0;panel.span=GradientPanel::end;frame();checkOverview();
+                    pressAt((from.x+to.x)*.5f,(from.y+to.y)*.5f);
+                    if(from.x!=overviewMin.x || from.y!=overviewMin.y || to.x!=overviewMax.x || to.y!=overviewMax.y ||
+                       panel.start!=0 || panel.draft!=beforePan)
+                        throw std::runtime_error("The gradient overview changed layout or panned at 100%");
+                    panel.span=2048;frame();
                     pressAt(from.x+(to.x-from.x)*.8f,(from.y+to.y)*.5f);
                     if(panel.start!=2048 || panel.draft!=beforePan)throw std::runtime_error("Timeline overview did not pan independently of the gradient");
                     panel.zoom(2,.5f);frame();checkOverview();
@@ -3061,26 +3331,127 @@ int main() {
                     const auto minimum=gradientMinimum(UINT(std::lround(scale*96)));
                     SetWindowPos(window,nullptr,0,0,minimum.cx,minimum.cy,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
                     const auto previousFont=uiFontSize;
+                    gradientWindow=true;
+                    for(int cycle=0;cycle<3;++cycle){
+                        ShowWindow(window,SW_HIDE);
+                        if(compositionOpacity!=0.f)throw std::runtime_error("Hidden gradient retained opacity");
+                        SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+                        if(compositionOpacity!=1.f)throw std::runtime_error("Gradient SetWindowPos show did not restore opacity");
+                    }
+                    gradientWindow=false;
                     const auto gradient=Json::parse(R"({"kind":"gradient","method":"perceptual","stops":[{"location":0,"midpoint":30,"rgb":[24,60,92]},{"location":4096,"midpoint":50,"rgb":[255,255,255]}],"opacity_stops":[{"location":0,"midpoint":40,"opacity":90},{"location":4096,"midpoint":50,"opacity":100}],"options":{"style":"linear","angle":90,"scale":100,"smoothness":4096,"reverse":false,"dither":true,"align":true}})");
+                    {
+                        GradientPanel model;
+                        GradientCanvasPanel overlay;
+                        HWND host=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"STATIC",L"Gradient editor stack test",
+                            WS_POPUP|WS_VISIBLE,100,100,10,10,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+                        if(!host || !overlay.create(host,model) || GetWindow(overlay.visual,GW_OWNER)!=host ||
+                            GetWindow(overlay.hit,GW_OWNER)!=host ||
+                            !(GetWindowLongPtrW(overlay.hit,GWL_EXSTYLE)&WS_EX_NOACTIVATE))
+                            throw std::runtime_error("Gradient overlay windows are not owned by the editor");
+                        HWND workspace=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"STATIC",L"Gradient workspace test",
+                            WS_POPUP,100,100,10,10,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+                        HWND cover=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"STATIC",L"Gradient covering window test",
+                            WS_POPUP,100,100,10,10,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+                        if(!workspace || !cover)throw std::runtime_error("Gradient stack fixture unavailable");
+                        ShowWindow(overlay.visual,SW_SHOWNOACTIVATE);ShowWindow(overlay.hit,SW_SHOWNOACTIVATE);
+                        for(bool covered:{false,true}){
+                            SetWindowPos(workspace,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+                            if(covered)SetWindowPos(cover,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+                            stackGradientWindows(host,workspace,overlay.visual,overlay.hit);
+                            std::vector<HWND> order;
+                            for(HWND at=GetTopWindow(nullptr);at;at=GetWindow(at,GW_HWNDNEXT))order.push_back(at);
+                            const auto rank=[&](HWND at){return std::find(order.begin(),order.end(),at)-order.begin();};
+                            for(HWND member:{host,overlay.visual,overlay.hit})
+                                if(rank(member)>=rank(workspace) || (covered && rank(member)<=rank(cover))){
+                                    std::cerr<<"Stack failure: member="<<member<<" rank="<<rank(member)<<" workspace="<<rank(workspace)
+                                        <<" cover="<<rank(cover)<<" covered="<<covered<<" visible="<<IsWindowVisible(member)
+                                        <<" topmost="<<bool(GetWindowLongPtrW(member,GWL_EXSTYLE)&WS_EX_TOPMOST)<<" owner="<<GetAncestor(member,GA_ROOTOWNER)<<" editor="<<host<<'\n';
+                                    throw std::runtime_error("Gradient group escaped its workspace stacking order");
+                                }
+                        }
+                        DestroyWindow(cover);DestroyWindow(workspace);DestroyWindow(host);
+                    }
+                    {
+                        using Canvas=GradientCanvasPanel;
+                        const RECT oldPanel{5360,1690,6520,2002},newClip{780,190,2692,2030};
+                        const auto movedPanel=gradientOverlayBounds(oldPanel,newClip);
+                        const RECT expectedPanel{1532,1690,2692,2002};
+                        const auto stablePanel=gradientOverlayBounds(expectedPanel,newClip);
+                        if(!EqualRect(&movedPanel,&expectedPanel) || !EqualRect(&stablePanel,&expectedPanel))
+                            throw std::runtime_error("Gradient panel did not stay visible across monitors");
+                        Canvas::View view;
+                        view.dpi=2;view.surface={4620,174,6564,2046};view.document={600,400};
+                        view.m={2,0,0,2,-675,-739};
+                        if((view.toScreen({0,0})-Canvas::Point{5295,913}).length()>.001 ||
+                            (view.toScreen({600,400})-Canvas::Point{5895,1313}).length()>.001)
+                            throw std::runtime_error("Gradient canvas did not match calibrated Photoshop pixels");
+                        view.m={.77884615384615,0,0,.77884615384615,-32.5769230769231,-64.9615384615385};
+                        const auto beforeScroll=view.toScreen({283.5,283.5});
+                        view.m[5]=146.884615384615;
+                        const auto afterScroll=view.toScreen({283.5,283.5});
+                        if(std::abs(afterScroll.x-beforeScroll.x)>.001 || std::abs(afterScroll.y-beforeScroll.y+544)>.001)
+                            throw std::runtime_error("Gradient canvas did not follow the reported Photoshop scroll");
+                        Canvas reprojection;reprojection.updateView(view);
+                        reprojection.lastPaint=Json::object();
+                        view.m[0]*=.5;view.m[3]*=.5;
+                        reprojection.updateView(view);
+                        if(!reprojection.lastPaint.is_null() ||
+                            std::abs((view.toScreen({100,0})-view.toScreen({0,0})).length()-400/.77884615384615)>.001)
+                            throw std::runtime_error("Gradient strip length stayed in screen pixels after zoom");
+                        view.m={0,1,-1,0,185,240};view.surface={-1920,-100,0,1000};view.dpi=1.5;
+                        const Canvas::Point original{78,249};
+                        if((view.fromScreen(view.toScreen(original))-original).length()>.001)
+                            throw std::runtime_error("Gradient canvas affine round trip lost rotation, DPI or screen origin");
+                        Canvas::Axis axis;auto paint=gradient;
+                        paint["options"].update(Json{{"angle",45},{"offset_x",25},{"offset_y",-25}});
+                        if(!axis.read(view,paint,false,0) || (axis.center-Canvas::Point{450,100}).length()>.001 ||
+                            std::abs(axis.length-500/std::sqrt(2.))>.001)
+                            throw std::runtime_error("Gradient center or linear axis differs from Photoshop calibration");
+                        paint["options"]["style"]="radial";
+                        if(!axis.read(view,paint,false,0) || axis.length!=300)
+                            throw std::runtime_error("Gradient radius does not follow the longest side");
+                        Canvas overlay;overlay.handles={{{30,30},Canvas::center,0,0,6},{{90,30},Canvas::color,1,0,5}};
+                        if(overlay.at({30,30})!=0 || overlay.at({90,30})!=1 || overlay.at({60,30})!=-1 || overlay.at({35,35})!=-1)
+                            throw std::runtime_error("Gradient overlay intercepted an empty canvas point");
+                        std::cout<<"Gradient canvas calibration, rotation, DPI and hit geometry passed\n";
+                    }
                     for(const char* font:{"small","medium","large"}){
                         uiFontSize=font;
                         for(const char* model:{"rgb","cmyk","lab","gray"}){
                             GradientPanel layout;auto paint=gradient;
+                            paint["options"]["offset_x"]=25.5;paint["options"]["offset_y"]=-37.25;
                             if(std::string(model)!="rgb")for(auto& stop:paint["stops"]){
                                 stop.erase("rgb");
                                 stop["native"]={{"model",model},{"values",std::string(model)=="cmyk"?Json({1,2,3,4}):std::string(model)=="lab"?Json({50,0,0}):Json({40})}};
                             }
                             layout.open({{"phase","editing"},{"title",std::string(350,'W')},{"message",std::string(550,'W')+"\n完整错误"},
-                                {"draft",{{"fill",paint},{"stroke",paint}}}});
+                                {"vector",true},{"draft",{{"fill",paint},{"stroke",paint}}}});
                             layout.span=512;layout.start=768;
                             for(const bool selected:{false,true}){
                                 layout.selection={selected?3u:0u,selected?3u:0u};
-                                for(int n=0;n<2;++n){
-                                    ImGui_ImplWin32_NewFrame();ImGui::NewFrame();layout.draw(true);ImGui::Render();finishPlatformFrame();
+                                for(const char* type:{"linear","radial","angle","reflected","diamond"}){
+                                    layout.paint()["options"]["style"]=type;
+                                    for(int n=0;n<2;++n){
+                                        ImGui_ImplWin32_NewFrame();ImGui::NewFrame();layout.draw(true,[](bool){});ImGui::Render();finishPlatformFrame();
+                                    }
                                 }
                             }
                         }
                     }
+                    const auto compact=gradientMinimum(UINT(std::lround(scale*96)),true);
+                    SetWindowPos(window,nullptr,0,0,compact.cx,compact.cy,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+                    GradientPanel overlay;
+                    overlay.open({{"phase","editing"},{"vector",true},{"draft",{{"fill",gradient},{"stroke",gradient}}}});
+                    overlay.overlay=true;
+                    for(const char* font:{"small","medium","large"}){
+                        uiFontSize=font;
+                        for(int n=0;n<2;++n){
+                            ImGui_ImplWin32_NewFrame();ImGui::NewFrame();overlay.draw(n>0,[](bool){});ImGui::Render();finishPlatformFrame();
+                        }
+                    }
+                    SetWindowPos(window,nullptr,0,0,minimum.cx,minimum.cy,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+                    ImGui_ImplWin32_NewFrame();ImGui::NewFrame();overlay.draw();ImGui::Render();finishPlatformFrame();
                     GradientPanel closable;
                     closable.open({{"phase","editing"},{"title","渐变关闭测试"},{"draft",{{"fill",gradient},{"stroke",gradient}}}});
                     const auto original=closable.draft;
@@ -3460,6 +3831,40 @@ int main() {
                 }
                 quickMask=127;inputFocused=true;holdFinished=false;numberFrame(ImGuiKey_None,false);
                 if(quickEnabled(0))throw std::runtime_error("Quick action bypassed input protection");
+                inputFocused=false;panelKind=1;shapeToolsReady=true;
+                const auto priorKind=layerKind,priorCount=layerCount;
+                layerKind=6;layerCount=1;setHoldMode(true);numberFrame(ImGuiKey_None,false);holdMoved=true;
+                const auto firstShape=shapeToolRows.front();
+                if(std::abs(quickRows[0].top-firstShape.bottom-quickGroupGap*scale)>scale ||
+                   firstShape.left!=quickRows[0].left ||
+                   std::abs(shapeToolRows.back().right+menuShadow::extent*scale-pieCenter.x-canvasPieRightInset*scale)>scale)
+                    throw std::runtime_error("Canvas shapes lost their anchor or extended past the right inset");
+                for(size_t i=0;i<shapeToolRows.size();++i){
+                    holdFinished=pinned=false;numberFrame(ImGuiKey_None,false);
+                    const auto r=shapeToolRows[i];const POINT pos={(r.left+r.right)/2,(r.top+r.bottom)/2};
+                    if(std::abs(r.right-r.left-figmaDisplayIconWidth*scale)>1 ||
+                       std::abs(r.bottom-r.top-figmaDisplayWidgetHeight*scale)>1 ||
+                       holdActionAt(pos)!=shapeToolFirst+int(i) || i>0 && holdActionAt({r.left,pos.y})!=-1 ||
+                       actionTipBounds(shapeToolFirst+int(i)).z<=0)
+                        throw std::runtime_error("A canvas shape tool or its divider has the wrong hit");
+                    const auto beforeShapes=testedActions.size();renderedHit=shapeToolFirst+int(i);
+                    finishHold(pos,true,&pos);finishHold(pos,true,&pos);
+                    if(testedActions.size()!=beforeShapes+1 || testedActions.back()!=shapeToolActions[i])
+                        throw std::runtime_error("A canvas shape gesture did not dispatch exactly once");
+                    holdFinished=false;pinned=true;numberFrame(ImGuiKey_None,false);
+                    io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(float(pos.x),float(pos.y));
+                    io.AddMouseButtonEvent(0,true);numberFrame(ImGuiKey_None,false);
+                    io.AddMouseButtonEvent(0,false);numberFrame(ImGuiKey_None,false);
+                    if(testedActions.size()!=beforeShapes+2 || testedActions.back()!=shapeToolActions[i])
+                        throw std::runtime_error("A canvas shape icon did not dispatch exactly once");
+                }
+                holdFinished=false;inputFocused=true;numberFrame(ImGuiKey_None,false);
+                if(shapeToolsEnabled() || holdActionAt({firstShape.left+2,firstShape.top+2})!=-1)
+                    throw std::runtime_error("Canvas shape tools bypassed input protection");
+                inputFocused=false;panelKind=2;numberFrame(ImGuiKey_None,false);
+                if(shapeToolRows.front().right)throw std::runtime_error("Layer menu displayed the canvas shape row");
+                std::cout<<"Canvas shape row passed: direct buttons, gesture, seam, tooltips and input protection\n";
+                shapeToolsReady=false;layerKind=priorKind;layerCount=priorCount;
                 inputFocused=false;panelKind=4;numberFrame(ImGuiKey_None,false);
                 for(const auto& r:quickRows)if(r.right || r.bottom)throw std::runtime_error("Home retained quick segments");
                 testedActions.resize(quickCount);quickMask=0;layerAware=oldAware;layerMask=oldMask;

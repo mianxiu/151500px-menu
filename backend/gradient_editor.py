@@ -3,15 +3,66 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import ntpath
+import time
 from pathlib import Path
 
 from .layer_search import require_available
 from .mask_preview import MaskPreview, dispatch_preview, run_preview
-from .operation_target import validate_target
+from .operation_target import guarded_script, validate_target
 from .paths import overlay_command
 from .settings import atomic_json
 from .shape_paint import metadata, parameters
+
+VIEW_SCRIPT = r'''(function(){
+    var s=stringIDToTypeID,d=app.activeDocument;
+    function get(ref, key){
+        var r=new ActionReference();r.putProperty(s('property'),s(key));
+        r.putEnumerated(s(ref),s('ordinal'),s('targetEnum'));return executeActionGet(r);
+    }
+    var m=get('document','viewTransform').getList(s('viewTransform')), a=[];
+    for(var i=0;i<m.count;i++)a.push(m.getDouble(i));
+    var v=get('document','viewInfo').getObjectValue(s('viewInfo')).getObjectValue(s('activeView'));
+    function rect(b,unit){
+        var a=[],keys=['left','top','right','bottom'];
+        for(var i=0;i<4;i++){
+            var key=s(keys[i]);
+            if(unit && b.getUnitDoubleType(key)!==s('pixelsUnit'))throw Error('Layer bounds are not pixels');
+            a.push(unit?b.getUnitDoubleValue(key):b.getDouble(key));
+        }
+        return '['+a.join(',')+']';
+    }
+    var bounds='null';
+    try{bounds=rect(get('layer','boundsNoEffects').getObjectValue(s('boundsNoEffects')),true);}catch(e){}
+    var tool=String(app.currentTool);
+    if(!/^[a-zA-Z0-9_.-]{1,96}$/.test(tool))tool='';
+    return '{"matrix":['+a.join(',')+'],"viewport":'+rect(v.getObjectValue(s('globalBounds')),false)
+        +',"document":['+d.width.as('px')+','+d.height.as('px')+'],"layer":'+bounds+',"tool":"'+tool+'"}';
+})();'''
+
+
+def checked_view(value):
+    if not isinstance(value, dict):
+        raise ValueError('Photoshop 画布位置不可用')
+    def numbers(key, size):
+        items = value.get(key)
+        if (not isinstance(items, list) or len(items) != size or
+                any(type(n) not in (int, float) or abs(n)>1e8 or not math.isfinite(n) for n in items)):
+            raise ValueError('Photoshop 画布位置不可用')
+        return items
+    matrix = numbers('matrix', 6)
+    if abs(matrix[0]*matrix[3]-matrix[1]*matrix[2]) < 1e-8:
+        raise ValueError('Photoshop 画布变换不可用')
+    doc, viewport = numbers('document', 2), numbers('viewport', 4)
+    if min(doc) <= 0 or viewport[2] <= viewport[0] or viewport[3] <= viewport[1]:
+        raise ValueError('Photoshop 画布范围不可用')
+    layer = numbers('layer', 4) if value.get('layer') is not None else None
+    result = {'matrix':matrix,'document':doc,'viewport':viewport,'layer':layer}
+    tool = value.get('tool')
+    if isinstance(tool, str) and tool and len(tool)<=96:
+        result['tool'] = tool
+    return result
 
 def draft_path(runtime, target, snapshot):
     path = snapshot.get('document_path')
@@ -52,6 +103,13 @@ def load_draft(path, base):
         raise ValueError('原渐变草稿过大，已保留')
     try:
         value = json.loads(path.read_text('utf-8'))
+        for channel in ('fill', 'stroke'):
+            if base[channel]['kind'] == 'gradient' and isinstance(value.get(channel), dict):
+                options = value[channel].get('options')
+                if isinstance(options, dict):
+                    for key in ('offset_x', 'offset_y'):
+                        if key in base[channel].get('options', {}):
+                            options.setdefault(key, base[channel]['options'][key])
         return checked_draft(base, {**value, 'revision': base['revision']})
     except (TypeError, ValueError) as error:
         raise ValueError('原渐变草稿无法读取，已保留') from error
@@ -66,6 +124,14 @@ class GradientEditor:
         self.owner = None
         self.target = None
         self.preview = None
+        self.view = None
+        self.view_read = None
+        self.view_at = 0
+        self.resume_preview_after_view = False
+        self.overlay_tool = None
+        self.baseline = None
+        self.revision = None
+        self.refresh_revision = False
         self.task = None
         self.lock = asyncio.Lock()
         self.phase = 'closed'
@@ -83,6 +149,24 @@ class GradientEditor:
 
     async def send_state(self, ack=False):
         await self.send({'type':'gradient.state','phase':self.phase,'message':self.message,'ack':ack})
+
+    async def read_view(self):
+        bridge = self.app.bridge
+        script = guarded_script(VIEW_SCRIPT, self.target)
+        def capture():
+            self.require_focus()
+            _, heartbeat = bridge.transport.observe()
+            if heartbeat.get('session') != self.target['session']:
+                raise RuntimeError('Photoshop 会话已改变')
+            raw = bridge._application().DoJavaScript(script)
+            return checked_view(json.loads(raw))
+        if self.view_read and not self.view_read.done():
+            raise RuntimeError('上一项 Photoshop 画布读取尚未退出')
+        self.view_read = asyncio.get_running_loop().run_in_executor(bridge.executor, capture)
+        self.view_read.add_done_callback(lambda future: None if future.cancelled() else future.exception())
+        value = await asyncio.wait_for(asyncio.shield(self.view_read), 2)
+        self.view_at = time.monotonic()
+        return value
 
     async def start_window(self, desktop, epoch):
         import win32process
@@ -106,15 +190,21 @@ class GradientEditor:
             self.hwnd = hwnd
             await asyncio.to_thread(desktop.gui.SendMessage, desktop.hwnd, 0x801f, process.pid, epoch)
             await self.send({'type':'gradient.open','phase':self.phase,'message':self.message,'draft':self.draft,
-                             'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel})
+                             'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel,
+                             'vector':self.vector})
             for _ in range(40):
                 if desktop.gui.IsWindowVisible(hwnd):break
                 if process.returncode is not None:raise RuntimeError('原生渐变窗口已退出')
                 await asyncio.sleep(.05)
             else:raise RuntimeError('原生渐变窗口未显示')
+            desktop.gradient_window = (hwnd, self.owner)
+            await asyncio.to_thread(desktop.sync_native)
             self.reader = asyncio.create_task(self.read_window(process))
         except Exception:
             process.stdin.close()
+            if desktop.gradient_window == (self.hwnd, self.owner):
+                desktop.gradient_window = (0, 0)
+                await asyncio.to_thread(desktop.sync_native)
             raise
 
     async def read_window(self, process):
@@ -122,6 +212,9 @@ class GradientEditor:
             while line := await process.stdout.readline():
                 event = json.loads(line)
                 action = event.get('type')
+                if action == 'gradient.view':
+                    await self.request_view(event)
+                    continue
                 if action not in ('gradient.update','gradient.apply','gradient.cancel'):
                     raise ValueError('无效渐变窗口事件')
                 try:
@@ -137,6 +230,8 @@ class GradientEditor:
         finally:
             process.stdin.close()
             if process is self.process:
+                self.app.desktop.gradient_window = (0, 0)
+                await asyncio.to_thread(self.app.desktop.sync_native)
                 self.hwnd = None
                 if self.preview and self.phase != 'applying':
                     self.phase = 'closing'
@@ -144,19 +239,85 @@ class GradientEditor:
                 elif not self.task or self.task.done():
                     self.phase = 'closed'
 
+    async def request_view(self, event):
+        serial, refresh = event.get('serial'), event.get('refresh')
+        tracking = event.get('tracking', False)
+        entering = event.get('entering', False)
+        if (type(serial) is not int or not 0 < serial < 2**31 or
+                type(refresh) is not bool or type(tracking) is not bool or type(entering) is not bool or
+                tracking and (not refresh or entering)):
+            raise ValueError('无效画布位置请求')
+        message, view, retry = '', None, False
+        try:
+            self.require_focus()
+            if self.phase not in ('editing','preview'):
+                raise RuntimeError('渐变事务尚未就绪')
+            if refresh and self.preview:
+                # The old host owns COM until the preview returns. End just the
+                # transient preview before an independent, fresh view read.
+                self.preview.cancel()
+                await asyncio.wait_for(asyncio.shield(self.task), 8)
+                if self.phase != 'editing':
+                    raise RuntimeError('原渐变恢复未确认')
+                self.resume_preview_after_view = True
+            if not self.preview:
+                require_available(self.app)
+                async with self.app.operation_lock:
+                    try:
+                        self.view = await self.read_view()
+                    except Exception as error:
+                        # RPC_E_CALL_REJECTED and RPC_E_SERVERCALL_RETRYLATER
+                        retry = getattr(error, 'hresult', None) in (-2147418111, -2147417846)
+                        raise
+            self.require_focus()
+            view = self.view
+            if view and not tracking:
+                tool = view.get('tool')
+                if (not entering and tool and self.overlay_tool and tool != self.overlay_tool and
+                        tool not in ('handTool','zoomTool')):
+                    self.resume_preview_after_view = False
+                    await self.send({'type':'gradient.view','serial':serial,'tool_changed':True})
+                    return
+                if entering or self.overlay_tool is None:
+                    self.overlay_tool = tool
+            if not tracking and self.resume_preview_after_view and view is not None and self.draft != self.base:
+                self.resume_preview_after_view = False
+                await self.request('gradient.update', {'draft':self.draft})
+                await self.send_state()
+        except Exception as error:
+            logging.info('Gradient canvas view unavailable: %s', error)
+            message = '无法核对当前画布位置，请重试或切回独立窗口'
+        response = {'type':'gradient.view','serial':serial,'view':view,'message':message}
+        if retry:
+            response['retry'] = True
+        if tracking:
+            response['tracking'] = True
+        await self.send(response)
+
     def in_scope(self):
         desktop = self.app.desktop
         if (not self.hwnd or self.process.returncode is not None or not desktop.gui.IsWindowVisible(self.hwnd) or
             desktop.gui.IsIconic(self.hwnd) or not desktop._is_photoshop(self.owner)):
             return False
         foreground = desktop.gui.GetForegroundWindow()
-        return foreground == self.hwnd or desktop._workspace_root(foreground) == self.owner
+        return self.owns_foreground(foreground) or desktop._workspace_root(foreground) == self.owner
+
+    def owns_foreground(self, foreground):
+        if foreground == self.hwnd:
+            return True
+        if not foreground:
+            return False
+        import win32process
+        gui = self.app.desktop.gui
+        return (gui.GetClassName(foreground) == 'PhotoshopGradientHandles' and
+                gui.GetWindow(foreground, 4) == self.hwnd and
+                win32process.GetWindowThreadProcessId(foreground)[1] == self.process.pid)
 
     def require_focus(self):
         if not self.in_scope():
             raise RuntimeError('渐变窗口或原 Photoshop 工作区已离开前台')
         desktop = self.app.desktop
-        if desktop.gui.GetForegroundWindow() != self.hwnd:
+        if not self.owns_foreground(desktop.gui.GetForegroundWindow()):
             desktop.require_action_focus()
 
     def require_target(self, target):
@@ -228,10 +389,16 @@ class GradientEditor:
                     raise RuntimeError('菜单或 Photoshop 工作区已改变')
                 await asyncio.to_thread(desktop.require_action_focus)
                 self.base = parameters({key: base[key] for key in ('revision', 'fill', 'stroke', 'mask') if key in base})
+                self.baseline, self.revision = shape['baseline'], self.base['revision']
+                self.refresh_revision = False
                 self.path = draft_path(app.runtime, target, shape)
                 self.draft = await asyncio.to_thread(load_draft, self.path, self.base)
                 self.target, self.owner, self.panel_hint, self.channel = target, owner, panel_hint, channel
                 self.live = base['live_preview']
+                self.vector = base.get('vector') is True
+                self.view = None
+                self.resume_preview_after_view = False
+                self.overlay_tool = None
                 status = app.bridge._status_snapshot()
                 self.theme = status.get('ui_theme') or 'dark-gray'
                 self.font = status.get('ui_font_size') or 'small'
@@ -250,6 +417,25 @@ class GradientEditor:
         if value != self.draft or not self.path.exists() and value != self.base:
             await asyncio.to_thread(atomic_json, self.path, value)
             self.draft = value
+
+    async def refresh_restored_revision(self):
+        if not self.refresh_revision:
+            return
+        self.require_focus()
+        result = await asyncio.to_thread(self.app.bridge.transport.call, 'inspect',
+                                         shape_inspect=True, gradient_details=True)
+        self.require_focus()
+        shape = result.get('shape_editor', {})
+        target = result.get('gradient_target', {})
+        if (target != self.target or not self.baseline or shape.get('baseline') != self.baseline or
+                not shape.get('available')):
+            raise RuntimeError('填充／描边或渐变目标已改变，请重新打开；草稿已保留')
+        fresh = parameters({key: shape[key] for key in ('revision', 'fill', 'stroke', 'mask') if key in shape})
+        if {**fresh, 'revision':self.base['revision']} != self.base:
+            raise RuntimeError('填充／描边已改变，请重新打开；草稿已保留')
+        # Rollback invalidates the host cache, not the editor's original draft identity.
+        self.revision = fresh['revision']
+        self.refresh_revision = False
 
     async def request(self, action, args):
         async with self.lock:
@@ -274,14 +460,25 @@ class GradientEditor:
                 return
             await asyncio.to_thread(self.require_focus)
             if self.preview:
-                if (changed or commit) and not self.preview.update(value, commit=commit):
+                if (changed or commit) and not self.preview.update({**value, 'revision':self.revision or value['revision']}, commit=commit):
                     raise RuntimeError('上次渐变预览正在结束，草稿已保留')
                 if commit:
                     self.phase = 'applying'
             elif value != self.base and (self.live or commit):
                 require_available(self.app)
                 await self.app.operation_lock.acquire()
+                try:
+                    await self.refresh_restored_revision()
+                except BaseException:
+                    self.app.operation_lock.release()
+                    raise
+                value = {**value, 'revision':self.revision or value['revision']}
                 if self.live:
+                    if self.view is None or time.monotonic()-self.view_at>2:
+                        try:
+                            self.view = await self.read_view()
+                        except Exception:
+                            self.view = None
                     preview = self.preview = MaskPreview(self.app.desktop.menu_epoch, value)
                     preview.panel_hint = self.panel_hint
                     if commit:
@@ -323,6 +520,7 @@ class GradientEditor:
             if proof.get('rollback_verified') is not True:
                 raise RuntimeError('原渐变恢复待核对，草稿已保留')
             if self.phase == 'preview' and self.hwnd:
+                self.refresh_revision = True
                 self.phase = 'editing'
                 self.message = '已恢复 Photoshop 原渐变，草稿已保留'
                 return

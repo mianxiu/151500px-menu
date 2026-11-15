@@ -41,7 +41,8 @@ def gradient_stops(value,opacity=False):
 
 def gradient_options(value):
     if not isinstance(value,dict):raise ValueError('无效渐变属性')
-    limits={'angle':(-360,360),'scale':(1,1000),'smoothness':(0,4096)}
+    limits={'angle':(-360,360),'scale':(1,1000),'smoothness':(0,4096),
+            'offset_x':(-1000,1000),'offset_y':(-1000,1000)}
     for key,v in value.items():
         if key in limits and number(v,*limits[key]) and (key!='smoothness' or type(v) is int):continue
         if key in ('reverse','dither','align') and type(v) is bool:continue

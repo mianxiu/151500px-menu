@@ -75,11 +75,17 @@ async function main(){
  data=await expanded();r=request(data);
  r.paint.fill.stops[0].location=128;r.paint.fill.stops[0].midpoint=64;
  r.paint.fill.opacity_stops[0].opacity=47.5;
- Object.assign(r.paint.fill.options,{style:'radial',angle:42,scale:120,reverse:true});
+ Object.assign(r.paint.fill.options,{style:'radial',angle:42,scale:120,reverse:true,offset_x:25.5,offset_y:-37.25});
  quantizeOpacity=true;await api.setLabel(r);quantizeOpacity=false;
  data=await expanded();assert.equal(data.fill.stops[0].location,128);assert.equal(data.fill.stops[0].midpoint,64);
  assert.equal(data.fill.opacity_stops[0].opacity,121*100/255);assert.equal(data.fill.options.smoothness,3072);
  assert.equal(data.fill.options.style,'radial');assert.equal(data.fill.options.reverse,true);
+ assert.equal(data.fill.options.offset_x,25.5);assert.equal(data.fill.options.offset_y,-37.25);
+ assert.deepEqual(fill.offset,{_obj:'paint',horizontal:{_unit:'percentUnit',_value:25.5},vertical:{_unit:'percentUnit',_value:-37.25}});
+ for(const invalid of [1001,-1001,NaN,'12',null]){
+  r=request(data);r.paint.fill.options.offset_x=invalid;
+  const before=sets;await assert.rejects(api.setLabel(r),/Invalid gradient options/);assert.equal(sets,before);
+ }
  assert.deepEqual(fill.gradient.colors[0].color,{_obj:'RGBColor',redFloat:-.2,greenFloat:.2,blueFloat:1.1});
  data=await inspect();r=request(data);r.paint.fill={kind:'pattern',enabled:true,name:'Loaded Pattern'};await api.setLabel(r);assert.equal(fill.pattern.name,'Loaded Pattern');
  data=await inspect();r=request(data);r.paint.fill.name='Removed Pattern';const before=history;await assert.rejects(api.setLabel(r),/图案预设/);assert.equal(history,before);
