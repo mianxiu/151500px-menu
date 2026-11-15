@@ -298,6 +298,10 @@ struct GradientCanvasPanel {
         if(!axis.read(view,lastPaint,vector,radialAngle)){hide();return false;}
         using namespace Gdiplus;
         const auto clip=view.clip;
+        const UINT dpi=std::lround(view.dpi*96);
+        auto timeline=panel->dockTimeline(editorRect,dpi);
+        auto picker=panel->hasRgbPicker()?panel->dockPicker(editorRect,dpi):RECT{};
+        for(auto* rect:{&timeline,&picker})OffsetRect(rect,-clip.left,-clip.top);
         const int width=clip.right-clip.left,height=clip.bottom-clip.top;
         BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;
         info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
@@ -356,7 +360,8 @@ struct GradientCanvasPanel {
         {
             Bitmap image(width,height,width*4,PixelFormat32bppPARGB,static_cast<BYTE*>(bits));
             Graphics g(&image);g.Clear(Color(0,0,0,0));g.SetSmoothingMode(SmoothingModeAntiAlias);
-            g.ExcludeClip(Rect(editorRect.left-clip.left,editorRect.top-clip.top,editorRect.right-editorRect.left,editorRect.bottom-editorRect.top));
+            for(const auto& rect:{timeline,picker})
+                if(!IsRectEmpty(&rect))g.ExcludeClip(Rect(rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top));
             if(axis.reflected)stroke(g,c-(to-c),c);
             if(axis.angular)stroke(g,c,end);
             if(axis.radial || axis.diamond){
@@ -419,8 +424,10 @@ struct GradientCanvasPanel {
                 if(dot){CombineRgn(region,region,dot,RGN_OR);DeleteObject(dot);}
             }
         }
-        HRGN panelRegion=CreateRectRgn(editorRect.left-clip.left,editorRect.top-clip.top,editorRect.right-clip.left,editorRect.bottom-clip.top);
-        if(panelRegion){CombineRgn(region,region,panelRegion,RGN_DIFF);DeleteObject(panelRegion);}
+        for(const auto& rect:{timeline,picker})if(!IsRectEmpty(&rect)){
+            HRGN panelRegion=CreateRectRgnIndirect(&rect);
+            if(panelRegion){CombineRgn(region,region,panelRegion,RGN_DIFF);DeleteObject(panelRegion);}
+        }
         HRGN viewportRegion=CreateRectRgn(0,0,width,height);
         if(viewportRegion){CombineRgn(region,region,viewportRegion,RGN_AND);DeleteObject(viewportRegion);}
         POINT destination={clip.left,clip.top},source={0,0};SIZE size={width,height};

@@ -89,6 +89,39 @@ class GradientEditorTests(unittest.TestCase):
 
 
 class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_opening_view_waits_for_editor_setup(self):
+        editor = GradientEditor(None)
+        event = {'type':'gradient.view','serial':1,'refresh':False,'entering':True}
+        process = SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(event).encode(), b''])), stdin=Mock())
+        editor.request_view = AsyncMock()
+        async with editor.lock:
+            reader = asyncio.create_task(editor.read_window(process))
+            await asyncio.sleep(0)
+            editor.request_view.assert_not_awaited()
+        await reader
+        editor.request_view.assert_awaited_once_with(event)
+
+    async def test_explicit_mode_choice_survives_new_editor_and_view_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            app = SimpleNamespace(runtime=root, desktop=SimpleNamespace(sync_native=Mock()))
+            async def run_window(*events):
+                stream = AsyncMock(side_effect=[json.dumps(e).encode() for e in events] + [b''])
+                process = SimpleNamespace(stdout=SimpleNamespace(readline=stream), stdin=Mock())
+                editor = GradientEditor(app)
+                editor.process = process
+                editor.request_view = AsyncMock()  # A failed view leaves the window independent.
+                await editor.read_window(process)
+                return editor
+
+            self.assertFalse(GradientEditor(app).preferred_overlay())
+            view = {'type':'gradient.view','serial':1,'refresh':False,'entering':True}
+            editor = await run_window({'type':'gradient.preference','overlay':True}, view)
+            editor.request_view.assert_awaited_once_with(view)
+            self.assertTrue(GradientEditor(app).preferred_overlay())
+            await run_window({'type':'gradient.preference','overlay':False})
+            self.assertFalse(GradientEditor(app).preferred_overlay())
+            self.assertEqual(json.loads((Path(root)/'gradient-mode.json').read_text('utf-8')), {'overlay':False})
+
     async def test_verified_rollback_refreshes_host_revision_without_replacing_draft_identity(self):
         shape = {**deepcopy(BASE), 'available':True, 'revision':'fresh:2', 'baseline':'raw-original'}
         call = Mock(return_value={'shape_editor':shape, 'gradient_target':{'document_id':5}})
@@ -162,13 +195,14 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         editor.send = AsyncMock()
         editor.request = AsyncMock()
         editor.read_view = AsyncMock(side_effect=[
-            {'tool':'moveTool'}, {'tool':'handTool'}, {'tool':'moveTool'}, {'tool':'cropTool'},
+            {'tool':'moveTool'}, {'tool':'moveTool'}, {'tool':'cropTool'},
         ])
         editor.resume_preview_after_view = False
         with patch('backend.gradient_editor.require_available'):
             await editor.request_view({'serial':1,'refresh':False,'entering':True})
             await editor.request_view({'serial':2,'refresh':True,'tracking':True})
-            self.assertEqual(editor.send.await_args.args[0]['view']['tool'],'handTool')
+            self.assertEqual(editor.send.await_args.args[0],{'type':'gradient.view','serial':2,'tracking':True})
+            self.assertEqual(editor.read_view.await_count,1)
             await editor.request_view({'serial':3,'refresh':True})
             self.assertEqual(editor.send.await_args.args[0]['view']['tool'],'moveTool')
             editor.resume_preview_after_view = True
@@ -177,7 +211,7 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         editor.request.assert_not_awaited()
         self.assertFalse(editor.resume_preview_after_view)
 
-    async def test_view_motion_reprojects_without_restarting_preview_until_settled(self):
+    async def test_view_motion_waits_for_settled_view_before_resuming_preview(self):
         app = SimpleNamespace(operation_lock=asyncio.Lock())
         editor = GradientEditor(app)
         editor.phase = 'preview'
@@ -186,7 +220,7 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         editor.require_focus = Mock()
         editor.send = AsyncMock()
         editor.request = AsyncMock()
-        editor.read_view = AsyncMock(side_effect=[{'matrix':[2,0,0,2,0,0]}, {'matrix':[1,0,0,1,4,6]}])
+        editor.read_view = AsyncMock(return_value={'matrix':[1,0,0,1,4,6]})
 
         async def rollback():
             editor.preview = None
@@ -197,7 +231,8 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await editor.request_view({'serial':1,'refresh':True,'tracking':True})
             preview.cancel.assert_called_once_with()
             editor.request.assert_not_awaited()
-            self.assertEqual(editor.send.await_args.args[0]['view']['matrix'],[2,0,0,2,0,0])
+            editor.read_view.assert_not_awaited()
+            self.assertEqual(editor.send.await_args.args[0],{'type':'gradient.view','serial':1,'tracking':True})
             await editor.request_view({'serial':2,'refresh':True,'tracking':False})
         editor.request.assert_awaited_once_with('gradient.update', {'draft':editor.draft})
         self.assertEqual(editor.send.await_args.args[0]['view']['matrix'],[1,0,0,1,4,6])

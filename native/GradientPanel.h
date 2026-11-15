@@ -2,7 +2,9 @@
 
 struct GradientPanel {
     static constexpr int end=4096;
-    static constexpr int minWidth=580,minHeight=510,overlayHeight=156;
+    static constexpr int minWidth=580,minHeight=510,overlayHeight=264;
+    static constexpr int pickerWidth=int(menuPanelWidth+2*menuControlPadding);
+    static constexpr int pickerHeight=int(pickerWidth-menuHueBarWidth-menuHarmonyLaneWidth-menuPanelGap+menuControlHeight);
     static constexpr float fieldWidth=88;
     Json draft;
     std::string title,phase,message;
@@ -32,6 +34,18 @@ struct GradientPanel {
     bool ready() const {return draft.is_object();}
     bool editable() const {return !terminal && (phase=="editing" || phase=="preview");}
     static uint32_t bit(int index){return uint32_t(1)<<index;}
+    static RECT dockBounds(RECT clip,UINT dpi){
+        const LONG gap=MulDiv(int(menuPanelGap),dpi,96);
+        const LONG height=MulDiv(overlayHeight,dpi,96)+MulDiv(pickerHeight,dpi,96)+gap;
+        return {clip.left+gap,clip.bottom-gap-height,clip.right-gap,clip.bottom-gap};
+    }
+    static RECT dockTimeline(RECT frame,UINT dpi){
+        return {frame.left,frame.bottom-MulDiv(overlayHeight,dpi,96),frame.right,frame.bottom};
+    }
+    static RECT dockPicker(RECT frame,UINT dpi){
+        return {frame.right-MulDiv(pickerWidth,dpi,96),frame.top,frame.right,frame.top+MulDiv(pickerHeight,dpi,96)};
+    }
+    bool hasRgbPicker(){return track(1).front().contains("rgb");}
     bool selected(int lane,int index) const {return (selection[lane]&bit(index))!=0;}
     void open(const Json& state){
         draft=state.at("draft");title=state.value("title","");live=state.value("live",false);
@@ -405,14 +419,22 @@ struct GradientPanel {
     }
     void draw(bool checkLayout=false,void (*switchMode)(bool)=nullptr){
         auto* viewport=ImGui::GetMainViewport();
+        const ImVec2 origin=viewport->Pos;
+        const RECT frame{0,0,LONG(viewport->Size.x),LONG(viewport->Size.y)};
+        const UINT dpi=std::lround(96*scale);
+        const auto timelineRect=overlay?dockTimeline(frame,dpi):frame;
+        const auto pickerRect=dockPicker(frame,dpi);
+        const bool docked=overlay;
+        constexpr ImGuiWindowFlags flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|
+            ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse;
+        const ImVec2 at{origin.x+timelineRect.left,origin.y+timelineRect.top};
+        const ImVec2 size{float(timelineRect.right-timelineRect.left),float(timelineRect.bottom-timelineRect.top)};
         ImGui::SetNextWindowViewport(viewport->ID);
-        ImGui::SetNextWindowPos(viewport->Pos);
-        ImGui::SetNextWindowSize(viewport->Size);
-        ImGui::Begin("##gradient",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|
-            ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::SetNextWindowPos(at);
+        ImGui::SetNextWindowSize(size);
+        ImGui::Begin("##gradient",nullptr,flags);
         if(!ready()){ImGui::End();return;}
-        const auto at=viewport->Pos;
-        MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),at,{at.x+viewport->Size.x,at.y+viewport->Size.y},scale);
+        MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),at,{at.x+size.x,at.y+size.y},scale);
         {
             MenuControls::PanelStyle style(scale);
             const auto header=ImGui::GetCursorScreenPos();
@@ -430,11 +452,13 @@ struct GradientPanel {
             if(MenuControls::button("应用",scale))finish(true);
             ImGui::EndDisabled();
             ImGui::SameLine();{MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextUnformatted(live?"实时更新 PS":"确认后更新 PS");}
+            bool changeMode=false;
+            int mode=docked?1:0;
             if(canOverlay && switchMode){
                 ImGui::SameLine();
                 ImGui::BeginDisabled(terminal || viewWaiting || (!editable() && !overlay));
-                const char* modes[]={"独立窗口","画布叠加"};int mode=overlay?1:0;
-                if(MenuControls::segments("##gradient-edit-mode",modes,mode,scale))switchMode(mode==1);
+                const char* modes[]={"独立窗口","画布叠加"};
+                changeMode=MenuControls::segments("##gradient-edit-mode",modes,mode,scale);
                 ImGui::EndDisabled();
             }
             ImGui::BeginDisabled(!editable());
@@ -444,20 +468,18 @@ struct GradientPanel {
                 ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
                 char fit[16];std::snprintf(fit,sizeof(fit),"%.0f%%",end*100.f/span);
                 const char* zoomNames[]={"−",fit,"+"};int zoomAction=-1;
-                if(!overlay && MenuControls::segments("##gradient-zoom",zoomNames,zoomAction,scale)){
+                if(MenuControls::segments("##gradient-zoom",zoomNames,zoomAction,scale)){
                     if(zoomAction==1){start=0;span=end;}
                     else zoom(zoomAction==0?1.f/1.5f:1.5f,.5f);
                 }
                 if(draft["fill"]["kind"]=="gradient" && draft["stroke"]["kind"]=="gradient"){
-                    ImGui::TableSetColumnIndex(overlay?0:1);const char* names[]={"填充","描边"};
+                    ImGui::TableSetColumnIndex(1);const char* names[]={"填充","描边"};
                     if(MenuControls::segments("##gradient-channel",names,channel,scale)){selection={};anchorLane=primaryColor=-1;gesture=none;refreshBar=true;}
                 }
                 ImGui::EndTable();
             }
-            if(!overlay){
-                timeline(scale);
-                overview();
-            }
+            timeline(scale);
+            overview();
             ImGui::BeginDisabled(track(1).size()>=32);if(MenuControls::button("添加色标",scale))add(1,cursor);ImGui::EndDisabled();
             ImGui::SameLine();ImGui::BeginDisabled(track(0).size()>=32);if(MenuControls::button("添加不透明度节点",scale))add(0,cursor);ImGui::EndDisabled();
             ImGui::SameLine();ImGui::BeginDisabled(!canRemove());if(MenuControls::button("删除选中",scale))remove();ImGui::EndDisabled();
@@ -469,7 +491,7 @@ struct GradientPanel {
                     const Json base=paint();const int delta=shift(base,sign*(io.KeyShift?41:4));if(delta)moveBy(base,delta);
                 }
             }
-            if(!overlay){
+            if(!docked){
             const bool rgb=track(1).front().contains("rgb");
             const float pickerWidth=menuPanelWidth*scale;
             const bool sideBySide=rgb && ImGui::BeginTable("##gradient-parameters",2,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame);
@@ -540,10 +562,31 @@ struct GradientPanel {
             ImGui::EndDisabled();
             MenuControls::detailLine(phase=="applying"?"正在确认 Photoshop 修改…":phase=="closing"?"正在恢复原渐变…":
                 phase=="error"?message.c_str():viewWaiting?"正在核对画布位置…":pending || dirty?"正在保存草稿…":message.c_str(),scale);
-            if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>viewport->Size.y ||
+            if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>size.y ||
                 ImGui::GetScrollMaxY()>0 || ImGui::GetScrollMaxX()>0))
-                throw std::runtime_error("Gradient controls exceeded the minimum client size: bottom="+std::to_string(ImGui::GetCursorPosY())+", height="+std::to_string(viewport->Size.y));
+                throw std::runtime_error("Gradient controls exceeded the minimum client size: bottom="+std::to_string(ImGui::GetCursorPosY())+", height="+std::to_string(size.y));
+            if(changeMode)switchMode(mode==1);
         }
-        flush();ImGui::End();
+        ImGui::End();
+        if(docked && overlay && hasRgbPicker()){
+            const ImVec2 pickerAt{origin.x+pickerRect.left,origin.y+pickerRect.top};
+            const ImVec2 pickerSize{float(pickerRect.right-pickerRect.left),float(pickerRect.bottom-pickerRect.top)};
+            ImGui::SetNextWindowViewport(viewport->ID);
+            ImGui::SetNextWindowPos(pickerAt);
+            ImGui::SetNextWindowSize(pickerSize);
+            ImGui::Begin("##gradient-docked-picker",nullptr,flags);
+            MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),pickerAt,{pickerAt.x+pickerSize.x,pickerAt.y+pickerSize.y},scale);
+            {
+                MenuControls::PanelStyle style(scale);
+                ImGui::BeginDisabled(!editable());
+                colorPicker(menuPanelWidth*scale);
+                ImGui::EndDisabled();
+                if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>pickerSize.y ||
+                    ImGui::GetScrollMaxY()>0 || ImGui::GetScrollMaxX()>0))
+                    throw std::runtime_error("Docked gradient picker exceeded its bounds");
+            }
+            ImGui::End();
+        }
+        flush();
     }
 };

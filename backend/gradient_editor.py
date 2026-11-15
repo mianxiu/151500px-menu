@@ -137,6 +137,17 @@ class GradientEditor:
         self.phase = 'closed'
         self.message = ''
 
+    def preferred_overlay(self):
+        path = Path(self.app.runtime) / 'gradient-mode.json'
+        try:
+            preference = json.loads(path.read_text('utf-8'))
+            return isinstance(preference, dict) and preference.get('overlay') is True
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            logging.warning('Could not read gradient mode preference', exc_info=True)
+            return False
+
     async def send(self, event):
         if not self.process or self.process.returncode is not None:
             return
@@ -191,7 +202,7 @@ class GradientEditor:
             await asyncio.to_thread(desktop.gui.SendMessage, desktop.hwnd, 0x801f, process.pid, epoch)
             await self.send({'type':'gradient.open','phase':self.phase,'message':self.message,'draft':self.draft,
                              'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel,
-                             'vector':self.vector})
+                             'vector':self.vector,'prefer_overlay':await asyncio.to_thread(self.preferred_overlay)})
             for _ in range(40):
                 if desktop.gui.IsWindowVisible(hwnd):break
                 if process.returncode is not None:raise RuntimeError('原生渐变窗口已退出')
@@ -209,11 +220,25 @@ class GradientEditor:
 
     async def read_window(self, process):
         try:
+            # The saved overlay can request a view while open() still owns the Photoshop operation lock.
+            async with self.lock:
+                pass
             while line := await process.stdout.readline():
                 event = json.loads(line)
                 action = event.get('type')
                 if action == 'gradient.view':
                     await self.request_view(event)
+                    continue
+                if action == 'gradient.preference':
+                    overlay = event.get('overlay')
+                    if type(overlay) is not bool:
+                        raise ValueError('无效渐变编辑模式')
+                    try:
+                        await asyncio.to_thread(atomic_json, Path(self.app.runtime) / 'gradient-mode.json', {'overlay':overlay})
+                    except OSError:
+                        logging.exception('Could not save gradient mode preference')
+                        self.message = '无法保存渐变编辑模式，下次打开将使用上次保存的模式'
+                        await self.send_state()
                     continue
                 if action not in ('gradient.update','gradient.apply','gradient.cancel'):
                     raise ValueError('无效渐变窗口事件')
@@ -260,6 +285,10 @@ class GradientEditor:
                 if self.phase != 'editing':
                     raise RuntimeError('原渐变恢复未确认')
                 self.resume_preview_after_view = True
+            if tracking:
+                # Reading through COM while Space is held can interrupt Photoshop's temporary Hand tool.
+                await self.send({'type':'gradient.view','serial':serial,'tracking':True})
+                return
             if not self.preview:
                 require_available(self.app)
                 async with self.app.operation_lock:
@@ -271,7 +300,7 @@ class GradientEditor:
                         raise
             self.require_focus()
             view = self.view
-            if view and not tracking:
+            if view:
                 tool = view.get('tool')
                 if (not entering and tool and self.overlay_tool and tool != self.overlay_tool and
                         tool not in ('handTool','zoomTool')):
@@ -280,7 +309,7 @@ class GradientEditor:
                     return
                 if entering or self.overlay_tool is None:
                     self.overlay_tool = tool
-            if not tracking and self.resume_preview_after_view and view is not None and self.draft != self.base:
+            if self.resume_preview_after_view and view is not None and self.draft != self.base:
                 self.resume_preview_after_view = False
                 await self.request('gradient.update', {'draft':self.draft})
                 await self.send_state()
