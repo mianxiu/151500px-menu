@@ -2,11 +2,14 @@
 import copy
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+DEFAULT_GRADIENT_TINT = '#58c778'
 DEFAULTS = {"enabled": True, "menu_width": 360, "menu_height": 300, "render_mode":"auto", "remote_compatibility": False,
+            "gradient_layer_tint": DEFAULT_GRADIENT_TINT,
             "right_click_open": False,
             "right_click_hide": False, "open_control_on_start": False, "update_url": "",
             "shortcuts": {"toggle": "capslock", "hide": "esc", "select": "capslock+a",
@@ -40,10 +43,14 @@ def chord(value):
 
 
 def validate(data):
-    if isinstance(data,dict):data={"render_mode":"auto","remote_compatibility":False,**data}
+    if isinstance(data,dict):data={"render_mode":"auto","remote_compatibility":False,"gradient_layer_tint":DEFAULT_GRADIENT_TINT,**data}
     if not isinstance(data, dict) or set(data) != set(DEFAULTS):
         raise ValueError("设置字段不完整或包含未知字段")
     result = copy.deepcopy(data)
+    tint = result['gradient_layer_tint']
+    if not isinstance(tint,str) or tint and not re.fullmatch(r'#[0-9a-fA-F]{6}',tint):
+        raise ValueError('渐变图层高亮颜色必须为六位十六进制 RGB')
+    result['gradient_layer_tint'] = tint.lower()
     if result['render_mode'] not in ('auto','gpu','cpu'):raise ValueError('渲染模式必须为自动、GPU或CPU')
     for key in ("enabled", "right_click_open", "right_click_hide", "open_control_on_start", "remote_compatibility"):
         if type(result[key]) is not bool:

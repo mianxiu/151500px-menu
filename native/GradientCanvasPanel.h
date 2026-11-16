@@ -1,6 +1,7 @@
 #pragma once
 
 struct GradientCanvasPanel {
+    bool legacyPreview=false;
     struct Point {
         double x=0,y=0;
         Point operator+(Point p) const{return {x+p.x,y+p.y};}
@@ -123,14 +124,26 @@ struct GradientCanvasPanel {
     HWND visual=nullptr,hit=nullptr,editor=nullptr;
     HWND returnFocus=nullptr;
     ULONG_PTR graphics=0;
-    int active=-1,channel=-1;
+    int active=-1,channel=-1,appliedDelta=0;
+    enum Click { noClick, addStop, sampleColor } click=noClick;
     bool vector=false;
     double radialAngle=0;
-    Point pressed{};
+    Point pressed{},pressedScreen{};
     Axis startAxis;
     Json startPaint,lastPaint;
+    Json rampTracks=Json::array();
+    std::array<ImU32,129> rampSamples{};
+    bool rampAngular=false;
+    HDC surfaceDC=nullptr;
+    HBITMAP surfaceBitmap=nullptr;
+    HGDIOBJ oldBitmap=nullptr;
+    void* surfaceBits=nullptr;
+    SIZE surfaceCapacity{};
     RECT lastEditor{};
+    RECT pickerInputClip{},pickerInputEditor{};
+    bool pickerInput=false;
     std::array<uint32_t,2> lastSelection{};
+    int lastColorTarget=-1;
     static constexpr const wchar_t* hitClass=L"PhotoshopGradientHandles";
     bool foreground() const{
         const HWND front=GetForegroundWindow();
@@ -146,7 +159,7 @@ struct GradientCanvasPanel {
     void suspendPointer(){
         if(hit && IsWindowVisible(hit))ShowWindow(hit,SW_HIDE);
         if(hit && GetCapture()==hit)ReleaseCapture();
-        active=-1;
+        active=-1;click=noClick;
     }
     void hide(){
         suspendPointer();
@@ -162,7 +175,22 @@ struct GradientCanvasPanel {
     }
     ~GradientCanvasPanel(){
         hide();if(hit)DestroyWindow(hit);if(visual)DestroyWindow(visual);
+        if(surfaceBitmap){SelectObject(surfaceDC,oldBitmap);DeleteObject(surfaceBitmap);}
+        if(surfaceDC)DeleteDC(surfaceDC);
         if(graphics)Gdiplus::GdiplusShutdown(graphics);
+    }
+    bool prepareSurface(int width,int height){
+        if(!surfaceDC)surfaceDC=CreateCompatibleDC(nullptr);
+        if(!surfaceDC)return false;
+        if(surfaceBitmap && surfaceCapacity.cx>=width && surfaceCapacity.cy>=height)return true;
+        if(surfaceBitmap){SelectObject(surfaceDC,oldBitmap);DeleteObject(surfaceBitmap);surfaceBitmap=nullptr;}
+        surfaceCapacity={std::max(surfaceCapacity.cx,LONG((width+63)&~63)),std::max(surfaceCapacity.cy,LONG((height+63)&~63))};
+        BITMAPINFO info{};
+        info.bmiHeader={sizeof(BITMAPINFOHEADER),surfaceCapacity.cx,-surfaceCapacity.cy,1,32,BI_RGB};
+        surfaceBitmap=CreateDIBSection(surfaceDC,&info,DIB_RGB_COLORS,&surfaceBits,nullptr,0);
+        if(!surfaceBitmap)return false;
+        oldBitmap=SelectObject(surfaceDC,surfaceBitmap);
+        return true;
     }
     static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
         if(msg==WM_NCCREATE){
@@ -178,13 +206,23 @@ struct GradientCanvasPanel {
                 return MA_NOACTIVATE;
             }
             if(msg==WM_KEYDOWN && wp==VK_ESCAPE){PostMessageW(self->editor,WM_CLOSE,0,0);return 0;}
-            if(msg==WM_CAPTURECHANGED){self->active=-1;return 0;}
+            if(msg==WM_SETCURSOR && LOWORD(lp)==HTCLIENT && self->foreground() && !navigationKeyHeld()){
+                POINT p{};
+                if(GetCursorPos(&p) && self->clickAt({double(p.x),double(p.y)})==sampleColor){
+                    SetCursor(LoadCursorW(nullptr,IDC_CROSS));return TRUE;
+                }
+            }
+            if(msg==WM_CAPTURECHANGED){self->active=-1;self->click=noClick;return 0;}
             if(msg==WM_LBUTTONDOWN || msg==WM_MOUSEMOVE || msg==WM_LBUTTONUP){
                 POINT point{short(LOWORD(lp)),short(HIWORD(lp))};ClientToScreen(hwnd,&point);
                 if(msg==WM_LBUTTONDOWN)self->begin({double(point.x),double(point.y)});
-                else if(self->active>=0){
-                    self->drag({double(point.x),double(point.y)});
+                else if(self->active>=0 || self->click!=noClick){
+                    const Point at{double(point.x),double(point.y)};
+                    if(self->active>=0)self->drag(at);
                     if(msg==WM_LBUTTONUP){
+                        self->finishClick(at);
+                        if(self->active>=0)self->panel->flush(true);
+                        self->click=noClick;
                         self->active=-1;if(GetCapture()==hwnd)ReleaseCapture();
                         if(GetForegroundWindow()==hwnd && IsWindowVisible(self->returnFocus))
                             SetForegroundWindow(self->returnFocus);
@@ -207,7 +245,10 @@ struct GradientCanvasPanel {
         // Keeping the window group on this thread prevents Photoshop's modal tool from blocking its cleanup.
         visual=CreateWindowExW(style|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE,hitClass,L"",WS_POPUP,0,0,0,0,host,nullptr,wc.hInstance,nullptr);
         hit=CreateWindowExW(style|WS_EX_NOACTIVATE,hitClass,L"",WS_POPUP,0,0,0,0,host,nullptr,wc.hInstance,this);
-        if(hit && visual && SetLayeredWindowAttributes(hit,0,1,LWA_ALPHA))return true;
+        if(hit && visual && SetLayeredWindowAttributes(hit,0,1,LWA_ALPHA)){
+            if(legacyPreview)SetPropW(hit,GradientNavigation::canvasInputProperty,editor);
+            return true;
+        }
         if(hit)DestroyWindow(hit);if(visual)DestroyWindow(visual);
         hit=visual=nullptr;
         UnregisterClassW(hitClass,wc.hInstance);
@@ -222,13 +263,76 @@ struct GradientCanvasPanel {
         }
         return index;
     }
+    int stripLocation(Point p) const {
+        const double halfWidth=menuGradientBarHeight*.25*view.dpi;
+        double t=0;
+        Point nearest;
+        if(axis.angular){
+            const Point radial=view.fromScreen(p)-axis.center;
+            t=std::fmod((std::atan2(-radial.y,radial.x)-axis.angle)/(2*Axis::pi)+2,1.);
+            nearest=view.toScreen(axis.arc(t,std::min(axis.size.x,axis.size.y)/3));
+        }else{
+            const Point from=view.toScreen(axis.at(0)),delta=view.toScreen(axis.at(1))-from;
+            const double length=delta.dot(delta);
+            if(length<.001)return -1;
+            t=std::clamp((p-from).dot(delta)/length,0.,1.);
+            nearest=from+delta*t;
+        }
+        if((p-nearest).length()>halfWidth+view.dpi)return -1;
+        return int(std::lround((axis.reverse?1-t:t)*GradientPanel::end));
+    }
+    Click clickAt(Point p) {
+        if(!panel->editable() || panel->channel!=channel || at(p)>=0)return noClick;
+        const POINT screen{LONG(p.x),LONG(p.y)};
+        if(!PtInRect(&view.clip,screen))return noClick;
+        if(stripLocation(p)>=0)return addStop;
+        return panel->hasRgbPicker()?sampleColor:noClick;
+    }
+    static COLORREF screenPixel(POINT p){
+        const HDC dc=GetDC(nullptr);
+        if(!dc)return CLR_INVALID;
+        const auto value=GetPixel(dc,p.x,p.y);
+        ReleaseDC(nullptr,dc);
+        return value;
+    }
+    bool paintedPixel(POINT p) const{
+        RECT bounds{};
+        if(!surfaceBits || !IsWindowVisible(visual) || !GetWindowRect(visual,&bounds) || !PtInRect(&bounds,p))
+            return false;
+        const auto* pixels=static_cast<const uint32_t*>(surfaceBits);
+        return (pixels[(p.y-bounds.top)*surfaceCapacity.cx+p.x-bounds.left]>>24)!=0;
+    }
+    void finishClick(Point p){
+        if(click==noClick || (p-pressedScreen).length()>4*view.dpi || !foreground() || !view.current() ||
+           navigationKeyHeld() || clickAt(p)!=click)return;
+        POINT screen{LONG(p.x),LONG(p.y)};
+        if(WindowFromPoint(screen)!=hit)return;
+        if(click==addStop){
+            const int location=stripLocation(p);
+            if(panel->add(1,location))panel->cursor=location;
+        }else{
+            // Suppress our painted guide only when it would contribute to the sample.
+            const bool guide=paintedPixel(screen);
+            if(guide){ShowWindow(visual,SW_HIDE);DwmFlush();}
+            const COLORREF rgb=screenPixel(screen);
+            if(guide)ShowWindow(visual,SW_SHOWNOACTIVATE);
+            if(rgb!=CLR_INVALID)panel->applyRgb(Json::array({GetRValue(rgb),GetGValue(rgb),GetBValue(rgb)}));
+        }
+    }
     void begin(Point p){
         if(!IsWindowVisible(hit) || !panel->editable() || !foreground() || !view.current())return;
         if(navigationKeyHeld())return;
-        const int index=at(p);if(index<0)return;
+        const int index=at(p);
+        if(index<0){
+            click=clickAt(p);
+            if(click==noClick)return;
+            pressedScreen=p;
+            SetCapture(hit);if(GetCapture()!=hit)click=noClick;
+            return;
+        }
         const auto handle=handles[index];
         pressed=view.fromScreen(p);startPaint=panel->paint();startAxis=axis;
-        active=index;
+        active=index;appliedDelta=0;
         if(handle.kind==color){
             panel->select(handle.lane,handle.index,GetKeyState(VK_CONTROL)<0,GetKeyState(VK_SHIFT)<0);
             panel->cursor=panel->track(handle.lane)[handle.index]["location"];
@@ -237,30 +341,61 @@ struct GradientCanvasPanel {
         if(GetCapture()!=hit)SetCapture(hit);
         if(GetCapture()!=hit)active=-1;
     }
+    static void excludeDock(HRGN region,RECT bounds,RECT timeline,RECT picker){
+        for(auto r:{timeline,picker})if(!IsRectEmpty(&r)){
+            OffsetRect(&r,-bounds.left,-bounds.top);
+            if(HRGN panelRegion=CreateRectRgnIndirect(&r)){
+                CombineRgn(region,region,panelRegion,RGN_DIFF);DeleteObject(panelRegion);
+            }
+        }
+    }
+    bool showPickerInput(RECT editorRect,RECT timeline,RECT picker){
+        const auto clip=view.clip;
+        const int width=clip.right-clip.left,height=clip.bottom-clip.top;
+        if(!pickerInput || !View::equal(clip,pickerInputClip) || !View::equal(editorRect,pickerInputEditor)){
+            HRGN region=CreateRectRgn(0,0,width,height);
+            if(!region)return false;
+            excludeDock(region,clip,timeline,picker);
+            if(!SetWindowRgn(hit,region,FALSE)){DeleteObject(region);return false;}
+            if(!SetWindowPos(hit,visual,clip.left,clip.top,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW)){
+                pickerInput=false;return false;
+            }
+            pickerInput=true;pickerInputClip=clip;pickerInputEditor=editorRect;
+        }
+        if(!IsWindowVisible(hit))ShowWindow(hit,SW_SHOWNOACTIVATE);
+        return IsWindowVisible(hit);
+    }
     void drag(Point p){
         if(!foreground() || !view.current() || !panel->editable() || channel!=panel->channel){hide();return;}
         if(active<0 || active>=int(handles.size()))return;
         const auto h=handles[active];const Point now=view.fromScreen(p),delta=now-pressed;
-        auto& paint=panel->paint();const auto old=paint;
+        auto& paint=panel->paint();
+        bool changed=false;
+        const auto set=[&](Json& target,double value){
+            if(target!=value){target=value;changed=true;}
+        };
         auto& o=paint["options"];
         const auto& a=startAxis;
         const double sign=a.reverse?-1:1;
         if(h.kind==center){
             for(const auto& entry:std::array<std::pair<const char*,double>,2>{{{"offset_x",delta.x*100/a.size.x},{"offset_y",delta.y*100/a.size.y}}})
-                o[entry.first]=std::clamp(startPaint["options"][entry.first].get<double>()+entry.second,-1000.,1000.);
+                set(o[entry.first],std::clamp(startPaint["options"][entry.first].get<double>()+entry.second,-1000.,1000.));
         }else if(h.kind==range){
             if(a.radial){
                 const Point at=a.unit*a.length+delta;
-                if(at.length()>.001)radialAngle=std::atan2(-at.y,at.x)*180/Axis::pi;
-                o["scale"]=std::clamp(at.length()*100/a.span,1.,1000.);
-            }else o["scale"]=std::clamp((a.length+delta.dot(a.unit))*100/a.span,1.,1000.);
+                if(at.length()>.001){
+                    const double next=std::atan2(-at.y,at.x)*180/Axis::pi;
+                    if(next!=radialAngle){radialAngle=next;lastPaint=nullptr;}
+                }
+                set(o["scale"],std::clamp(at.length()*100/a.span,1.,1000.));
+            }else set(o["scale"],std::clamp((a.length+delta.dot(a.unit))*100/a.span,1.,1000.));
         }else if(h.kind==direction){
             const Point before=pressed-a.center,after=now-a.center;
             if(after.length()>.001 && before.length()>.001){
                 double angle=std::remainder(startPaint["options"]["angle"].get<double>()+
                     (std::atan2(-after.y,after.x)-std::atan2(-before.y,before.x))*180/Axis::pi,360.);
                 if(GetKeyState(VK_SHIFT)<0)angle=std::round(angle/45)*45;
-                o["angle"]=angle;
+                set(o["angle"],angle);
             }
         }else if(a.length>0){
             const Point before=pressed-a.center,after=now-a.center;
@@ -271,17 +406,20 @@ struct GradientCanvasPanel {
             if(h.kind==color){
                 if(panel->selected(h.lane,h.index)){
                     const int pixels=panel->shift(startPaint,int(std::clamp(std::round(shift),-4096.,4096.)));
-                    if(pixels || paint!=startPaint)panel->moveBy(startPaint,pixels);
+                    if(pixels!=appliedDelta){panel->moveBy(startPaint,pixels);appliedDelta=pixels;}
                     panel->cursor=panel->track(h.lane)[h.index]["location"];
                 }
             }else{
                 auto& stops=panel->track(h.lane);
                 const int gap=stops[h.index+1]["location"].get<int>()-stops[h.index]["location"].get<int>();
                 const auto& prior=GradientPanel::track(startPaint,h.lane);
-                if(gap>0)stops[h.index]["midpoint"]=int(std::clamp(std::round(prior[h.index]["midpoint"].get<int>()+shift*100/gap),0.,100.));
+                if(gap>0){
+                    const int midpoint=int(std::clamp(std::round(prior[h.index]["midpoint"].get<int>()+shift*100/gap),0.,100.));
+                    if(stops[h.index]["midpoint"]!=midpoint){stops[h.index]["midpoint"]=midpoint;changed=true;panel->refreshBar=true;}
+                }
             }
         }
-        if(paint!=old)panel->dirty=panel->refreshBar=true;
+        if(changed)panel->dirty=true;
     }
     bool draw(bool allowPointer){
         if(!view.current() || !panel->editable()){hide();return false;}
@@ -290,26 +428,20 @@ struct GradientCanvasPanel {
         if(!allowPointer && IsWindowVisible(hit))suspendPointer();
         MenuControls::PanelStyle style(float(view.dpi));
         RECT editorRect{};GetWindowRect(editor,&editorRect);
-        if(channel==panel->channel && lastPaint==panel->paint() && lastSelection==panel->selection &&
-            View::equal(editorRect,lastEditor) && (!allowPointer || IsWindowVisible(hit)))return true;
+        const bool canvasPicker=panel->hasRgbPicker();
+        const int colorTarget=panel->colorTarget();
+        if(channel==panel->channel && lastPaint==panel->paint() && lastSelection==panel->selection && lastColorTarget==colorTarget &&
+            View::equal(editorRect,lastEditor) && (!allowPointer || IsWindowVisible(hit) || (!canvasPicker && !IsWindowVisible(visual))))return true;
         if(channel!=panel->channel && GetCapture()==hit)ReleaseCapture();
-        channel=panel->channel;lastEditor=editorRect;lastSelection=panel->selection;
+        channel=panel->channel;lastEditor=editorRect;lastSelection=panel->selection;lastColorTarget=colorTarget;
         lastPaint=panel->paint();
         if(!axis.read(view,lastPaint,vector,radialAngle)){hide();return false;}
         using namespace Gdiplus;
         const auto clip=view.clip;
         const UINT dpi=std::lround(view.dpi*96);
         auto timeline=panel->dockTimeline(editorRect,dpi);
-        auto picker=panel->hasRgbPicker()?panel->dockPicker(editorRect,dpi):RECT{};
-        for(auto* rect:{&timeline,&picker})OffsetRect(rect,-clip.left,-clip.top);
-        const int width=clip.right-clip.left,height=clip.bottom-clip.top;
-        BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;
-        info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
-        void* bits=nullptr;
-        HBITMAP bmp=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&bits,nullptr,0);
-        HDC dc=CreateCompatibleDC(nullptr);
-        if(!bmp || !dc){if(bmp)DeleteObject(bmp);if(dc)DeleteDC(dc);hide();return false;}
-        const HGDIOBJ previous=SelectObject(dc,bmp);
+        auto picker=canvasPicker?panel->dockPicker(editorRect,dpi):RECT{};
+        const auto dockTimeline=timeline,dockPicker=picker;
         const auto radius=menuGradientHandleSize*.4*view.dpi,gap=menuPanelGap*view.dpi;
         const auto c=view.toScreen(axis.center),from=view.toScreen(axis.at(0)),to=view.toScreen(axis.at(1));
         const Point delta=to-from;
@@ -321,7 +453,6 @@ struct GradientCanvasPanel {
         const auto border=ImGui::GetColorU32(ImGuiCol_Border),text=ImGui::GetColorU32(ImGuiCol_Text),
                    accent=ImGui::GetColorU32(ImGuiCol_CheckMark),surface=ImGui::GetColorU32(ImGuiCol_Button);
         const auto ink=[](ImU32 color){return Color(BYTE(color>>24),BYTE(color),BYTE(color>>8),BYTE(color>>16));};
-        const auto screen=[&](Point p){return PointF(float(p.x-clip.left),float(p.y-clip.top));};
         handles.clear();
         const auto add=[&](Point p,Kind kind,int index,ImU32 fill,double size,int lane=1){handles.push_back({p,kind,index,fill,size,lane});};
         add(c,center,0,accent,radius+view.dpi);
@@ -352,13 +483,44 @@ struct GradientCanvasPanel {
                 }
             }
         }
-        HRGN region=CreateRectRgn(0,0,0,0);
+        Point low=c,high=c;
+        const auto include=[&](Point p,double padding){
+            low={std::min(low.x,p.x-padding),std::min(low.y,p.y-padding)};
+            high={std::max(high.x,p.x+padding),std::max(high.y,p.y+padding)};
+        };
+        const double margin=halfWidth+3*view.dpi;
+        if(axis.angular || axis.radial || axis.diamond){
+            const double extent=axis.angular?arcRadius:axis.length;
+            const auto h=view.toScreen(axis.center+Point{extent,0})-c;
+            const auto v=view.toScreen(axis.center+Point{0,extent})-c;
+            const Point half{std::hypot(h.x,v.x),std::hypot(h.y,v.y)};
+            include(c-half,margin);include(c+half,margin);
+        }
+        include(from,margin);include(to,margin);
+        if(axis.reflected)include(c-(to-c),margin);
+        for(const auto& h:handles)include(h.p,h.radius+2*view.dpi);
+        const RECT inkBounds{
+            LONG(std::clamp(std::floor(low.x),double(clip.left),double(clip.right))),
+            LONG(std::clamp(std::floor(low.y),double(clip.top),double(clip.bottom))),
+            LONG(std::clamp(std::ceil(high.x),double(clip.left),double(clip.right))),
+            LONG(std::clamp(std::ceil(high.y),double(clip.top),double(clip.bottom)))};
+        if(IsRectEmpty(&inkBounds)){
+            if(IsWindowVisible(visual))ShowWindow(visual,SW_HIDE);
+            if(canvasPicker && allowPointer)return showPickerInput(editorRect,dockTimeline,dockPicker);
+            suspendPointer();return true;
+        }
+        const int width=inkBounds.right-inkBounds.left,height=inkBounds.bottom-inkBounds.top;
+        if(!prepareSurface(width,height)){hide();return false;}
+        for(auto* rect:{&timeline,&picker})OffsetRect(rect,-inkBounds.left,-inkBounds.top);
+        const auto screen=[&](Point p){return PointF(float(p.x-inkBounds.left),float(p.y-inkBounds.top));};
+        HRGN region=canvasPicker?nullptr:CreateRectRgn(0,0,0,0);
+        if(!canvasPicker && !region){hide();return false;}
         const auto stroke=[&](Graphics& g,Point a,Point b){
             Pen edge(ink(border),float(3*view.dpi)),line(ink(text),float(view.dpi));
             g.DrawLine(&edge,screen(a),screen(b));g.DrawLine(&line,screen(a),screen(b));
         };
         {
-            Bitmap image(width,height,width*4,PixelFormat32bppPARGB,static_cast<BYTE*>(bits));
+            Bitmap image(width,height,surfaceCapacity.cx*4,PixelFormat32bppPARGB,static_cast<BYTE*>(surfaceBits));
             Graphics g(&image);g.Clear(Color(0,0,0,0));g.SetSmoothingMode(SmoothingModeAntiAlias);
             for(const auto& rect:{timeline,picker})
                 if(!IsRectEmpty(&rect))g.ExcludeClip(Rect(rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top));
@@ -378,34 +540,47 @@ struct GradientCanvasPanel {
             };
             const auto& colors=panel->track(1);
             const auto& opacity=panel->track(0);
+            const bool rgb=colors.front().contains("rgb");
+            if(rgb && (rampAngular!=axis.angular || rampTracks.size()!=2 || rampTracks[0]!=colors || rampTracks[1]!=opacity)){
+                rampTracks=Json::array({colors,opacity});
+                rampAngular=axis.angular;
+                for(int i=0;i<(rampAngular?128:129);++i)
+                    rampSamples[i]=GradientPanel::rampColor(colors,opacity,(i+(rampAngular?.5f:0))*(GradientPanel::end/128.f));
+            }
             Pen edge(ink(text),float(2*halfWidth+view.dpi));
             GraphicsPath outline;
-            for(int i=0;i<128;++i){
-                const double a=i/128.,b=(i+1)/128.;
+            const int steps=axis.angular?128:1;
+            for(int i=0;i<steps;++i){
+                const double a=double(i)/steps,b=double(i+1)/steps;
                 const auto from=screen(stripPoint(a)),to=screen(stripPoint(b));
                 outline.AddLine(from,to);
             }
             g.DrawPath(&edge,&outline);
-            for(int i=0;i<128;++i){
-                const double a=i/128.,b=(i+1)/128.,middle=(a+b)/2;
+            if(colors.size()<32 && region && outline.Widen(&edge)==Ok){
+                Region strip(&outline);
+                if(HRGN body=strip.GetHRGN(&g)){CombineRgn(region,region,body,RGN_OR);DeleteObject(body);}
+            }
+            const int tiles=axis.angular?128:rgb?16:1;
+            Pen paper(ink(border),float(2*halfWidth)),paint(ink(text),float(2*halfWidth));
+            for(int i=0;i<tiles;++i){
+                const double a=double(i)/tiles,b=double(i+1)/tiles;
                 const auto from=screen(stripPoint(a)),to=screen(stripPoint(b));
-                Pen paper(ink(colors.front().contains("rgb") && (i/8)%2?surface:border),float(2*halfWidth));
-                if(i)paper.SetStartCap(LineCapSquare);
-                if(i<127)paper.SetEndCap(LineCapSquare);
+                paper.SetColor(ink(rgb && (axis.angular?i/8:i)%2?surface:border));
+                paper.SetStartCap(i?LineCapSquare:LineCapFlat);
+                paper.SetEndCap(i+1<tiles?LineCapSquare:LineCapFlat);
                 g.DrawLine(&paper,from,to);
-                if(axis.angular && colors.front().contains("rgb")){
-                    Pen paint(ink(GradientPanel::rampColor(colors,opacity,float((axis.reverse?1-middle:middle)*GradientPanel::end))),float(2*halfWidth));
+                if(axis.angular && rgb){
+                    paint.SetColor(ink(rampSamples[axis.reverse?127-i:i]));
                     g.DrawLine(&paint,from,to);
                 }
             }
-            if(!axis.angular && colors.front().contains("rgb")){
+            if(!axis.angular && rgb){
                 // One translucent stroke avoids seams where separately antialiased samples meet.
                 std::array<Color,129> samples;
                 std::array<REAL,129> positions;
                 for(int i=0;i<=128;++i){
                     positions[i]=i/128.f;
-                    samples[i]=ink(GradientPanel::rampColor(colors,opacity,
-                        (axis.reverse?1-positions[i]:positions[i])*GradientPanel::end));
+                    samples[i]=ink(rampSamples[axis.reverse?128-i:i]);
                 }
                 const auto a=screen(stripPoint(0)),b=screen(stripPoint(1));
                 LinearGradientBrush ramp(a,b,samples.front(),samples.back());
@@ -417,27 +592,34 @@ struct GradientCanvasPanel {
                 const auto p=screen(h.p);
                 const float r=float(h.radius);
                 SolidBrush fill(ink(h.fill));
-                Pen outline(ink(h.kind==color && panel->selected(h.lane,h.index)?accent:text),float(view.dpi));
+                const bool selected=h.kind==color && (panel->selected(h.lane,h.index) || (h.lane==1 && h.index==colorTarget));
+                Pen outline(ink(selected?accent:text),float(view.dpi));
                 g.FillEllipse(&fill,p.X-r,p.Y-r,r*2,r*2);
                 g.DrawEllipse(&outline,p.X-r,p.Y-r,r*2,r*2);
-                HRGN dot=CreateEllipticRgn(int(std::ceil(p.X-r)),int(std::ceil(p.Y-r)),int(std::floor(p.X+r))+1,int(std::floor(p.Y+r))+1);
-                if(dot){CombineRgn(region,region,dot,RGN_OR);DeleteObject(dot);}
+                if(region){
+                    HRGN dot=CreateEllipticRgn(int(std::ceil(p.X-r)),int(std::ceil(p.Y-r)),int(std::floor(p.X+r))+1,int(std::floor(p.Y+r))+1);
+                    if(dot){CombineRgn(region,region,dot,RGN_OR);DeleteObject(dot);}
+                }
             }
         }
-        for(const auto& rect:{timeline,picker})if(!IsRectEmpty(&rect)){
-            HRGN panelRegion=CreateRectRgnIndirect(&rect);
-            if(panelRegion){CombineRgn(region,region,panelRegion,RGN_DIFF);DeleteObject(panelRegion);}
-        }
-        HRGN viewportRegion=CreateRectRgn(0,0,width,height);
-        if(viewportRegion){CombineRgn(region,region,viewportRegion,RGN_AND);DeleteObject(viewportRegion);}
-        POINT destination={clip.left,clip.top},source={0,0};SIZE size={width,height};
+        POINT destination={inkBounds.left,inkBounds.top},source={0,0};SIZE size={width,height};
         BLENDFUNCTION blend={AC_SRC_OVER,0,255,AC_SRC_ALPHA};
-        const bool shown=UpdateLayeredWindow(visual,nullptr,&destination,&size,dc,&source,0,&blend,ULW_ALPHA)!=0;
-        SelectObject(dc,previous);DeleteDC(dc);DeleteObject(bmp);
-        if(!shown || !region || !SetWindowRgn(hit,region,FALSE)){if(region)DeleteObject(region);hide();return false;}
+        const bool shown=UpdateLayeredWindow(visual,nullptr,&destination,&size,surfaceDC,&source,0,&blend,ULW_ALPHA)!=0;
+        if(!shown){if(region)DeleteObject(region);hide();return false;}
+        if(region){
+            excludeDock(region,inkBounds,dockTimeline,dockPicker);
+            if(HRGN viewportRegion=CreateRectRgn(0,0,width,height)){
+                CombineRgn(region,region,viewportRegion,RGN_AND);DeleteObject(viewportRegion);
+            }
+            if(!SetWindowRgn(hit,region,FALSE)){DeleteObject(region);hide();return false;}
+            pickerInput=false;
+        }
         SetWindowPos(visual,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW|
             (focused?0:SWP_NOZORDER));
-        if(allowPointer)SetWindowPos(hit,visual,destination.x,destination.y,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+        if(allowPointer){
+            if(canvasPicker)return showPickerInput(editorRect,dockTimeline,dockPicker);
+            SetWindowPos(hit,visual,destination.x,destination.y,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+        }
         return true;
     }
 };

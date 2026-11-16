@@ -1,5 +1,8 @@
 export default {
   "常用":"General",
+  "渐变画布叠加":"Gradient canvas overlay",
+  "高亮正在编辑的图层行":"Highlight the edited layer row",
+  "图层高亮颜色":"Layer highlight color",
   "高级":"Advanced",
   "渲染与兼容":"Rendering and compatibility",
   "兼容面板尺寸":"Compatibility panel size",

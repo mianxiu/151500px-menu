@@ -5,10 +5,10 @@ import json
 import logging
 import math
 import ntpath
-import time
 from pathlib import Path
 
 from .layer_search import require_available
+from .layer_context import fresh
 from .mask_preview import MaskPreview, dispatch_preview, run_preview
 from .operation_target import guarded_script, validate_target
 from .paths import overlay_command
@@ -126,7 +126,6 @@ class GradientEditor:
         self.preview = None
         self.view = None
         self.view_read = None
-        self.view_at = 0
         self.resume_preview_after_view = False
         self.overlay_tool = None
         self.baseline = None
@@ -136,6 +135,8 @@ class GradientEditor:
         self.lock = asyncio.Lock()
         self.phase = 'closed'
         self.message = ''
+        self.tint = ''
+        self.legacy_preview = False
 
     def preferred_overlay(self):
         path = Path(self.app.runtime) / 'gradient-mode.json'
@@ -147,6 +148,14 @@ class GradientEditor:
         except (OSError, ValueError):
             logging.warning('Could not read gradient mode preference', exc_info=True)
             return False
+
+    def owns_overlay(self, root):
+        if root != self.owner or self.phase not in ('editing','preview') or not self.in_scope():
+            return False
+        import ctypes
+        owner = ctypes.windll.user32.GetPropW
+        owner.restype = ctypes.c_void_p
+        return owner(ctypes.c_void_p(self.hwnd), 'PhotoshopMenu.GradientNavigation.Owner.v1') == root
 
     async def send(self, event):
         if not self.process or self.process.returncode is not None:
@@ -161,9 +170,13 @@ class GradientEditor:
     async def send_state(self, ack=False):
         await self.send({'type':'gradient.state','phase':self.phase,'message':self.message,'ack':ack})
 
-    async def read_view(self):
+    async def read_view(self, restore_tool=None):
         bridge = self.app.bridge
-        script = guarded_script(VIEW_SCRIPT, self.target)
+        body = VIEW_SCRIPT
+        if restore_tool:
+            body = ("(function(){var tool=app.currentTool, previous="+json.dumps(restore_tool)+";"
+                    " if(tool!==previous && (tool==='zoomTool'||tool==='handTool')) app.currentTool=previous;})();\n"+body)
+        script = guarded_script(body, self.target)
         def capture():
             self.require_focus()
             _, heartbeat = bridge.transport.observe()
@@ -175,9 +188,7 @@ class GradientEditor:
             raise RuntimeError('上一项 Photoshop 画布读取尚未退出')
         self.view_read = asyncio.get_running_loop().run_in_executor(bridge.executor, capture)
         self.view_read.add_done_callback(lambda future: None if future.cancelled() else future.exception())
-        value = await asyncio.wait_for(asyncio.shield(self.view_read), 2)
-        self.view_at = time.monotonic()
-        return value
+        return await asyncio.wait_for(asyncio.shield(self.view_read), 2)
 
     async def start_window(self, desktop, epoch):
         import win32process
@@ -202,7 +213,9 @@ class GradientEditor:
             await asyncio.to_thread(desktop.gui.SendMessage, desktop.hwnd, 0x801f, process.pid, epoch)
             await self.send({'type':'gradient.open','phase':self.phase,'message':self.message,'draft':self.draft,
                              'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel,
-                             'vector':self.vector,'prefer_overlay':await asyncio.to_thread(self.preferred_overlay)})
+                             'legacy_preview':self.legacy_preview,
+                             'vector':self.vector,'layer_tint':self.tint if len(self.target['layer_ids'])==1 else '',
+                             'prefer_overlay':await asyncio.to_thread(self.preferred_overlay)})
             for _ in range(40):
                 if desktop.gui.IsWindowVisible(hwnd):break
                 if process.returncode is not None:raise RuntimeError('原生渐变窗口已退出')
@@ -218,7 +231,23 @@ class GradientEditor:
                 await asyncio.to_thread(desktop.sync_native)
             raise
 
+    async def watch_tint_target(self, process):
+        confirmed = visible = False
+        while process is self.process and process.returncode is None:
+            context = self.app.desktop.layer_context
+            current = fresh(context)
+            if current:
+                confirmed = all(context.get(key)==self.target[key] for key in
+                                ('session','document_id','layer_ids'))
+            # The modal preview owns the already checked target while host observations are suspended.
+            trusted = confirmed and (current or self.phase == 'preview' and self.preview is not None)
+            if trusted or visible:
+                await self.send({'type':'gradient.layer','verified':trusted})
+            visible = trusted
+            await asyncio.sleep(.3)
+
     async def read_window(self, process):
+        tint_task = asyncio.create_task(self.watch_tint_target(process)) if self.tint and len(self.target['layer_ids'])==1 else None
         try:
             # The saved overlay can request a view while open() still owns the Photoshop operation lock.
             async with self.lock:
@@ -253,6 +282,9 @@ class GradientEditor:
         except (OSError, ValueError):
             logging.exception('Native gradient window stream ended')
         finally:
+            if tint_task:
+                tint_task.cancel()
+                await asyncio.gather(tint_task,return_exceptions=True)
             process.stdin.close()
             if process is self.process:
                 self.app.desktop.gradient_window = (0, 0)
@@ -293,7 +325,8 @@ class GradientEditor:
                 require_available(self.app)
                 async with self.app.operation_lock:
                     try:
-                        self.view = await self.read_view()
+                        restore = self.overlay_tool if refresh and not entering else None
+                        self.view = await self.read_view(restore) if restore else await self.read_view()
                     except Exception as error:
                         # RPC_E_CALL_REJECTED and RPC_E_SERVERCALL_RETRYLATER
                         retry = getattr(error, 'hresult', None) in (-2147418111, -2147417846)
@@ -309,10 +342,6 @@ class GradientEditor:
                     return
                 if entering or self.overlay_tool is None:
                     self.overlay_tool = tool
-            if self.resume_preview_after_view and view is not None and self.draft != self.base:
-                self.resume_preview_after_view = False
-                await self.request('gradient.update', {'draft':self.draft})
-                await self.send_state()
         except Exception as error:
             logging.info('Gradient canvas view unavailable: %s', error)
             message = '无法核对当前画布位置，请重试或切回独立窗口'
@@ -322,6 +351,13 @@ class GradientEditor:
         if tracking:
             response['tracking'] = True
         await self.send(response)
+        if self.resume_preview_after_view and view is not None and self.draft != self.base:
+            self.resume_preview_after_view = False
+            try:
+                await self.request('gradient.update', {'draft':self.draft})
+            except (RuntimeError, ValueError, OSError) as error:
+                self.message = str(error)
+            await self.send_state()
 
     def in_scope(self):
         desktop = self.app.desktop
@@ -424,6 +460,7 @@ class GradientEditor:
                 self.draft = await asyncio.to_thread(load_draft, self.path, self.base)
                 self.target, self.owner, self.panel_hint, self.channel = target, owner, panel_hint, channel
                 self.live = base['live_preview']
+                self.legacy_preview = base.get('preview_engine') == 'legacy-com'
                 self.vector = base.get('vector') is True
                 self.view = None
                 self.resume_preview_after_view = False
@@ -431,6 +468,7 @@ class GradientEditor:
                 status = app.bridge._status_snapshot()
                 self.theme = status.get('ui_theme') or 'dark-gray'
                 self.font = status.get('ui_font_size') or 'small'
+                self.tint = getattr(desktop,'settings',{}).get('gradient_layer_tint','')
                 self.title = ' · '.join(str(shape.get(key, ''))[:256] for key in ('document_name', 'layer_name'))
                 self.phase = 'editing'
                 self.message = '已恢复上次草稿' if self.draft != self.base else ''
@@ -489,7 +527,8 @@ class GradientEditor:
                 return
             await asyncio.to_thread(self.require_focus)
             if self.preview:
-                if (changed or commit) and not self.preview.update({**value, 'revision':self.revision or value['revision']}, commit=commit):
+                if (changed or commit) and not self.preview.update(
+                        {**value, 'revision':self.revision or value['revision']}, commit=commit, immediate=True):
                     raise RuntimeError('上次渐变预览正在结束，草稿已保留')
                 if commit:
                     self.phase = 'applying'
@@ -503,7 +542,7 @@ class GradientEditor:
                     raise
                 value = {**value, 'revision':self.revision or value['revision']}
                 if self.live:
-                    if self.view is None or time.monotonic()-self.view_at>2:
+                    if self.view is None:
                         try:
                             self.view = await self.read_view()
                         except Exception:

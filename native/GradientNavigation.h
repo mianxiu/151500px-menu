@@ -3,7 +3,16 @@
 namespace GradientNavigation {
 inline constexpr wchar_t ownerProperty[]=L"PhotoshopMenu.GradientNavigation.Owner.v1";
 inline constexpr wchar_t imageProperty[]=L"PhotoshopMenu.GradientNavigation.Image.v1";
-inline constexpr wchar_t toolProperty[]=L"PhotoshopMenu.GradientNavigation.Tool.v1";
+inline constexpr wchar_t canvasInputProperty[]=L"PhotoshopMenu.GradientNavigation.CanvasInput.v1";
+
+inline bool canvasInput(HWND hit,HWND editor){
+    return hit && editor && GetPropW(hit,canvasInputProperty)==editor && GetWindow(hit,GW_OWNER)==editor;
+}
+
+inline bool postCanvasButton(HWND hit,UINT message,POINT at){
+    return ScreenToClient(hit,&at) &&
+        PostMessageW(hit,message,message==WM_LBUTTONDOWN?MK_LBUTTON:0,MAKELPARAM(at.x,at.y));
+}
 
 inline bool windowClass(HWND hwnd,const wchar_t* expected) {
     wchar_t name[32]{};
@@ -42,8 +51,6 @@ inline bool key(int value,bool ctrl,bool alt,bool windows) {
 }
 
 inline bool pointer(int button,bool image,bool scrollbar,bool navigating) {
-    if(button<0)return image || scrollbar;
-    if(button==0)return scrollbar || (image && navigating);
-    return button==2 && image && navigating;
+    return navigating && ((button<=0 && (image || scrollbar)) || (button==2 && image));
 }
 }

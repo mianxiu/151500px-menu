@@ -45,17 +45,32 @@ class MaskPreviewTests(unittest.TestCase):
         self.assertEqual(value['phase'],'commit')
         self.assertEqual(value['paint']['mask'],{'feather':25,'density':40})
 
-    def test_only_terminal_changes_notify_outside_the_value_lock(self):
+    def test_publish_notifications_leave_the_value_lock_before_waking(self):
         preview=MaskPreview(8,paint());calls=[]
         def notify():
             self.assertTrue(preview.lock.acquire(False))
             preview.lock.release();calls.append(preview.phase)
-        preview.set_terminal_notifier(notify)
+        preview.set_publish_notifier(notify)
         preview.update(paint(10));self.assertEqual(calls,[])
         preview.update(paint(25),commit=True);preview.cancel()
         self.assertEqual(calls,['commit']);self.assertIsNotNone(preview.terminal_requested_at)
-        preview=MaskPreview(8,paint());preview.set_terminal_notifier(notify)
+        preview=MaskPreview(8,paint());preview.set_publish_notifier(notify)
         preview.cancel();preview.cancel();self.assertEqual(calls,['commit','cancel'])
+
+    def test_immediate_updates_still_publish_only_latest_and_cancel_wins(self):
+        preview=MaskPreview(8,paint());preview.bind(self.folder,self.request)
+        wakes=[];preview.set_publish_notifier(lambda: wakes.append(preview.seq))
+        preview.update(paint(10),immediate=True)
+        preview.update(paint(25),immediate=True)
+        self.assertEqual(wakes,[2,3])
+        preview.publish()
+        value=json.loads(self.path.read_text('utf-8'))
+        self.assertEqual((value['phase'],value['seq'],value['paint']['mask']['feather']),('preview',3,25))
+        preview.cancel()
+        self.assertFalse(preview.update(paint(40),immediate=True))
+        preview.publish()
+        self.assertEqual(wakes,[2,3,4])
+        self.assertEqual(json.loads(self.path.read_text('utf-8'))['phase'],'cancel')
 
     def test_terminal_mailbox_time_is_not_renewed_by_lease_heartbeats(self):
         preview=MaskPreview(8,paint());preview.bind(self.folder,self.request)
@@ -164,7 +179,7 @@ class TerminalPublisherWakeTests(unittest.IsolatedAsyncioTestCase):
                     else:await asyncio.to_thread(preview.update,paint(25),commit=True)
                     await task
             self.assertTrue(published.is_set());self.assertFalse(lock.locked())
-            self.assertIsNone(preview.terminal_notifier)
+            self.assertIsNone(preview.publish_notifier)
             packet=json.loads((folder/('mask-preview-'+identity['id']+'.json')).read_text('utf-8'))
             self.assertEqual(packet['phase'],'cancel' if cancel else 'commit')
 

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from backend.gradient_acceptance import MAKE_GRADIENT
 from backend.gradient_editor import GradientEditor, VIEW_SCRIPT, checked_draft, checked_view, draft_path, load_draft
+from backend.settings import DEFAULTS, DEFAULT_GRADIENT_TINT, validate
 
 BASE = {
     'revision':'initial:1',
@@ -23,6 +24,14 @@ BASE = {
 }
 
 class GradientEditorTests(unittest.TestCase):
+    def test_tint_setting_migrates_and_only_accepts_rgb_or_off(self):
+        old = {key:value for key,value in DEFAULTS.items() if key != 'gradient_layer_tint'}
+        self.assertEqual(validate(old)['gradient_layer_tint'],DEFAULT_GRADIENT_TINT)
+        self.assertEqual(validate({**old,'gradient_layer_tint':'#ABC456'})['gradient_layer_tint'],'#abc456')
+        self.assertEqual(validate({**old,'gradient_layer_tint':''})['gradient_layer_tint'],'')
+        with self.assertRaises(ValueError):
+            validate({**old,'gradient_layer_tint':'red'})
+
     def test_overlay_refuses_unusable_photoshop_geometry(self):
         view={'matrix':[0, .5, -.5, 0, -75, 60],'viewport':[-960,30,0,900],
               'document':[600,400],'layer':[100,100,400,350]}
@@ -89,6 +98,27 @@ class GradientEditorTests(unittest.TestCase):
 
 
 class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tint_follows_only_the_verified_target(self):
+        target = {'session':'s','document_id':2,'layer_ids':[4]}
+        desktop = SimpleNamespace(layer_context={**target,'plugin_time_ms':1})
+        editor = GradientEditor(SimpleNamespace(desktop=desktop))
+        editor.target = target
+        editor.phase = 'editing'
+        editor.process = SimpleNamespace(returncode=None)
+        editor.send = AsyncMock()
+        contexts = iter(({}, {}, {**desktop.layer_context,'document_id':3}))
+        async def step(_):
+            desktop.layer_context = next(contexts,None)
+            if desktop.layer_context is None:
+                editor.process.returncode = 0
+            elif not desktop.layer_context and editor.send.await_count==2:
+                editor.phase = 'preview'
+                editor.preview = object()
+        with (patch('backend.gradient_editor.fresh',side_effect=bool),
+              patch('backend.gradient_editor.asyncio.sleep',side_effect=step)):
+            await editor.watch_tint_target(editor.process)
+        self.assertEqual([c.args[0]['verified'] for c in editor.send.await_args_list],[True,False,True,False])
+
     async def test_opening_view_waits_for_editor_setup(self):
         editor = GradientEditor(None)
         event = {'type':'gradient.view','serial':1,'refresh':False,'entering':True}
@@ -147,7 +177,7 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         value = deepcopy(BASE)
         value['fill']['options']['angle'] = 25
         await editor.request('gradient.update', {'draft':value})
-        editor.preview.update.assert_called_once_with({**value,'revision':'fresh:2'}, commit=False)
+        editor.preview.update.assert_called_once_with({**value,'revision':'fresh:2'}, commit=False, immediate=True)
 
     async def test_revision_refresh_refuses_external_changes_and_target_switches(self):
         shape = {**deepcopy(BASE), 'available':True, 'revision':'fresh:2', 'baseline':'raw-original'}
@@ -219,8 +249,11 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         editor.base, editor.draft = {}, {'edited': True}
         editor.require_focus = Mock()
         editor.send = AsyncMock()
-        editor.request = AsyncMock()
+        async def resume(*_):
+            self.assertEqual(editor.send.await_args.args[0]['view']['matrix'],[1,0,0,1,4,6])
+        editor.request = AsyncMock(side_effect=resume)
         editor.read_view = AsyncMock(return_value={'matrix':[1,0,0,1,4,6]})
+        editor.overlay_tool = 'moveTool'
 
         async def rollback():
             editor.preview = None
@@ -235,7 +268,7 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(editor.send.await_args.args[0],{'type':'gradient.view','serial':1,'tracking':True})
             await editor.request_view({'serial':2,'refresh':True,'tracking':False})
         editor.request.assert_awaited_once_with('gradient.update', {'draft':editor.draft})
-        self.assertEqual(editor.send.await_args.args[0]['view']['matrix'],[1,0,0,1,4,6])
+        editor.read_view.assert_awaited_once_with('moveTool')
 
     async def test_mode_switch_keeps_live_preview_and_uses_same_view(self):
         editor=GradientEditor(None)

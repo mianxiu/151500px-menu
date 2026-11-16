@@ -568,7 +568,10 @@ class Application(web.Application):
             if not self.desktop:
                 raise RuntimeError("无桌面模式不提供图层操作")
             frame_context=self.desktop.frame_input_context(args.get('frame_id'),args.get('input_guard')) if name=='layer.frame' else None
-            if self.operation_lock.locked() or self.bridge.busy:
+            gradient=getattr(self,'gradient_editor',None) if frame_context and 'frame_id' in args else None
+            if gradient and not gradient.owns_overlay(frame_context.get('root')):gradient=None
+            gradient_preview=gradient.preview if gradient and gradient.phase=='preview' else None
+            if (self.operation_lock.locked() or self.bridge.busy) and not gradient_preview:
                 raise RuntimeError("操作进行中，请等待完成后重新选择；本次操作未接受")
             frame_preview=None;frame_publisher=None;frame_stopped=asyncio.Event()
             if name=='layer.frame' and 'frame_id' in args:
@@ -577,6 +580,14 @@ class Application(web.Application):
                 frame_preview=self._frame_preview=FramePreview(args['frame_id'])
                 frame_publisher=asyncio.create_task(frame_preview.pump(self.desktop,frame_stopped))
             try:
+                if gradient:
+                    await gradient.send({'type':'gradient.focus','active':True})
+                    if gradient_preview:
+                        gradient_preview.cancel()
+                        await asyncio.wait_for(asyncio.shield(gradient.task),8)
+                    if gradient.phase!='editing' or self.operation_lock.locked() or self.bridge.busy:
+                        raise RuntimeError('渐变预览尚未结束，本次未聚焦')
+                    if gradient_preview:gradient.resume_preview_after_view=True
                 async with self.operation_lock:
                     # Reserve before any awaited focus/target work. A repeat
                     # arriving during that work is rejected, never postponed.
@@ -597,6 +608,7 @@ class Application(web.Application):
                     async def before_dispatch(target):
                         async with self.panel_lock:
                             if name=='layer.frame':await asyncio.to_thread(self.desktop.require_layer_frame,frame_input,reserved=True)
+                            if gradient:await asyncio.to_thread(gradient.require_target,target)
                             if name in ('moveToTop','moveToBottom','moveUp','moveDown','moveDocumentTop','moveDocumentBottom'):
                                 await asyncio.to_thread(self.desktop.require_move_context,name)
                             if 'menu_epoch' in args and args['menu_epoch'] != self.desktop.menu_epoch:
@@ -636,6 +648,7 @@ class Application(web.Application):
                     frame_stopped.set()
                     await asyncio.gather(frame_publisher,return_exceptions=True)
                     if getattr(self,'_frame_preview',None) is frame_preview:self._frame_preview=None
+                if gradient:await gradient.send({'type':'gradient.focus','active':False})
                 if isinstance(self.bridge,PhotoshopBridge):
                     await self.broadcast({'type':'operation','busy':self.bridge.busy,'queue_ready':False,'queue_count':len(self.bridge._queue)})
                 else:await self.broadcast({"type": "operation", "busy": self.bridge.busy})

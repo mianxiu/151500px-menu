@@ -5,6 +5,7 @@ static constexpr float menuShortcutMinWidth=14.f;
 static constexpr float menuShortcutTextInset=2.f;
 static constexpr float menuControlPadding=figmaPadding;
 static constexpr float menuCompactGap=4.f;
+static constexpr float menuDenseGap=3.f;
 static constexpr float menuProgressHeight=2.f;
 static constexpr float menuProgressMaxWidth=140.f;
 static constexpr ULONGLONG menuProgressPulseMs=2800;

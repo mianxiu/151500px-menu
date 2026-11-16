@@ -30,16 +30,16 @@ class MaskPreview:
         self.progress_value = None
         self.execution_check = None
         self.execution_exited = False
-        self.terminal_notifier = None
+        self.publish_notifier = None
         self.terminal_requested_at = None
         self.terminal_published_at = None
 
-    def set_terminal_notifier(self, notifier):
+    def set_publish_notifier(self, notifier):
         with self.lock:
-            self.terminal_notifier = notifier
+            self.publish_notifier = notifier
 
     @staticmethod
-    def notify_terminal(notifier):
+    def notify_publisher(notifier):
         if notifier:
             try:notifier()
             except RuntimeError:pass  # A closed event loop cannot alter the original transaction.
@@ -50,7 +50,7 @@ class MaskPreview:
             except (OSError,ValueError,TypeError):return False
         return self.execution_exited
 
-    def update(self, paint, commit=False, return_to_menu=False):
+    def update(self, paint, commit=False, return_to_menu=False, *, immediate=False):
         if type(return_to_menu) is not bool or return_to_menu and not commit:
             raise ValueError("返回菜单只能确认当前预览")
         value = parameters(paint)
@@ -65,8 +65,8 @@ class MaskPreview:
                 self.phase = 'commit'
                 self.return_to_menu = return_to_menu
                 self.terminal_requested_at = time.perf_counter()
-            notifier = self.terminal_notifier if commit else None
-        self.notify_terminal(notifier)
+            notifier = self.publish_notifier if commit or immediate else None
+        self.notify_publisher(notifier)
         return True
 
     def cancel(self):
@@ -76,8 +76,8 @@ class MaskPreview:
                 self.phase = 'cancel'
                 self.seq += 1
                 self.terminal_requested_at = time.perf_counter()
-                notifier = self.terminal_notifier
-        self.notify_terminal(notifier)
+                notifier = self.publish_notifier
+        self.notify_publisher(notifier)
 
     def bind(self, folder, request):
         with self.lock:
@@ -195,18 +195,18 @@ async def dispatch_preview(app, action, args):
 
 async def run_preview(app, preview, target, editor=None):
     stopped=asyncio.Event()
-    terminal_wake=asyncio.Event()
+    publish_wake=asyncio.Event()
     loop=asyncio.get_running_loop()
-    set_notifier=getattr(preview,'set_terminal_notifier',None)
-    if set_notifier:set_notifier(lambda:loop.call_soon_threadsafe(terminal_wake.set))
+    set_notifier=getattr(preview,'set_publish_notifier',None)
+    if set_notifier:set_notifier(lambda:loop.call_soon_threadsafe(publish_wake.set))
     menu_confirmed=False
     last_progress=None
     async def pump():
         nonlocal last_progress
         while not stopped.is_set():
-            # Clear before copying/publishing the latest value. A terminal
-            # arriving during I/O stays signalled for another immediate pass.
-            terminal_wake.clear()
+            # Clear before copying the latest value. Updates arriving during
+            # I/O stay signalled for another pass without queuing frames.
+            publish_wake.clear()
             try:
                 if preview.execution_exited:return
                 if preview.phase=='preview':
@@ -229,7 +229,7 @@ async def run_preview(app, preview, target, editor=None):
                 preview.cancel()
                 logging.exception('Mask preview publication failed')
                 return
-            try:await asyncio.wait_for(terminal_wake.wait(),.08)
+            try:await asyncio.wait_for(publish_wake.wait(),.08)
             except asyncio.TimeoutError:pass
     publisher=asyncio.create_task(pump())
     try:
@@ -269,7 +269,7 @@ async def run_preview(app, preview, target, editor=None):
         await app.broadcast({'type':'notice','scope':'operation','action':'shape.paint','ok':False,'message':str(error)})
         logging.exception('Mask preview ended with error')
     finally:
-        stopped.set();terminal_wake.set();await publisher
+        stopped.set();publish_wake.set();await publisher
         if set_notifier:set_notifier(None)
         host_exited=not app.bridge.busy or await asyncio.to_thread(preview.execution_finished)
         finish_guard=getattr(app.desktop,'finish_preview_input_guard',None)

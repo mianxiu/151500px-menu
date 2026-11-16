@@ -549,11 +549,10 @@ static bool gradientNavigationPointer(HWND pointed,const Config& settings,int bu
     if(!canvas || !IsWindowVisible(image) || !gradientWorkspace(image,settings))return false;
     const bool onImage=pointed==image || IsChild(image,pointed);
     const bool onScrollbar=GradientNavigation::scrollbar(pointed,canvas,image);
-    const auto tool=reinterpret_cast<ULONG_PTR>(GetPropW(settings.gradient,GradientNavigation::toolProperty));
     const bool zoomHeld=(GetAsyncKeyState('Z')&0x8000) && GradientNavigation::key('Z',
         (GetAsyncKeyState(VK_CONTROL)&0x8000)!=0,(GetAsyncKeyState(VK_MENU)&0x8000)!=0,
         ((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0);
-    const bool navigating=(GetAsyncKeyState(VK_SPACE)&0x8000) || tool==2 || zoomHeld;
+    const bool navigating=(GetAsyncKeyState(VK_SPACE)&0x8000) || zoomHeld;
     return GradientNavigation::pointer(button,onImage,onScrollbar,navigating);
 }
 static bool taskbarWindow(HWND hwnd) {
@@ -771,16 +770,19 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
             if(!down)gradientBlocked[key]=false;
             return 1;
         }
+        bool gradientFrame=false;
         if(config.gradient && gradientWorkspace(foreground,config)){
             const bool editing=gradientNavigationLocked(config);
-            if(down && logical==VK_ESCAPE && !(GetAsyncKeyState(VK_CONTROL)&0x8000) &&
+            const bool frameActive=(keys.consumed['F'] || keys.frameNative) && !keys.searchConsumed && keys.framePhase==0;
+            gradientFrame=editing && logical=='F' && (frameActive || (!keys.modified() && !keys.held[VK_CAPITAL]));
+            if(down && logical==VK_ESCAPE && !frameActive && !(GetAsyncKeyState(VK_CONTROL)&0x8000) &&
                 !(input.flags&LLKHF_ALTDOWN) && !((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)){
                 if(!repeated)PostMessageW(config.gradient,WM_CLOSE,0,0);
                 // Let the editor restore its preview; Photoshop's Esc would abort that script.
                 gradientBlocked[key]=true;
                 return 1;
             }
-            if(editing && !keys.consumed[logical]){
+            if(editing && !gradientFrame && !(logical==VK_ESCAPE && frameActive) && !keys.consumed[logical]){
                 const bool permitted=GradientNavigation::key(logical,(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0,
                     (input.flags&LLKHF_ALTDOWN)!=0,
                     ((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0);
@@ -788,7 +790,8 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
                     if(!repeated)gradientBlocked[key]=true;
                     return 1;
                 }
-                if(logical==VK_SPACE || logical=='Z')PostMessageW(config.gradient,WM_APP+33,0,0);
+                if((logical==VK_SPACE || logical=='Z') && (!down || !repeated) && !(keys.held[VK_LWIN] || keys.held[VK_RWIN]))
+                    PostMessageW(config.gradient,WM_APP+33,0,0);
                 return timing.next(code,message,data);
             }
         }
@@ -850,6 +853,11 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
         bool unusedPrefix=keys.pending!=-1 && !keys.used;
         bool blocked=routeKey(keys,input.vkCode,message==WM_KEYDOWN || message==WM_SYSKEYDOWN,
                      commandScope,processScope,localConfig,IsWindowVisible(config.overlay),action,GetTickCount64());
+        if(gradientFrame && down && !blocked && !localConfig.frameThread){
+            keys.physical['F']=keys.held['F']=false;
+            gradientBlocked[key]=true;
+            return 1;
+        }
         if(input.vkCode=='F' && !blocked && !repeat && (message==WM_KEYDOWN || message==WM_SYSKEYDOWN) && commandScope) {
             passedFrameKeys[passedFrameCursor++%passedFrameKeys.size()]={input.time,GetAncestor(foreground,GA_ROOTOWNER),!keys.modified() && !keys.held[VK_CAPITAL],false};
         }
@@ -917,6 +925,25 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                   message==WM_MBUTTONUP || message==WM_MBUTTONDOWN?2:-1;
         bool up=message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP;
         const auto& mouse=*reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        static HWND gradientCanvasClick=nullptr;
+        if(message==WM_LBUTTONUP && gradientCanvasClick){
+            const HWND target=gradientCanvasClick;
+            gradientCanvasClick=nullptr;
+            if(GradientNavigation::canvasInput(target,config.gradient))
+                GradientNavigation::postCanvasButton(target,WM_LBUTTONUP,mouse.pt);
+            return 1;
+        }
+        const bool gradientCaptured=index>=0 && index<2 && screenSampleCaptured(config.gradient,foreground);
+        const bool captured=gradientCaptured || (index>=0 && index<2 &&
+            config.enabled && !config.textInput && config.colorEditor && screenSampleCaptured(config.overlay,foreground));
+        const int sampleRoute=sampleClicks.route(index,up,captured);
+        if(sampleRoute==2)return 1;
+        // The dock's region excludes the canvas, so deliver the captured click explicitly.
+        if(sampleRoute==1 && gradientCaptured){
+            PostMessageW(config.gradient,gradientSampleClick,message,MAKELPARAM(mouse.pt.x,mouse.pt.y));
+            return 1;
+        }
+        if(sampleRoute==1)return timing.next(code,message,data);
         static unsigned gradientBlockedButtons=0;
         const unsigned button=index>=0?1u<<index:0;
         if(up && (gradientBlockedButtons&button)){
@@ -931,6 +958,16 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
             if(up)buttons&=~button;
             // Windows can route an inactive window's wheel event under the pointer.
             const HWND pointed=startedHere?nullptr:WindowFromPoint(mouse.pt);
+            // A globally held button delays legacy Photoshop redraw even when
+            // the canvas overlay owns the drag. Deliver its private click pair.
+            if(message==WM_LBUTTONDOWN && gradientNavigationLocked(config) &&
+                gradientPointerScope(foreground,nullptr,config,true) &&
+                GradientNavigation::canvasInput(pointed,editor) &&
+                !((GetAsyncKeyState(VK_SPACE)|GetAsyncKeyState('Z'))&0x8000) &&
+                GradientNavigation::postCanvasButton(pointed,WM_LBUTTONDOWN,mouse.pt)){
+                gradientCanvasClick=pointed;
+                return 1;
+            }
             if(gradientPointerScope(foreground,pointed,config,startedHere)){
                 if(!up && gradientNavigationLocked(config) && !gradientNavigationPointer(pointed,config,index)){
                     gradientBlockedButtons|=button;
@@ -940,13 +977,6 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                 PostMessageW(editor,WM_APP+33,0,0);
             }
         }
-        const bool captured=config.enabled && !config.textInput && config.colorEditor &&
-            index>=0 && index<2 && screenSampleCaptured(config.overlay,foreground);
-        const int sampleRoute=sampleClicks.route(index,up,captured);
-        if(sampleRoute==2)return 1;
-        // Leave sampling to the menu's real capture. It is neither an outside
-        // dismiss, a taskbar activation nor a right-click menu cancellation.
-        if(sampleRoute==1)return timing.next(code,message,data);
         if(message==WM_MOUSEMOVE && keys.pending!=-1 && !keys.used && !intentRevealed && !(mouse.flags&LLMHF_INJECTED)) {
             const long long dx=mouse.pt.x-intentOrigin.x,dy=mouse.pt.y-intentOrigin.y;
             if(dx*dx+dy*dy>=144){intentRevealed=true;emit(HoldReveal);}
@@ -1915,8 +1945,8 @@ int main(int argc,char** argv) {
                 !GradientNavigation::key(VK_DELETE,false,false,false) &&
                 !GradientNavigation::key(VK_RETURN,false,false,false) &&
                 !GradientNavigation::key('S',true,false,false));
-            check(GradientNavigation::pointer(-1,true,false,false) &&
-                GradientNavigation::pointer(0,false,true,false) &&
+            check(!GradientNavigation::pointer(-1,true,false,false) && GradientNavigation::pointer(-1,true,false,true) &&
+                !GradientNavigation::pointer(0,false,true,false) && GradientNavigation::pointer(0,false,true,true) &&
                 GradientNavigation::pointer(0,true,false,true) &&
                 !GradientNavigation::pointer(0,true,false,false) &&
                 !GradientNavigation::pointer(0,false,false,true));
@@ -1930,8 +1960,13 @@ int main(int argc,char** argv) {
             check(GradientNavigation::findImage(canvas,surface,clip)==image);
             check(image && SetPropW(editor,GradientNavigation::ownerProperty,hwnd) &&
                 SetPropW(editor,GradientNavigation::imageProperty,image));
-            check(gradientNavigationLocked(gradient) && gradientNavigationPointer(image,gradient,-1) &&
-                gradientNavigationPointer(scrollbar,gradient,0) && !gradientNavigationPointer(row,gradient,-1) &&
+            HWND hit=CreateWindowW(L"STATIC",L"Owned gradient hit area",WS_POPUP,0,0,10,10,editor,nullptr,wc.hInstance,nullptr);
+            check(hit && SetPropW(hit,GradientNavigation::canvasInputProperty,editor) &&
+                GradientNavigation::canvasInput(hit,editor) && !GradientNavigation::canvasInput(hit,other) &&
+                !GradientNavigation::canvasInput(image,editor));
+            DestroyWindow(hit);
+            check(gradientNavigationLocked(gradient) && !gradientNavigationPointer(image,gradient,-1) &&
+                !gradientNavigationPointer(scrollbar,gradient,0) && !gradientNavigationPointer(row,gradient,-1) &&
                 !gradientNavigationPointer(other,gradient,-1));
             RemovePropW(editor,GradientNavigation::ownerProperty);
             check(!gradientNavigationLocked(gradient));
