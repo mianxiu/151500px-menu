@@ -420,7 +420,6 @@ static void chooseGradientMode(bool overlay){
     if(overlay || gradientPanel.overlay)switchGradientMode(overlay);
 }
 static void invalidateGradientView(){
-    gradientLayerTint.hide();
     stopGradientSample();
     if(gradientPanel.overlay || gradientPanel.viewWaiting){
         if(gradientPanel.overlay){
@@ -439,14 +438,24 @@ static void invalidateGradientView(){
 static void stackGradientWindows(HWND editor,HWND workspace,HWND visual,HWND hit){
     const auto externalAbove=[editor](HWND group){
         HWND above=GetWindow(group,GW_HWNDPREV);
-        while(above && GetAncestor(above,GA_ROOTOWNER)==editor)above=GetWindow(above,GW_HWNDPREV);
+        const auto topmost=GetWindowLongPtrW(group,GWL_EXSTYLE)&WS_EX_TOPMOST;
+        while(above){
+            if((GetWindowLongPtrW(above,GWL_EXSTYLE)&WS_EX_TOPMOST)!=topmost)return static_cast<HWND>(nullptr);
+            if(IsWindowVisible(above) && !IsIconic(above) && GetAncestor(above,GA_ROOTOWNER)!=editor)break;
+            above=GetWindow(above,GW_HWNDPREV);
+        }
         return above;
     };
     const HWND above=externalAbove(workspace);
+    const auto topmost=GetWindowLongPtrW(workspace,GWL_EXSTYLE)&WS_EX_TOPMOST;
     // Keep the group above Photoshop and beneath the windows covering it.
-    for(HWND member:{editor,visual,hit})
-        if(member && IsWindowVisible(member) && externalAbove(member)!=above)
-            SetWindowPos(member,above?above:HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    for(HWND member:{editor,visual,hit}){
+        if(!member || !IsWindowVisible(member))continue;
+        const auto memberTopmost=GetWindowLongPtrW(member,GWL_EXSTYLE)&WS_EX_TOPMOST;
+        if(memberTopmost==topmost && externalAbove(member)==above)continue;
+        const HWND after=above?above:topmost?HWND_TOPMOST:memberTopmost?HWND_NOTOPMOST:HWND_TOP;
+        SetWindowPos(member,after,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
+    }
 }
 static struct GradientOwner {
     HWND hwnd=nullptr;
@@ -492,7 +501,7 @@ static struct GradientOwner {
             return;
         }
         if(gradientLayerColor!=CLR_INVALID && now<gradientLayerVerifiedUntil && gradientPanel.overlay &&
-           gradientPanel.editable() && !gradientFocusing && now>=gradientNavigationUntil &&
+           gradientPanel.editable() && !gradientFocusing &&
            usable() && foreground(front))
             gradientLayerTint.update(editor,hwnd,uiTheme,gradientLayerColor,gradientPanel.phase=="preview");
         else gradientLayerTint.hide();
@@ -512,6 +521,7 @@ static struct GradientOwner {
                     SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
             }
             if(!foreground(front)){
+                stopGradientSample();
                 gradientCanvas.suspendPointer();
                 if(front!=previousForeground)gradientPanel.flush();
             }
@@ -613,55 +623,20 @@ static std::string normalized(std::string value) {
 static ImVec2 basicLabelExtent(int index);
 static float basicTextOffset();
 #include "ShapeColorEditor.h"
-static bool gradientSampling=false,gradientSampleDown=false;
-static HWND gradientSampleReturn=nullptr;
 static void stopGradientSample(){
-    if(!gradientSampling)return;
-    gradientSampling=gradientSampleDown=false;
-    RemovePropW(window,screenSampleProperty);
-    if(GetCapture()==window)ReleaseCapture();
-    if(GetForegroundWindow()==window && IsWindowVisible(gradientSampleReturn))SetForegroundWindow(gradientSampleReturn);
-    gradientSampleReturn=nullptr;
+    if(!GradientNavigation::sampling(window))return;
+    RemovePropW(window,GradientNavigation::sampleProperty);
     if(gradientPanel.message=="点击画布取色，Esc 取消")gradientPanel.message.clear();
 }
 static void beginGradientSample(){
-    if(!gradientPanel.editable() || !gradientPanel.overlay || gradientViewDirty || !gradientCanvas.view.current())return;
-    const HWND front=GetForegroundWindow();
-    if(!gradientOwner.foreground(front))return;
-    gradientSampleReturn=front==window?GetAncestor(gradientCanvas.view.canvas,GA_ROOT):front;
-    SetForegroundWindow(window);
-    if(GetForegroundWindow()!=window){gradientPanel.message="无法开始画布取色";return;}
-    gradientSampling=true;gradientSampleDown=false;
-    SetCapture(window);
-    if(GetCapture()!=window || !SetPropW(window,screenSampleProperty,window)){
-        stopGradientSample();gradientPanel.message="无法开始画布取色";return;
+    if(GradientNavigation::sampling(window)){stopGradientSample();return;}
+    if(!gradientPanel.editable() || !gradientPanel.overlay || gradientViewDirty || !gradientCanvas.view.current() ||
+       !gradientOwner.foreground(GetForegroundWindow()))return;
+    if(!SetPropW(window,GradientNavigation::sampleProperty,window)){
+        gradientPanel.message="无法开始画布取色";return;
     }
-    gradientCanvas.hide();
     SetCursor(LoadCursorW(nullptr,IDC_CROSS));
     gradientPanel.message="点击画布取色，Esc 取消";
-}
-static bool gradientSampleMessage(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
-    if(!gradientSampling)return false;
-    if(msg==WM_CAPTURECHANGED || msg==WM_CANCELMODE || GetForegroundWindow()!=hwnd){stopGradientSample();return false;}
-    if(msg==WM_SETCURSOR){SetCursor(LoadCursorW(nullptr,IDC_CROSS));return true;}
-    if(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN){if(wp==VK_ESCAPE)stopGradientSample();return true;}
-    if(msg==WM_RBUTTONDOWN || msg==WM_RBUTTONUP){stopGradientSample();return true;}
-    if(msg==WM_LBUTTONDOWN){gradientSampleDown=true;return true;}
-    if(msg==WM_LBUTTONUP){
-        if(gradientSampleDown){
-            POINT at{short(LOWORD(lp)),short(HIWORD(lp))};ClientToScreen(hwnd,&at);
-            COLORREF pixel=CLR_INVALID;
-            const auto& view=gradientCanvas.view;
-            if(gradientPanel.editable() && view.current() && PtInRect(&view.clip,at) && WindowFromPoint(at)==view.image){
-                pixel=GradientCanvasPanel::screenPixel(at);
-            }
-            stopGradientSample();
-            if(pixel!=CLR_INVALID)gradientPanel.applyRgb(Json::array({GetRValue(pixel),GetGValue(pixel),GetBValue(pixel)}));
-            else gradientPanel.message="请点击 Photoshop 画布内的颜色";
-        }
-        return true;
-    }
-    return msg==WM_LBUTTONDBLCLK || msg==WM_MOUSEWHEEL || msg==WM_MOUSEHWHEEL;
 }
 static void sendMenuTool(const char* action,const Json& params) {
     if(stabilityInspection)return;
@@ -1156,12 +1131,8 @@ static LRESULT gradientFrameHit(POINT point,RECT client,LONG edge,RECT dragArea)
 }
 static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if(gradientWindow){
-        if(msg==gradientSampleClick){
-            POINT at{short(LOWORD(lp)),short(HIWORD(lp))};
-            if(ScreenToClient(hwnd,&at))gradientSampleMessage(hwnd,static_cast<UINT>(wp),0,MAKELPARAM(at.x,at.y));
-            return 0;
-        }
-        if(gradientSampleMessage(hwnd,msg,wp,lp))return 0;
+        if(msg==GradientNavigation::cancelSample || (GradientNavigation::sampling(hwnd) &&
+            ((msg==WM_KEYDOWN && wp==VK_ESCAPE) || msg==WM_RBUTTONDOWN))){stopGradientSample();return 0;}
         if(msg==WM_APP+33 && gradientWindow){invalidateGradientView();return 0;}
         if(msg==WM_TIMER && wp==gradientOwnerTimer){gradientOwner.update(hwnd);return 0;}
         if(msg==WM_CLOSE && gradientPanel.ready()){cancelGradientEditor();return 0;}
@@ -2971,14 +2942,13 @@ int main() {
             }
             ImGui::NewFrame();
             if(gradientWindow){
-                if(gradientSampling && GetForegroundWindow()!=window)stopGradientSample();
                 const bool moving=gradientPanel.overlay && (gradientFocusing || gradientRefreshAt || gradientPanel.viewWaiting);
                 if(gradientPanel.overlay && !updateGradientDockRegion(moving)){
                     switchGradientMode(false);gradientPanel.message="画布叠加窗口无法显示";
                 }
                 if(moving && gradientPanel.overlay){if(!gradientFocusing)gradientPanel.flush();}
                 else gradientPanel.draw(false,chooseGradientMode,beginGradientSample);
-                if(gradientPanel.overlay && !moving && !gradientSampling && !gradientViewDirty && !gradientOwner.hidden){
+                if(gradientPanel.overlay && !moving && !gradientViewDirty && !gradientOwner.hidden){
                     if(!gradientCanvas.draw(true) &&
                         gradientCanvas.view.current() && gradientPanel.editable()){
                         switchGradientMode(false);gradientPanel.message="当前渐变无法在画布上显示控制柄";
@@ -3485,12 +3455,19 @@ int main() {
                         for(bool covered:{false,true}){
                             SetWindowPos(workspace,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
                             if(covered)SetWindowPos(cover,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
-                            stackGradientWindows(host,workspace,overlay.visual,overlay.hit);
                             std::vector<HWND> order;
-                            for(HWND at=GetTopWindow(nullptr);at;at=GetWindow(at,GW_HWNDNEXT))order.push_back(at);
                             const auto rank=[&](HWND at){return std::find(order.begin(),order.end(),at)-order.begin();};
+                            const auto inScope=[&](HWND member){return rank(member)<rank(workspace) && (!covered || rank(member)>rank(cover));};
+                            // The real owner timer reconciles Z order again when another window moves.
+                            for(int attempt=0;attempt<4;++attempt){
+                                stackGradientWindows(host,workspace,overlay.visual,overlay.hit);
+                                order.clear();
+                                for(HWND at=GetTopWindow(nullptr);at;at=GetWindow(at,GW_HWNDNEXT))order.push_back(at);
+                                if(inScope(host) && inScope(overlay.visual) && inScope(overlay.hit))break;
+                                Sleep(20);
+                            }
                             for(HWND member:{host,overlay.visual,overlay.hit})
-                                if(rank(member)>=rank(workspace) || (covered && rank(member)<=rank(cover))){
+                                if(!inScope(member)){
                                     std::cerr<<"Stack failure: member="<<member<<" rank="<<rank(member)<<" workspace="<<rank(workspace)
                                         <<" cover="<<rank(cover)<<" covered="<<covered<<" visible="<<IsWindowVisible(member)
                                         <<" topmost="<<bool(GetWindowLongPtrW(member,GWL_EXSTYLE)&WS_EX_TOPMOST)<<" owner="<<GetAncestor(member,GA_ROOTOWNER)<<" editor="<<host<<'\n';
@@ -3518,6 +3495,11 @@ int main() {
                         std::fill_n(bands.begin()+15,9,blue);
                         if(GradientLayerTint::selected(bands.data(),10,3,5,gray,blue).bottom)
                             throw std::runtime_error("Ambiguous native layer selection bands were accepted");
+                        GradientLayerTint tint;
+                        tint.paintedAt=1000;tint.paintedPanel={50,60,250,500};
+                        if(!tint.retainsRow(tint.paintedPanel,1160) || tint.retainsRow(tint.paintedPanel,1240) ||
+                           tint.retainsRow(RECT{50,61,250,501},1080))
+                            throw std::runtime_error("Gradient row did not distinguish repaint, panel movement, and timeout");
                         const RECT clip{780,190,2692,2030};
                         const auto frame=GradientPanel::dockBounds(clip,192);
                         const auto timeline=GradientPanel::dockTimeline(frame,192),picker=GradientPanel::dockPicker(frame,192);
@@ -3577,12 +3559,26 @@ int main() {
                         overlay.view.clip={LONG(quarter.x)-2,LONG(quarter.y)-2,LONG(away.x)+2,LONG(away.y)+2};
                         if(overlay.clickAt(quarter)!=Canvas::addStop || overlay.clickAt(away)!=Canvas::sampleColor)
                             throw std::runtime_error("Canvas eyedropper must leave the gradient strip available for adding stops");
+                        const auto opacityQuarter=overlay.railPoint(.25,overlay.opacityOffset());
+                        auto& testClip=overlay.view.clip;
+                        testClip.left=std::min(testClip.left,LONG(std::floor(opacityQuarter.x))-2);
+                        testClip.top=std::min(testClip.top,LONG(std::floor(opacityQuarter.y))-2);
+                        testClip.right=std::max(testClip.right,LONG(std::ceil(opacityQuarter.x))+2);
+                        testClip.bottom=std::max(testClip.bottom,LONG(std::ceil(opacityQuarter.y))+2);
+                        if(overlay.clickAt(opacityQuarter)!=Canvas::addOpacity || overlay.stripLocation(opacityQuarter,0)!=3072)
+                            throw std::runtime_error("Opacity rail did not independently identify the reverse position");
                         overlay.handles.push_back({quarter,Canvas::color,0,0,8});
                         if(overlay.clickAt(quarter)!=Canvas::noClick)
                             throw std::runtime_error("Canvas eyedropper took input from a gradient handle");
+                        overlay.editor=window;
+                        if(!SetPropW(window,GradientNavigation::sampleProperty,window) ||
+                           overlay.clickAt(quarter)!=Canvas::sampleColor ||
+                           overlay.clickAt(away+Canvas::Point{25,25})!=Canvas::noClick)
+                            throw std::runtime_error("Explicit eyedropper did not use the canvas hit area");
                         for(auto& stop:model.track(1))stop.erase("rgb");
                         if(overlay.clickAt(away)!=Canvas::noClick)
                             throw std::runtime_error("Canvas RGB eyedropper was offered for native color channels");
+                        RemovePropW(window,GradientNavigation::sampleProperty);
                         std::cout<<"Gradient canvas calibration, rotation, DPI and hit geometry passed\n";
                     }
                     for(const char* font:{"small","medium","large"}){

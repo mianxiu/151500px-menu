@@ -2,7 +2,7 @@
 
 struct GradientPanel {
     static constexpr int end=4096;
-    static constexpr int minWidth=550,minHeight=450,overlayHeight=124;
+    static constexpr int minWidth=550,minHeight=450,overlayHeight=130;
     static constexpr int pickerBodyWidth=154;
     static constexpr int pickerWidth=int(pickerBodyWidth+2*menuDenseGap);
     static constexpr int pickerHeight=int(pickerWidth-menuHueBarWidth-menuHarmonyLaneWidth-menuDenseGap+menuShortcutHeight);
@@ -94,7 +94,7 @@ struct GradientPanel {
 
     void select(int lane,int index,bool ctrl,bool shift){
         if(shift && anchorLane==lane){
-            selection={};
+            if(!ctrl)selection={};
             for(int i=std::min(index,anchorIndex);i<=std::max(index,anchorIndex);++i)selection[lane]|=bit(i);
         }else{
             if(ctrl)selection[lane]^=bit(index);
@@ -337,10 +337,10 @@ struct GradientPanel {
         draw->PopClipRect();
     }
 
-    void overview(){
+    void overview(float reserve=0){
         const auto at=ImGui::GetCursorScreenPos();
         const float inset=menuGradientHandleSize*scale,height=menuShortcutHeight*.6f*scale;
-        const float fullWidth=std::max(inset*3,ImGui::GetContentRegionAvail().x),width=fullWidth-inset*2,left=at.x+inset;
+        const float fullWidth=std::max(inset*3,ImGui::GetContentRegionAvail().x-reserve),width=fullWidth-inset*2,left=at.x+inset;
         ImGui::InvisibleButton("##gradient-viewport",{fullWidth,height});
         const float point=(ImGui::GetIO().MousePos.x-left)*end/width;
         const float grip=std::min(7*scale*end/width,span*.32f);
@@ -376,6 +376,10 @@ struct GradientPanel {
         const auto handle=ImGui::GetColorU32(ImGuiCol_CheckMark);
         for(float x:{visibleA.x,visibleB.x})
             draw->AddRectFilled({x-1.5f*scale,at.y+scale},{x+1.5f*scale,at.y+height-scale},handle,scale);
+    }
+    void opacityValue(){
+        selectionValue("不透明度",0,0,100,.2f,"%.2f%%",[](const Json& stop){return stop.at("opacity").get<double>();},
+            [](Json& stop,double value){stop["opacity"]=value;});
     }
 
     static double angleAt(ImVec2 center,ImVec2 point,bool snap){
@@ -539,7 +543,10 @@ struct GradientPanel {
                 ImGui::EndTable();
             }
             timeline(scale);
-            overview();
+            const bool dockOpacity=docked && selection[0];
+            const auto& style=ImGui::GetStyle();
+            overview(dockOpacity?fieldWidth*scale+ImGui::CalcTextSize("不透明度").x+style.ItemInnerSpacing.x+style.ItemSpacing.x:0);
+            if(dockOpacity){ImGui::SameLine();opacityValue();}
             if(!docked)nodeButtons();
             if(editable() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive()){
                 const auto& io=ImGui::GetIO();
@@ -570,7 +577,7 @@ struct GradientPanel {
                     break;
                 }
                 nextField("中点");selectionValue("中点",-1,0,100,.2f,"%.0f%%",[](const Json& stop){return stop.at("midpoint").get<double>();},[](Json& stop,double value){stop["midpoint"]=int(std::lround(value));});
-                if(selection[0]){nextField("不透明度");selectionValue("不透明度",0,0,100,.2f,"%.2f%%",[](const Json& stop){return stop.at("opacity").get<double>();},[](Json& stop,double value){stop["opacity"]=value;});}
+                if(selection[0]){nextField("不透明度");opacityValue();}
                 if(selection[1]){
                     const auto& first=track(1).front();const bool native=first.contains("native");
                     const std::string model=native?first.at("native").at("model").get<std::string>():"rgb";

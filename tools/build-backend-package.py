@@ -27,6 +27,10 @@ resources={n for n in names if n.startswith('uxp/offline-probe/')}
 assert resources=={'uxp/offline-probe/'+n for n in ('manifest.json','main.js','labels.js')},resources
 for n in resources:assert archive.extract(names[n])==(ROOT/n).read_bytes()
 for n in ('native/MenuHost.exe','native/HotkeyHost.exe','native/InputContext.dll','native/InputService.dll'):assert archive.extract(names[n])==(ROOT/n).read_bytes(),n
+for filename in ('ControlHost.exe', 'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll',
+                 'WebView2Loader.dll', 'WebView2-LICENSE.txt', 'WebView2-NOTICE.txt'):
+    path = 'native/control/' + filename
+    assert archive.extract(names[path]) == (ROOT/path).read_bytes(), path
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 exe_checksum=output_dir/'151500px-menu.exe.sha256'
 exe_checksum.write_text(sha(exe)+'  151500px-menu.exe\n','ascii')
@@ -73,6 +77,8 @@ with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as bundle:
     bundle.write(ROOT/'tools/inspect-panels.ps1','tools/inspect-panels.ps1')
     bundle.write(ROOT/'tools/inspect-uxp.ps1','tools/inspect-uxp.ps1')
     for notice in sorted((ROOT/'licenses').glob('*.txt')):bundle.write(notice,'licenses/'+notice.name)
+    for notice in ('WebView2-LICENSE.txt', 'WebView2-NOTICE.txt'):
+        bundle.write(ROOT/'native/control'/notice, 'licenses/'+notice)
     for source,target in ((ROOT/'native/fonts/OFL-1.1.txt','licenses/fonts-OFL-1.1.txt'),(ROOT/'native/fonts/COPYRIGHT.txt','licenses/fonts-COPYRIGHT.txt'),(ROOT/'native/vendor/imgui/LICENSE.txt','licenses/imgui.txt'),(ROOT/'native/vendor/json/LICENSE.MIT','licenses/json.txt'),(ROOT/'native/vendor/manifest.json','licenses/native-manifest.json')):bundle.write(source,target)
 output.with_suffix('.zip.sha256').write_text(sha(output)+'  '+output.name+'\n','ascii')
 print('Built unified backend:',output)

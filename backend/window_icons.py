@@ -1,4 +1,4 @@
-"""Native icon handles shared by the Edge panel and notification area."""
+"""Native icon handles for the notification area."""
 import ctypes
 from ctypes import wintypes as W
 from pathlib import Path

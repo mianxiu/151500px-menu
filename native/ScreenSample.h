@@ -3,7 +3,6 @@
 // A marker alone never authorizes outside clicks: the visible foreground menu
 // must still own Win32 capture on its own GUI thread.
 static constexpr wchar_t screenSampleProperty[]=L"PhotoshopMenu.ScreenSample.Capture";
-static constexpr UINT gradientSampleClick=WM_APP+34;
 static bool screenSampleCaptured(HWND menu,HWND foreground) {
     if(!menu || foreground!=menu || !IsWindowVisible(menu) || GetPropW(menu,screenSampleProperty)!=menu)return false;
     GUITHREADINFO info{};info.cbSize=sizeof(info);

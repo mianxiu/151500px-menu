@@ -495,7 +495,8 @@ class UxpBridgeTests(unittest.IsolatedAsyncioTestCase):
             (folder/'probe-last.json').write_text(json.dumps({'photoshop_version':host,'probe_version':plugin,
                 'legacy_preview_available':capability,'document_redraw_available':official}),'utf-8')
             self.bridge._application.reset_mock();self.bridge.transport.call.reset_mock()
-            await self.bridge.execute_shape(params,frozen_target=self.target,preview=object())
+            with patch('backend.uxp_bridge.running_application',side_effect=lambda attach:attach()):
+                await self.bridge.execute_shape(params,frozen_target=self.target,preview=object())
             self.bridge.transport.call.assert_called_once()
             call=self.bridge.transport.call.call_args.kwargs
             self.assertEqual(call['command'],'shape.legacy.preview' if legacy else 'shape.preview')

@@ -5,15 +5,18 @@ import re
 from uuid import UUID
 
 from .photoshop_launch import registered_executable
-from .photoshop_version import exe_version, version_tuple
+from .photoshop_version import exe_version, installed_paths, version_tuple
 from .settings import atomic_json
-from .uxp_management import photoshop_process_ids
 
 
 ALIAS = 'Photoshop.Application'
 USER_ALIAS = r'Software\Classes\Photoshop.Application'
 VERSIONED = re.compile(r'Photoshop\.Application\.\d+', re.I)
 FIELDS = ('CLSID', 'CurVer')
+
+
+class PhotoshopComUnavailable(RuntimeError):
+    pass
 
 
 def registry_value(hive, path):
@@ -50,18 +53,61 @@ def versions():
     return sorted(items, key=lambda item:version_tuple(item['version']), reverse=True)
 
 
-def active_version(prog_id):
-    import pythoncom
-    import win32com.client
-    pythoncom.CoInitialize()
+def running_application(attach, expected_pid=None):
+    import win32api
+    import win32process
+    from .uxp_management import photoshop_process_ids
+
+    pids = photoshop_process_ids()
+    if len(pids) != 1 or expected_pid is not None and pids != (expected_pid,):
+        raise RuntimeError('无法确认唯一的 Photoshop 进程')
+    handle = win32api.OpenProcess(0x410, False, pids[0])
     try:
-        app = win32com.client.GetActiveObject(prog_id)
+        path = Path(win32process.GetModuleFileNameEx(handle,0)).resolve(strict=True)
+        expected = version_tuple(exe_version(path))[:2]
+        choices = [item['id'] for item in versions() if Path(item['path']) == path]
         try:
-            return str(app.Version)
-        finally:
-            del app
+            if registered_executable() == path:
+                choices.append(ALIAS)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        for prog_id in choices:
+            try:
+                application = attach(prog_id)
+            except Exception as error:
+                if getattr(error,'hresult',None) != -2147221021:
+                    raise
+                continue
+            if version_tuple(str(application.Version))[:2] == expected and photoshop_process_ids() == pids:
+                return application
+            raise RuntimeError('Photoshop COM 实例与当前进程不匹配')
+        raise PhotoshopComUnavailable('当前 Photoshop 版本没有可连接的 COM 入口')
     finally:
-        pythoncom.CoUninitialize()
+        handle.Close()
+
+
+def installation_list(registered, current_path):
+    items = {item['path'].casefold():item for item in reversed(registered)}
+    for candidate in [*installed_paths(), *([current_path] if current_path else [])]:
+        try:
+            path = candidate.resolve(strict=True)
+            if str(path).casefold() not in items:
+                items[str(path).casefold()] = {'id':None, 'name':path.parent.name,
+                                              'path':str(path), 'version':exe_version(path)}
+        except OSError:
+            continue
+    return sorted(items.values(), key=lambda item:version_tuple(item['version']), reverse=True)
+
+
+def verify_default(item):
+    import pywintypes
+    import winreg
+    clsid = registry_value(winreg.HKEY_CLASSES_ROOT, ALIAS+r'\CLSID')[1]
+    preferred = registry_value(winreg.HKEY_CLASSES_ROOT, ALIAS+r'\CurVer')[1]
+    if (not clsid or UUID(clsid) != UUID(item['clsid']) or preferred != item['id'] or
+            UUID(str(pywintypes.IID(ALIAS))) != UUID(item['clsid']) or
+            registered_executable() != Path(item['path'])):
+        raise RuntimeError('Windows 默认 COM 入口未指向所选 Photoshop')
 
 
 def user_state():
@@ -119,9 +165,17 @@ class PhotoshopComDefault:
         import winreg
         clsid = registry_value(winreg.HKEY_CLASSES_ROOT, ALIAS+r'\CLSID')[1] or ''
         preferred = registry_value(winreg.HKEY_CLASSES_ROOT, ALIAS+r'\CurVer')[1]
-        items = versions()
-        matches = [item for item in items if item['clsid'].lower() == clsid.lower()]
+        registered = versions()
+        matches = [item for item in registered if item['clsid'].lower() == clsid.lower()]
         current = next((item for item in matches if item['id'] == preferred), matches[0] if matches else None)
+        path = Path(current['path']) if current else None
+        if path is None and clsid:
+            try:
+                path = registered_executable()
+            except (OSError, RuntimeError, ValueError):
+                pass
+        items = installation_list(registered, path)
+        current = next((item for item in items if path and Path(item['path']) == path), None)
         return {'versions':items, 'default':current, 'can_restore':self.backup.is_file()}
 
     def saved(self):
@@ -139,23 +193,11 @@ class PhotoshopComDefault:
         return record
 
     def switch(self, choice):
-        import winreg
         if not isinstance(choice,str) or not VERSIONED.fullmatch(choice):
             raise ValueError('请选择已登记的 Photoshop 版本')
         item = next((item for item in versions() if item['id'] == choice), None)
         if item is None:
             raise RuntimeError('所选 Photoshop 版本已不可用')
-        pids = photoshop_process_ids()
-        if len(pids) != 1:
-            raise RuntimeError('请只打开要设为默认的 Photoshop 版本')
-        try:
-            running = active_version(choice)
-        except Exception as error:
-            raise RuntimeError('请先打开所选 Photoshop 版本，再设为默认') from error
-        if version_tuple(running)[:2] != version_tuple(item['version'])[:2]:
-            raise RuntimeError('运行中的 Photoshop 与所选版本不符')
-        if photoshop_process_ids() != pids:
-            raise RuntimeError('Photoshop 进程已改变，请刷新后重试')
         original = self.saved()
         if original and original.get('pending'):
             raise RuntimeError('上次 COM 切换待恢复，请先恢复原设置')
@@ -165,10 +207,7 @@ class PhotoshopComDefault:
         result = {'root':True, 'CLSID':[True,item['clsid']], 'CurVer':[True,choice]}
         try:
             write_user_state(result)
-            effective = registry_value(winreg.HKEY_CLASSES_ROOT, ALIAS+r'\CLSID')[1]
-            if (not effective or effective.lower()!=item['clsid'].lower() or
-                    active_version(ALIAS)!=running or photoshop_process_ids()!=pids):
-                raise RuntimeError('未能在默认入口连到所选 Photoshop 版本')
+            verify_default(item)
             response = self.status()
             atomic_json(self.backup, {**record,'pending':False})
             return {**response,'message':'Photoshop COM 默认版本已切换'}

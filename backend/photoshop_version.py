@@ -26,15 +26,26 @@ def installed_paths(explicit=None):
     if explicit:return [Path(explicit)]
     candidates=[]
     import winreg
+    def locations(hive, view, root, field, display_prefix=None):
+        try:
+            with winreg.OpenKey(hive,root,0,winreg.KEY_READ|view) as key:
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    try:
+                        with winreg.OpenKey(key,winreg.EnumKey(key,i)) as entry:
+                            if display_prefix and not str(winreg.QueryValueEx(entry,'DisplayName')[0]).startswith(display_prefix):
+                                continue
+                            location=winreg.QueryValueEx(entry,field)[0]
+                            if isinstance(location,str) and location.strip(' "'):
+                                yield Path(os.path.expandvars(location.strip(' "')))/'Photoshop.exe'
+                    except OSError:
+                        continue
+        except OSError:
+            return
+
     for hive in (winreg.HKEY_LOCAL_MACHINE,winreg.HKEY_CURRENT_USER):
         for view in (winreg.KEY_WOW64_64KEY,winreg.KEY_WOW64_32KEY):
-            try:
-                with winreg.OpenKey(hive,r'SOFTWARE\Adobe\Photoshop',0,winreg.KEY_READ|view) as key:
-                    for i in range(winreg.QueryInfoKey(key)[0]):
-                        with winreg.OpenKey(key,winreg.EnumKey(key,i)) as version:
-                            try:candidates.append(Path(winreg.QueryValueEx(version,'ApplicationPath')[0])/'Photoshop.exe')
-                            except OSError:pass
-            except OSError:pass
+            candidates.extend(locations(hive,view,r'SOFTWARE\Adobe\Photoshop','ApplicationPath'))
+            candidates.extend(locations(hive,view,r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','InstallLocation','Adobe Photoshop'))
     for name in ('ProgramFiles','ProgramW6432','ProgramFiles(x86)'):
         if os.environ.get(name):
             candidates.extend((Path(os.environ[name])/'Adobe').glob('Adobe Photoshop*/Photoshop.exe'))

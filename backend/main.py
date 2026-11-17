@@ -820,7 +820,6 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
                 logging.exception('Status observation failed')
                 app.version_health.observe({'version':APP_VERSION, '_status_unavailable':True})
                 await app.broadcast({'type':'version-health','data':app.version_health.snapshot()})
-            await asyncio.to_thread(app.control.refresh_icon)
             desktop=app.desktop
             idle=desktop and not desktop.photoshop_foreground and not desktop.visible and not app.clients and not (
                 app.bridge.busy or app.operation_lock.locked() or app.photoshop_launcher.active or app.stability.active)

@@ -223,8 +223,8 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         target={'session':'selected-uxp','document_id':3,'active_layer_id':7,'layer_ids':[7]}
         view={'matrix':[1,0,0,1,0,0],'viewport':[100,100,800,600],
               'document':[700,500],'layer':None,'tool':'moveTool'}
-        unavailable=OSError('Operation unavailable')
-        unavailable.hresult=-2147221021
+        from backend.photoshop_com_default import PhotoshopComUnavailable
+        unavailable=PhotoshopComUnavailable('Operation unavailable')
         transport=SimpleNamespace(observe=Mock(return_value=(None,{'session':target['session']})),
                                   call=Mock(return_value={'session':target['session'],'gradient_view':view}))
         bridge=SimpleNamespace(executor=None,transport=transport,_application=Mock(side_effect=unavailable))
@@ -232,9 +232,11 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         editor.target,editor.owner=target,777
         editor.require_focus=Mock()
         process=SimpleNamespace(GetWindowThreadProcessId=lambda hwnd:(4,9))
-        with patch.dict(sys.modules,win32process=process), patch('backend.gradient_editor.photoshop_process_ids') as pids:
+        with patch.dict(sys.modules,win32process=process), patch('backend.gradient_editor.photoshop_process_ids') as pids, \
+                patch('backend.gradient_editor.running_application',side_effect=unavailable) as attach:
             pids.return_value=(9,)
             self.assertEqual(await editor.read_view(),view)
+            attach.assert_called_once_with(bridge._application,9)
             transport.call.assert_called_once_with('inspect',gradient_view_target=target)
             transport.call.reset_mock()
             pids.return_value=(9,12)

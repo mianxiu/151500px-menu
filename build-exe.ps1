@@ -13,6 +13,7 @@ try {
     & (Join-Path $PSScriptRoot 'tools\build-menu-host.ps1')
     & (Join-Path $PSScriptRoot 'tools\build-input-context.ps1')
     & (Join-Path $PSScriptRoot 'tools\build-input-service.ps1')
+    & (Join-Path $PSScriptRoot 'tools\build-control-host.ps1')
     if (-not $SkipFrontend) {
         Push-Location (Join-Path $PSScriptRoot 'frontend')
         try {

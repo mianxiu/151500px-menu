@@ -777,7 +777,8 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
             gradientFrame=editing && logical=='F' && (frameActive || (!keys.modified() && !keys.held[VK_CAPITAL]));
             if(down && logical==VK_ESCAPE && !frameActive && !(GetAsyncKeyState(VK_CONTROL)&0x8000) &&
                 !(input.flags&LLKHF_ALTDOWN) && !((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)){
-                if(!repeated)PostMessageW(config.gradient,WM_CLOSE,0,0);
+                if(!repeated)PostMessageW(config.gradient,editing && GradientNavigation::sampling(config.gradient)?
+                    GradientNavigation::cancelSample:WM_CLOSE,0,0);
                 // Let the editor restore its preview; Photoshop's Esc would abort that script.
                 gradientBlocked[key]=true;
                 return 1;
@@ -933,16 +934,10 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                 GradientNavigation::postCanvasButton(target,WM_LBUTTONUP,mouse.pt);
             return 1;
         }
-        const bool gradientCaptured=index>=0 && index<2 && screenSampleCaptured(config.gradient,foreground);
-        const bool captured=gradientCaptured || (index>=0 && index<2 &&
-            config.enabled && !config.textInput && config.colorEditor && screenSampleCaptured(config.overlay,foreground));
+        const bool captured=index>=0 && index<2 && config.enabled && !config.textInput && config.colorEditor &&
+            screenSampleCaptured(config.overlay,foreground);
         const int sampleRoute=sampleClicks.route(index,up,captured);
         if(sampleRoute==2)return 1;
-        // The dock's region excludes the canvas, so deliver the captured click explicitly.
-        if(sampleRoute==1 && gradientCaptured){
-            PostMessageW(config.gradient,gradientSampleClick,message,MAKELPARAM(mouse.pt.x,mouse.pt.y));
-            return 1;
-        }
         if(sampleRoute==1)return timing.next(code,message,data);
         static unsigned gradientBlockedButtons=0;
         const unsigned button=index>=0?1u<<index:0;
@@ -970,6 +965,8 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
             }
             if(gradientPointerScope(foreground,pointed,config,startedHere)){
                 if(!up && gradientNavigationLocked(config) && !gradientNavigationPointer(pointed,config,index)){
+                    if(message==WM_RBUTTONDOWN && GradientNavigation::sampling(editor))
+                        PostMessageW(editor,GradientNavigation::cancelSample,0,0);
                     gradientBlockedButtons|=button;
                     return 1;
                 }

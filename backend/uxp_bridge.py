@@ -8,6 +8,7 @@ import secrets
 import time
 import threading
 from .photoshop_bridge import PhotoshopBridge
+from .photoshop_com_default import running_application
 from .commands import SHAPE_TOOLS
 from .photoshop_version import MIN_PHOTOSHOP_TEXT, require_version, version_tuple
 from .plugins import version
@@ -666,7 +667,7 @@ class UxpBridge(PhotoshopBridge):
                         # Bind the COM instance before the UXP preparation. A host
                         # restart can only invalidate this proxy, never attach a
                         # later process that might reuse document/layer IDs.
-                        application=self._application()
+                        application=running_application(self._application)
                         from .legacy_preview import invoke
                         native=lambda folder,request,ready:invoke(application,folder,request,ready)
                         command='shape.legacy.preview'

@@ -14,6 +14,7 @@
 | comtypes / Windows UI Automation COM 封装 | 原始许可；licenses/comtypes.txt | https://github.com/enthought/comtypes |
 | CPython 3.11 运行时 | Python 原始许可及附带声明；licenses/python.txt | https://www.python.org/ |
 | PyInstaller 引导程序／构建器 | 原始许可及引导程序例外；licenses/pyinstaller.txt | https://github.com/pyinstaller/pyinstaller |
+| Microsoft Edge WebView2 SDK 1.0.2903.40 | licenses/WebView2-LICENSE.txt、licenses/WebView2-NOTICE.txt | https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.2903.40 |
 
 native/vendor/manifest.json 保存直接纳入的 C++ 依赖版本与哈希。字体版权／许可取自字体名称表，并保留原始字形与名称；不将字体改为 MIT。
 

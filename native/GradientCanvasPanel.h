@@ -125,7 +125,7 @@ struct GradientCanvasPanel {
     HWND returnFocus=nullptr;
     ULONG_PTR graphics=0;
     int active=-1,channel=-1,appliedDelta=0;
-    enum Click { noClick, addStop, sampleColor } click=noClick;
+    enum Click { noClick, addStop, addOpacity, sampleColor } click=noClick;
     bool vector=false;
     double radialAngle=0;
     Point pressed{},pressedScreen{};
@@ -263,29 +263,43 @@ struct GradientCanvasPanel {
         }
         return index;
     }
-    int stripLocation(Point p) const {
-        const double halfWidth=menuGradientBarHeight*.25*view.dpi;
+    double opacityOffset() const{
+        return -(menuGradientBarHeight*.25+menuGradientHandleSize*.4+menuPanelGap)*view.dpi;
+    }
+    Point railPoint(double t,double offset=0) const{
+        if(axis.angular){
+            const auto base=view.toScreen(axis.arc(t,std::min(axis.size.x,axis.size.y)/3));
+            const auto outward=base-view.toScreen(axis.center);
+            return base+outward*(offset/std::max(.001,outward.length()));
+        }
+        const Point delta=view.toScreen(axis.at(1))-view.toScreen(axis.at(0));
+        const Point unit=delta*(1/std::max(.001,delta.length()));
+        return view.toScreen(axis.at(t))+Point{-unit.y,unit.x}*offset;
+    }
+    int stripLocation(Point p,int lane=1) const {
         double t=0;
-        Point nearest;
         if(axis.angular){
             const Point radial=view.fromScreen(p)-axis.center;
             t=std::fmod((std::atan2(-radial.y,radial.x)-axis.angle)/(2*Axis::pi)+2,1.);
-            nearest=view.toScreen(axis.arc(t,std::min(axis.size.x,axis.size.y)/3));
         }else{
             const Point from=view.toScreen(axis.at(0)),delta=view.toScreen(axis.at(1))-from;
             const double length=delta.dot(delta);
             if(length<.001)return -1;
             t=std::clamp((p-from).dot(delta)/length,0.,1.);
-            nearest=from+delta*t;
         }
-        if((p-nearest).length()>halfWidth+view.dpi)return -1;
+        const double distance=(p-railPoint(t,lane==0?opacityOffset():0)).length();
+        const double tolerance=(lane==0?menuGradientHandleSize*.4:menuGradientBarHeight*.25+1)*view.dpi;
+        if(distance>tolerance)return -1;
         return int(std::lround((axis.reverse?1-t:t)*GradientPanel::end));
     }
     Click clickAt(Point p) {
-        if(!panel->editable() || panel->channel!=channel || at(p)>=0)return noClick;
+        if(!panel->editable() || panel->channel!=channel)return noClick;
         const POINT screen{LONG(p.x),LONG(p.y)};
         if(!PtInRect(&view.clip,screen))return noClick;
+        if(GradientNavigation::sampling(editor) && panel->hasRgbPicker())return sampleColor;
+        if(at(p)>=0)return noClick;
         if(stripLocation(p)>=0)return addStop;
+        if(stripLocation(p,0)>=0)return addOpacity;
         return panel->hasRgbPicker()?sampleColor:noClick;
     }
     static COLORREF screenPixel(POINT p){
@@ -307,34 +321,36 @@ struct GradientCanvasPanel {
            navigationKeyHeld() || clickAt(p)!=click)return;
         POINT screen{LONG(p.x),LONG(p.y)};
         if(WindowFromPoint(screen)!=hit)return;
-        if(click==addStop){
-            const int location=stripLocation(p);
-            if(panel->add(1,location))panel->cursor=location;
+        if(click==addStop || click==addOpacity){
+            const int lane=click==addOpacity?0:1;
+            const int location=stripLocation(p,lane);
+            if(panel->add(lane,location))panel->cursor=location;
         }else{
             // Suppress our painted guide only when it would contribute to the sample.
             const bool guide=paintedPixel(screen);
             if(guide){ShowWindow(visual,SW_HIDE);DwmFlush();}
             const COLORREF rgb=screenPixel(screen);
             if(guide)ShowWindow(visual,SW_SHOWNOACTIVATE);
+            if(GradientNavigation::sampling(editor))SendMessageW(editor,GradientNavigation::cancelSample,0,0);
             if(rgb!=CLR_INVALID)panel->applyRgb(Json::array({GetRValue(rgb),GetGValue(rgb),GetBValue(rgb)}));
         }
     }
     void begin(Point p){
         if(!IsWindowVisible(hit) || !panel->editable() || !foreground() || !view.current())return;
         if(navigationKeyHeld())return;
-        const int index=at(p);
+        const int index=GradientNavigation::sampling(editor)?-1:at(p);
         if(index<0){
             click=clickAt(p);
             if(click==noClick)return;
             pressedScreen=p;
-            SetCapture(hit);if(GetCapture()!=hit)click=noClick;
             return;
         }
         const auto handle=handles[index];
         pressed=view.fromScreen(p);startPaint=panel->paint();startAxis=axis;
         active=index;appliedDelta=0;
         if(handle.kind==color){
-            panel->select(handle.lane,handle.index,GetKeyState(VK_CONTROL)<0,GetKeyState(VK_SHIFT)<0);
+            panel->select(handle.lane,handle.index,(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0,
+                (GetAsyncKeyState(VK_SHIFT)&0x8000)!=0);
             panel->cursor=panel->track(handle.lane)[handle.index]["location"];
             panel->picker.key.clear();
         }
@@ -394,7 +410,7 @@ struct GradientCanvasPanel {
             if(after.length()>.001 && before.length()>.001){
                 double angle=std::remainder(startPaint["options"]["angle"].get<double>()+
                     (std::atan2(-after.y,after.x)-std::atan2(-before.y,before.x))*180/Axis::pi,360.);
-                if(GetKeyState(VK_SHIFT)<0)angle=std::round(angle/45)*45;
+                if(GetAsyncKeyState(VK_SHIFT)&0x8000)angle=std::round(angle/45)*45;
                 set(o["angle"],angle);
             }
         }else if(a.length>0){
@@ -457,7 +473,7 @@ struct GradientCanvasPanel {
         const auto add=[&](Point p,Kind kind,int index,ImU32 fill,double size,int lane=1){handles.push_back({p,kind,index,fill,size,lane});};
         add(c,center,0,accent,radius+view.dpi);
         if(!axis.angular)add(to,range,0,surface,radius);
-        if(!axis.radial)add(axis.angular?end+unit*(2*gap+radius):end+normal*(2*gap+radius),direction,0,accent,radius);
+        if(!axis.radial)add(c+unit*(3*gap)+normal*(halfWidth+radius+3*gap),direction,0,accent,radius);
         for(int lane:{0,1}){
             const auto& stops=panel->track(lane);
             const auto point=[&](double location,bool middle){
@@ -488,7 +504,7 @@ struct GradientCanvasPanel {
             low={std::min(low.x,p.x-padding),std::min(low.y,p.y-padding)};
             high={std::max(high.x,p.x+padding),std::max(high.y,p.y+padding)};
         };
-        const double margin=halfWidth+3*view.dpi;
+        const double margin=std::abs(opacityOffset())+radius+view.dpi;
         if(axis.angular || axis.radial || axis.diamond){
             const double extent=axis.angular?arcRadius:axis.length;
             const auto h=view.toScreen(axis.center+Point{extent,0})-c;
@@ -560,6 +576,19 @@ struct GradientCanvasPanel {
                 Region strip(&outline);
                 if(HRGN body=strip.GetHRGN(&g)){CombineRgn(region,region,body,RGN_OR);DeleteObject(body);}
             }
+            GraphicsPath alphaRail;
+            for(int i=0;i<steps;++i)
+                alphaRail.AddLine(screen(railPoint(double(i)/steps,opacityOffset())),
+                                  screen(railPoint(double(i+1)/steps,opacityOffset())));
+            Pen alphaInk(ink(border),float(2*view.dpi));
+            g.DrawPath(&alphaInk,&alphaRail);
+            if(region){
+                Pen hitWidth(ink(text),float(2*radius));
+                if(alphaRail.Widen(&hitWidth)==Ok){
+                    Region strip(&alphaRail);
+                    if(HRGN body=strip.GetHRGN(&g)){CombineRgn(region,region,body,RGN_OR);DeleteObject(body);}
+                }
+            }
             const int tiles=axis.angular?128:rgb?16:1;
             Pen paper(ink(border),float(2*halfWidth)),paint(ink(text),float(2*halfWidth));
             for(int i=0;i<tiles;++i){
@@ -596,6 +625,12 @@ struct GradientCanvasPanel {
                 Pen outline(ink(selected?accent:text),float(view.dpi));
                 g.FillEllipse(&fill,p.X-r,p.Y-r,r*2,r*2);
                 g.DrawEllipse(&outline,p.X-r,p.Y-r,r*2,r*2);
+                if(h.kind==direction){
+                    const float inner=r*.58f;
+                    Pen arrow(ink(surface),float(view.dpi));
+                    g.DrawArc(&arrow,p.X-inner,p.Y-inner,2*inner,2*inner,215.f,255.f);
+                    g.DrawLine(&arrow,p.X-inner*.34f,p.Y+inner*.94f,p.X+inner*.28f,p.Y+inner*.6f);
+                }
                 if(region){
                     HRGN dot=CreateEllipticRgn(int(std::ceil(p.X-r)),int(std::ceil(p.Y-r)),int(std::floor(p.X+r))+1,int(std::floor(p.Y+r))+1);
                     if(dot){CombineRgn(region,region,dot,RGN_OR);DeleteObject(dot);}

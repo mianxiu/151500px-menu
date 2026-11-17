@@ -50,14 +50,14 @@ class PhotoshopBridge:
         self._queue_changed = asyncio.Event()
         self._active_task_id = None
 
-    def _application(self):
+    def _application(self, prog_id='Photoshop.Application'):
         import pythoncom
         import win32com.client
         if not self.initialized:
             pythoncom.CoInitialize()
             self.initialized = True
         # Attach only: do not launch Photoshop implicitly.
-        return win32com.client.GetActiveObject("Photoshop.Application")
+        return win32com.client.GetActiveObject(prog_id)
 
     def _status(self):
         try:

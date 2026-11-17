@@ -31,15 +31,16 @@ struct GradientLayerTint {
     } strip, edge;
 
     HWND window=nullptr,view=nullptr,bar=nullptr;
+    HWND paintedView=nullptr,paintedBar=nullptr;
     bool registered=false;
-    RECT painted{};
-    ULONGLONG retryAt=0;
+    RECT painted{},paintedPanel{};
+    ULONGLONG retryAt=0,paintedAt=0;
     static constexpr wchar_t name[]=L"PhotoshopGradientLayerTint";
     ~GradientLayerTint(){
         if(window)DestroyWindow(window);
         if(registered)UnregisterClassW(name,GetModuleHandleW(nullptr));
     }
-    void hide(){if(window && IsWindowVisible(window))ShowWindow(window,SW_HIDE);}
+    void hide(){paintedAt=0;if(window && IsWindowVisible(window))ShowWindow(window,SW_HIDE);}
     static bool controls(HWND view){
         return GradientNavigation::windowClass(view,L"PSViewC") &&
             GradientNavigation::windowClass(GetDlgItem(view,2490),L"ComboBox") &&
@@ -83,7 +84,15 @@ struct GradientLayerTint {
         }
         return range;
     }
-    RECT row(HWND owner,const std::string& theme,bool preview){
+    bool visibleRow(const RECT& row,const RECT& panel,bool preview) const{
+        const HWND visible=WindowFromPoint({panel.right-2,(row.top+row.bottom)/2});
+        // Photoshop can disable Layers input during its modal preview without hiding the list.
+        return visible==view || IsChild(view,visible) || (preview && visible==GetAncestor(view,GA_ROOT));
+    }
+    bool retainsRow(const RECT& panel,ULONGLONG now) const{
+        return paintedAt && now-paintedAt<=220 && view==paintedView && bar==paintedBar && EqualRect(&panel,&paintedPanel);
+    }
+    RECT row(HWND owner,const std::string& theme,bool preview,RECT& panel){
         RECT client{},scroll{};
         POINT origin{};
         if(!find(owner) || !GetClientRect(view,&client) || !ClientToScreen(view,&origin) ||
@@ -93,6 +102,7 @@ struct GradientLayerTint {
         const UINT dpi=std::lround(ImGui_ImplWin32_GetDpiScaleForHwnd(view)*96);
         if(!dpi || right<MulDiv(70,dpi,96) || right>client.right-origin.x ||
            top<0 || scroll.bottom>client.bottom || height<1 || height>8192)return {};
+        panel={origin.x,scroll.top,scroll.left,scroll.bottom};
         const int n=theme=="light"?0:theme=="light-gray"?1:theme=="dark-gray"?2:3;
         constexpr uint32_t gray[]={0xb5b5b5,0x8a8a8a,0x6b6b6b,0x4a4a4a};
         constexpr uint32_t blue[]={0xb3cbe7,0x8aa3c1,0x50667c,0x314960};
@@ -111,16 +121,18 @@ struct GradientLayerTint {
             }
         }
         ReleaseDC(view,source);
-        if(!IsRectEmpty(&result)){
-            const HWND visible=WindowFromPoint({scroll.left-2,(result.top+result.bottom)/2});
-            // Photoshop can disable Layers input during its modal preview without hiding the list.
-            if(visible!=view && !IsChild(view,visible) && !(preview && visible==GetAncestor(view,GA_ROOT)))return {};
-        }
+        if(!IsRectEmpty(&result) && !visibleRow(result,panel,preview))return {};
         return result;
     }
     void update(HWND editor,HWND owner,const std::string& theme,COLORREF color,bool preview){
-        const auto bounds=row(owner,theme,preview);
-        if(IsRectEmpty(&bounds)){hide();return;}
+        RECT panel{};
+        const auto bounds=row(owner,theme,preview,panel);
+        const auto now=GetTickCount64();
+        if(IsRectEmpty(&bounds)){
+            // A short Photoshop repaint can temporarily erase the selected band's pixels.
+            if(!retainsRow(panel,now) || !visibleRow(painted,panel,preview))hide();
+            return;
+        }
         if(!window){
             const HINSTANCE instance=GetModuleHandleW(nullptr);
             if(!registered){
@@ -137,6 +149,7 @@ struct GradientLayerTint {
                 DestroyWindow(window);window=nullptr;return;
             }
         }
+        paintedView=view;paintedBar=bar;paintedPanel=panel;paintedAt=now;
         if(IsWindowVisible(window) && EqualRect(&bounds,&painted))return;
         const HWND top=GetAncestor(view,GA_ROOT);
         HWND above=GetWindow(top,GW_HWNDPREV);

@@ -13,6 +13,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'native\HotkeyHost.exe
     & (Join-Path $PSScriptRoot 'tools\build-hotkey-host.ps1')
 }
 if ($Headless) { $menuArguments += '--headless' }
+if (!$Headless -and !(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'native\control\ControlHost.exe'))) {
+    & (Join-Path $PSScriptRoot 'tools\build-control-host.ps1')
+}
 if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'native\MenuHost.exe'))) {
     & (Join-Path $PSScriptRoot 'tools\build-menu-host.ps1')
 }

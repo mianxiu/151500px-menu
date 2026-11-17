@@ -4,6 +4,10 @@ namespace GradientNavigation {
 inline constexpr wchar_t ownerProperty[]=L"PhotoshopMenu.GradientNavigation.Owner.v1";
 inline constexpr wchar_t imageProperty[]=L"PhotoshopMenu.GradientNavigation.Image.v1";
 inline constexpr wchar_t canvasInputProperty[]=L"PhotoshopMenu.GradientNavigation.CanvasInput.v1";
+inline constexpr wchar_t sampleProperty[]=L"PhotoshopMenu.GradientNavigation.Sample.v1";
+inline constexpr UINT cancelSample=WM_APP+34;
+
+inline bool sampling(HWND editor){return editor && GetPropW(editor,sampleProperty)==editor;}
 
 inline bool canvasInput(HWND hit,HWND editor){
     return hit && editor && GetPropW(hit,canvasInputProperty)==editor && GetWindow(hit,GW_OWNER)==editor;
