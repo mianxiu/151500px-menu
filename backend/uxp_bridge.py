@@ -139,6 +139,8 @@ class UxpTransport:
                     raise RuntimeError('UXP 未就绪，请正常启动 Photoshop 并加载 0.3.x 插件')
                 identity=secrets.token_hex(16)
                 modifying=operation in ('set_label','new_document')
+                if 'gradient_view_target' in payload and version(heartbeat.get('probe_version'))<(0,3,110):
+                    raise RuntimeError('读取渐变画布需要正常重启PS加载UXP0.3.110')
                 if (payload.get('text_inspect') or payload.get('command')=='text.replace') and version(heartbeat.get('probe_version'))<(0,3,58):
                     raise RuntimeError('文本工具需要正常重启PS加载UXP0.3.58')
                 if payload.get('command')=='text.split' and version(heartbeat.get('probe_version'))<(0,3,59):

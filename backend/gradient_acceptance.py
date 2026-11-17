@@ -6,7 +6,7 @@ import json
 import time
 
 from .color_native_acceptance import native, reload_plugin
-from .gradient_editor import checked_draft, draft_path, load_draft
+from .gradient_editor import VIEW_SCRIPT, checked_draft, checked_view, draft_path, load_draft
 from .mask_preview import MaskPreview
 from .settings import atomic_json
 from .shape_paint import parameters
@@ -141,6 +141,11 @@ async def case(test, vector):
         return shape, target
 
     shape, target = await read()
+    com_view = checked_view(json.loads(await native(test, guard+'return '+VIEW_SCRIPT)))
+    response = await test.test_read(gradient_view_target=target)
+    uxp_view = checked_view(response.get('gradient_view'))
+    if response.get('session') != target['session'] or uxp_view != com_view:
+        raise RuntimeError(f'UXP 与 COM 的画布位置读回不符：{uxp_view!r} / {com_view!r}')
     if shape['vector'] is not vector or not shape['live_preview']:
         raise RuntimeError('隔离渐变类型或实时预览能力不符')
     if vector:

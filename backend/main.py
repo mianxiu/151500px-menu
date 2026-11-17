@@ -25,6 +25,7 @@ from .tasks import TaskStore, TaskCancelled
 from .broadcasts import StatusDelivery
 from .uxp_management import UxpManager
 from .photoshop_launch import PhotoshopLauncher
+from .photoshop_com_default import PhotoshopComDefault
 from .language import read_language, save_language
 from .recent_documents import RecentDocuments
 from .application_updates import ApplicationUpdates
@@ -194,6 +195,7 @@ class Application(web.Application):
         self.plugins = Plugins(self.runtime / "plugins", ROOT / "jsx")
         self.uxp=UxpManager(self.runtime,ROOT/'uxp/offline-probe')
         self.photoshop_launcher=PhotoshopLauncher(self.runtime,self.photoshop_start_ready)
+        self.photoshop_com=PhotoshopComDefault(self.runtime)
         if isinstance(self.bridge,UxpBridge):self.bridge.execution_guard=self.require_uxp_enabled
         if bridge is None:
             self.bridge.replace_scripts(load_scripts(self.plugins.folder()))
@@ -280,16 +282,16 @@ class Application(web.Application):
         if stability and (stability.report.get('original_restore_pending') or stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown')):
             raise RuntimeError('颜色验收的原稿恢复或正常退出仍待核对；未接受新的PS操作')
 
-    def require_update_idle(self):
+    def require_update_idle(self, operation='安装应用更新'):
         stability=getattr(self,'stability',None)
         if stability and (stability.report.get('original_restore_pending') or stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown')):
-            raise RuntimeError('原稿恢复或正常退出仍待核对；未安装更新')
+            raise RuntimeError(f'请先核对原稿恢复或正常退出，再{operation}')
         pending=getattr(getattr(self.bridge,'transport',None),'pending',None)
         if (self.updating or self.operation_lock.locked() or self.bridge.busy or
             getattr(self.bridge,'_queue',[]) or self.photoshop_launcher.active or
             pending and (pending.value or pending.error)):
-            raise RuntimeError('请先完成操作或核对未知结果，再安装应用更新；未排队、未重发')
-        if self.desktop and self.desktop.visible:raise RuntimeError('请先收起操作菜单，再安装应用更新')
+            raise RuntimeError(f'请先完成当前操作或核对未知结果，再{operation}')
+        if self.desktop and self.desktop.visible:raise RuntimeError(f'请先收起操作菜单，再{operation}')
 
     async def sync_uxp_auto(self, force=False):
         import time
@@ -430,6 +432,17 @@ class Application(web.Application):
             async with self.operation_lock:
                 uxp=await asyncio.to_thread(self.uxp.status)
                 return await self.photoshop_launcher.start(uxp['installed'] and uxp['enabled'] and not uxp['error'])
+        if action=='photoshop.com.status':
+            return await asyncio.to_thread(self.photoshop_com.status)
+        if action in ('photoshop.com.switch','photoshop.com.restore'):
+            self.require_update_idle('更改 Photoshop COM 默认版本')
+            editor=getattr(self,'gradient_editor',None)
+            if editor and editor.phase!='closed':
+                raise RuntimeError('请先关闭渐变编辑器，再更改 Photoshop COM 默认版本')
+            async with self.operation_lock:
+                if action=='photoshop.com.switch':
+                    return await asyncio.to_thread(self.photoshop_com.switch,args.get('id'))
+                return await asyncio.to_thread(self.photoshop_com.restore)
         if action=='uxp.status':return await asyncio.to_thread(self.uxp.status)
         if action in ('uxp.install','uxp.enable','uxp.disable','uxp.uninstall','uxp.rollback','uxp.apply-language','uxp.repair-registration'):
             if self.stability.report.get('original_restore_pending') or self.stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown'):

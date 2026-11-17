@@ -2,7 +2,7 @@
 const {app} = require('photoshop');
 const uxp = require('uxp');
 const token = require('./probe-config.js');
-const probeVersion = '0.3.109';
+const probeVersion = '0.3.110';
 const session = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
 // Independent read-only mailbox; never enters modal execution or blocks commands.
 const inputTool=(()=>{
@@ -539,6 +539,8 @@ async function probe(reason) {
         request={...request,target:captured};
       }
       if(request.operation==='inspect'&&request.layer_view_inspect===true)response.layer_view=await labels.inspectLayerView();
+      else if(request.operation==='inspect'&&request.gradient_view_target!==undefined)
+        response.gradient_view=await labels.inspectGradientView(request.gradient_view_target);
       else if(request.operation==='inspect'&&request.text_inspect===true)response.text=await labels.readText();
       else if (request.operation === 'inspect') {
         response.target = labels.documentTarget();

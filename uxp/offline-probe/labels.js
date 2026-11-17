@@ -817,7 +817,7 @@ module.exports = function createLabels(ps, session, options={}) {
     return {samples,equivalent:Object.values(samples).every(sample=>signature(sample.value)===signature(samples.dom.value)),
       constant_contract:{layer_kinds:Object.fromEntries(Object.entries(ps.constants.LayerKind))}};
   }
-  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,inspectLayerView:layerView.inspect,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
+  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,inspectLayerView:layerView.inspect,inspectGradientView:layerView.gradient,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
     if(!nativeSelection)return shapePaint.observe(...args);
     // Only explicit optional editor reads enter a short read-only modal scope.
     // Idle selection polling uses batchPlay and never occupies modal execution.
@@ -2818,6 +2818,28 @@ function createLayerView(ps,session,capture) {
   }
   const zoomCommand=zoom=>({_obj:'set',_target:property('zoom')._target,to:{_obj:'zoom',zoom},_options:{dialogOptions:'silent'}});
   async function inspect() {return {menus:await menus(),view:await view()};}
+  async function gradient(expected) {
+    async function guard() {
+      if(expected?.session!==session || expected.layer_ids?.length!==1)
+        throw Error('渐变画布会话或图层选择已改变');
+      const actual=await capture();
+      if(actual.document_id!==expected.document_id || actual.active_layer_id!==expected.active_layer_id ||
+          actual.layer_ids.length!==1 || actual.layer_ids[0]!==expected.layer_ids[0])
+        throw Error('渐变画布目标已改变');
+    }
+    await guard();
+    const doc=ps.app.activeDocument,layer=doc.activeLayers[0];
+    const [transform,info]=await batch(['viewTransform','viewInfo'].map(property));
+    const rect=value=>['left','top','right','bottom'].map(k=>number(value?.[k]));
+    const matrix=Array.isArray(transform.viewTransform)?transform.viewTransform.map(number):[];
+    const viewport=rect(info.viewInfo?.activeView?.globalBounds);
+    const bounds=rect(layer.boundsNoEffects),dimensions=[doc.width,doc.height];
+    if(matrix.length!==6 || ![...matrix,...viewport,...dimensions].every(Number.isFinite))
+      throw Error('Photoshop 画布变换或视口不可用');
+    const tool=ps.app.currentTool.id;
+    await guard();
+    return {matrix,viewport,document:dimensions,layer:bounds.every(Number.isFinite)?bounds:null,tool};
+  }
   async function frame(request,io) {
     let finishPreview=null,rollback=null;
     const prepared=await ps.core.executeAsModal(async context=>{
@@ -2914,5 +2936,5 @@ function createLayerView(ps,session,capture) {
     try{return await finishPreview();}
     catch(error){try{await rollback();}catch(_){error.resultUnknown=true;}throw error;}
   }
-  return {inspect,frame};
+  return {inspect,frame,gradient};
 }

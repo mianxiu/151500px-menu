@@ -20,10 +20,10 @@ from .photoshop_version import exe_version, require_version
 from .version import APP_VERSION
 
 
-def registered_executable():
+def registered_executable(prog_id='Photoshop.Application'):
     import re
     import winreg
-    clsid = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, r'Photoshop.Application\CLSID')
+    clsid = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, prog_id+r'\CLSID')
     with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, 'CLSID\\'+clsid+'\\LocalServer32') as key:
         try: value = winreg.QueryValueEx(key, 'ServerExecutable')[0]
         except OSError:

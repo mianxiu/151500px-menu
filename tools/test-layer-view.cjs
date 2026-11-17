@@ -2,13 +2,17 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const source=fs.readFileSync('uxp/offline-probe/labels.js','utf8').slice(fs.readFileSync('uxp/offline-probe/labels.js','utf8').lastIndexOf('function createLayerView('));
 function fixture(){
  const state={zoom:1,x:200,y:100,edge:false,extras:true,writes:0,fail:false,badMenu:false,failToggle:false,captures:0,modal:false};
- const target={session:'s',document_id:9,active_layer_id:11,layer_ids:[11]};const doc={activeLayers:[{id:11,visible:true,parent:null,boundsNoEffects:{left:400,top:200,right:500,bottom:250}}]};
- const ps={app:{activeDocument:doc},core:{executeAsModal:async fn=>{assert.equal(state.modal,false);state.modal=true;try{return await fn({isCancelled:false});}finally{state.modal=false;}},performMenuCommand:async({commandID})=>{state.writes++;if(state.failToggle)return false;if(commandID===1&&!state.extras)state.extras=true;else state[commandID===1?'edge':'extras']=!state[commandID===1?'edge':'extras'];return true;}},action:{batchPlay:async commands=>commands.map(c=>{
+ const target={session:'s',document_id:9,active_layer_id:11,layer_ids:[11]};const doc={width:900,height:650,activeLayers:[{id:11,visible:true,parent:null,boundsNoEffects:{left:400,top:200,right:500,bottom:250}}]};
+ const ps={app:{activeDocument:doc,currentTool:{id:'moveTool'}},core:{executeAsModal:async fn=>{assert.equal(state.modal,false);state.modal=true;try{return await fn({isCancelled:false});}finally{state.modal=false;}},performMenuCommand:async({commandID})=>{state.writes++;if(state.failToggle)return false;if(commandID===1&&!state.extras)state.extras=true;else state[commandID===1?'edge':'extras']=!state[commandID===1?'edge':'extras'];return true;}},action:{batchPlay:async commands=>commands.map(c=>{
   if(c._obj==='uiInfo')return {result:{commandID:c.commandID,checked:state[c.commandID===1?'edge':'extras']}};
   if(c._obj==='get')switch(c._target[0]._property){
    case 'menuBarInfo':return {menuBarInfo:{submenu:[{name:'Layer Edges',command:1,checked:false},{name:state.badMenu?'Unknown':'Extras',command:2,checked:false}]}};
    case 'zoom':return {zoom:{_value:state.zoom}};
    case 'center':return {center:{horizontal:{_value:state.x},vertical:{_value:state.y}}};
+   case 'viewTransform':return {viewTransform:state.invalidTransform?[0]:[2,0,0,2,-525,-614]};
+   case 'viewInfo':
+    if(state.changeTarget)target.document_id++;
+    return {viewInfo:{activeView:{globalBounds:{left:{_value:-1200},top:50,right:0,bottom:770}}}};
   }
   state.writes++;
   if(c._obj==='select'){if(state.fail)return {_obj:'error'};state.zoom=10;state.x=2250;state.y=1125;return {};}
@@ -20,6 +24,15 @@ function fixture(){
  return {state,target,doc,tool:context.tool,request:()=>({id:'f',session:'s',token:'t',target:structuredClone(target),expires_at_ms:Date.now()+5000})};
 }
 (async()=>{
+ let canvas=fixture();
+ const gradient=await canvas.tool.gradient(canvas.request().target);
+ assert.deepEqual(JSON.parse(JSON.stringify(gradient)),{matrix:[2,0,0,2,-525,-614],viewport:[-1200,50,0,770],document:[900,650],layer:[400,200,500,250],tool:'moveTool'});
+ assert.equal(canvas.state.writes,0);
+ await assert.rejects(canvas.tool.gradient({...canvas.request().target,session:'old'}),/会话/);
+ canvas.state.invalidTransform=true;
+ await assert.rejects(canvas.tool.gradient(canvas.request().target),/变换/);
+ canvas.state.invalidTransform=false; canvas.state.changeTarget=true;
+ await assert.rejects(canvas.tool.gradient(canvas.request().target),/目标已改变/);
  let f=fixture();const before=structuredClone(f.doc);const result=await f.tool.frame(f.request());assert.equal(result.zoom_percent,400);assert.equal(f.state.edge,false);assert.deepEqual(f.doc,before);assert.equal(f.state.x/f.state.zoom,225);const writes=f.state.writes;await f.tool.frame(f.request());assert.equal(f.state.edge,false);assert.equal(f.state.writes-writes,4);
  f=fixture();f.state.extras=false;await f.tool.frame(f.request());assert.ok(!f.state.extras&&!f.state.edge);
  f=fixture();f.doc.activeLayers.push({id:12,visible:true,parent:null,boundsNoEffects:{left:-20,top:-10,right:40,bottom:50}});f.target.layer_ids.push(12);const multi=await f.tool.frame(f.request());assert.deepEqual(Array.from(multi.bounds),[-20,-10,500,250]);assert.equal(multi.selection_count,2);

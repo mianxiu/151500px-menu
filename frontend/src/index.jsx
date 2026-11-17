@@ -7,15 +7,16 @@ import {healthView,healthFinding} from './version-health.mjs';
 import {applyMenuTheme} from './theme.mjs';
 import {stabilityIssue} from './stability.mjs';
 import {prefixOptions,triggerKeys,keyLabel,shortcutParts,triggerAllowed,changePrefix,changeTrigger,shortcutErrors} from './shortcuts.mjs';
+import {pages,tabsFor,readRoute,routeHref} from './navigation.mjs';
 import './admin.css';
 
-const pages = [['overview','运行状态'],['settings','菜单设置'],['plugins','插件管理'],['updates','应用更新'],['tasks','最近任务'],['logs','运行日志']];
 const keyLabels = {toggle:'按住唤出 / 松开执行', hide:'收起菜单', select:'选择组内图层', color:'橙色图层标签', moveToTop:'移到顶部', moveToBottom:'移到底部',selectAbove:'单选上一个图层',selectBelow:'单选下一个图层',extendAbove:'向上扩展图层多选',extendBelow:'向下扩展图层多选',copyStyle:'复制图层样式',pasteStyle:'粘贴图层样式',editStyle:'打开图层样式',convertSmartObject:'转换为智能对象'};
 function App() {
   function t(text){return translate(text,state().language || 'zh-CN');}
   const [connection,setConnection] = createSignal('connecting');
   const [state,setState] = createSignal({photoshop:{},plugin:{active:{}},settings:{shortcuts:{}}});
-  const [page,setPage] = createSignal('overview');
+  const [route,setRoute] = createSignal(readRoute(location.hash));
+  const page=()=>route().page;
   const [form,setForm] = createSignal(null);
   const [dirty,setDirty] = createSignal(false);
   const [working,setWorking] = createSignal(false);
@@ -43,7 +44,10 @@ function App() {
   }
   const client = new Client(`ws://${location.host}/websocket`, status => {
     setConnection(status);
-    if(status==='connected') client.request('status').then(accept).catch(error=>setNotice({ok:false,message:error.message}));
+    if(status==='connected'){
+      client.request('status').then(accept).catch(error=>setNotice({ok:false,message:error.message}));
+      if(page()==='logs')readLogs();
+    }
   }, event => {
     if(event.type==='status') accept(event.data);
     if(event.type==='notice') setNotice(event);
@@ -179,7 +183,35 @@ function App() {
     <VersionHealthPanel/><InputHealthPanel/><StabilityPanel/><DiagnosticPanel/><section class="compact-section"><details><summary>{t("启动状态")}</summary><PhotoshopStartup/></details></section>
     <section class="compact-section"><details><summary>{t("连接详情")}</summary><dl class="info-list"><div><dt>{t("当前面板：")}</dt><dd>{t(state().menu?.panel_context?.label) || t("通用操作")}</dd></div><div><dt>{t("上次读取：")}</dt><dd>{state().photoshop.status_updated_at ? new Date(state().photoshop.status_updated_at).toLocaleTimeString(state().language || 'zh-CN') : '—'}</dd></div><div><dt>{t("当前运行版本")}</dt><dd>v{state().version || '—'}</dd></div><div><dt>{t("程序：")}</dt><dd>{state().service?.executable || t("此服务未提供程序路径")}</dd></div></dl><p>{t(state().desktop)}</p><Show when={state().tray_error}><p class="error">{t("托盘：")}{state().tray_error}</p></Show><button class="danger" disabled={managedBusy()} onClick={()=>perform('service.quit')}>{t("退出后台服务")}</button></details></section>
   </div>;}
-  function UxpInstalled(){return <div class="panel-scroll"><section>
+  function PhotoshopComDefault(){
+    const [com,setCom]=createSignal(null);
+    const [selected,setSelected]=createSignal('');
+    const [problem,setProblem]=createSignal('');
+    const acceptResult=result=>{
+      setCom(result);
+      setSelected(result.versions.some(item=>item.id===selected()) ? selected() : result.default?.id || result.versions[0]?.id || '');
+      setProblem('');
+    };
+    const refresh=()=>client.request('photoshop.com.status').then(acceptResult).catch(error=>setProblem(error.message));
+    createEffect(()=>{if(connection()==='connected')refresh();});
+    const change=async(action,args)=>{
+      try{acceptResult(await call('photoshop.com.'+action,args));}
+      catch{await refresh();}
+    };
+    return <section>
+      <div class="section-heading"><h2>{t("Photoshop COM 默认版本")}</h2><button disabled={disabled()} onClick={refresh}>{t("刷新")}</button></div>
+      <p>{t("先打开要使用的 Photoshop，再设为默认。此设置仅影响当前 Windows 用户的 COM 连接。")}</p>
+      <Show when={problem()}><p class="error" role="alert">{t(problem())}</p></Show>
+      <Show when={com()} keyed>{info=><>
+        <p title={info.default?.path}>{t("当前默认")} · {info.default ? `${info.default.name} ${info.default.version}` : '—'}</p>
+        <Show when={info.versions.length} fallback={<p>{t("未发现可用的 Photoshop COM 版本")}</p>}>
+          <div class="fields"><label>{t("Photoshop 版本")}<select value={selected()} disabled={managedBusy()} onChange={event=>setSelected(event.currentTarget.value)}><For each={info.versions}>{item=><option value={item.id} title={item.path}>{item.name} · {item.version}</option>}</For></select></label></div>
+        </Show>
+        <div class="buttons"><button class="primary" disabled={managedBusy() || !selected() || selected()===info.default?.id} onClick={()=>change('switch',{id:selected()})}>{t("设为默认")}</button><Show when={info.can_restore}><button disabled={managedBusy()} onClick={()=>change('restore')}>{t("恢复原设置")}</button></Show></div>
+      </>}</Show>
+    </section>;
+  }
+  function UxpInstalled(){return <div class="panel-scroll"><PhotoshopComDefault/><section>
     <div class="section-heading"><h2>{t("UXP 插件管理")}</h2><span classList={{'status-pill':true,good:state().uxp?.installed && !state().uxp?.error && state().uxp?.enabled,warn:!!state().uxp?.error}}>{!state().uxp?.installed?t("未安装"):state().uxp?.error?t("需要检查"):state().uxp?.enabled?t("已启用"):t("已暂停")}</span></div>
     <strong class="plugin-name">{state().uxp?.name || state().uxp?.desired_name}</strong>
     <p>{!state().uxp?.installed || state().uxp?.error?t('尚未安装可用插件'):!state().uxp?.enabled?t('新菜单／快捷键操作已停止接受'):state().photoshop.connected && state().photoshop.uxp_ready && !state().photoshop_start?.active?t('Photoshop 已加载，可执行操作'):t('已安装，等待 Photoshop 加载')}</p>
@@ -188,7 +220,7 @@ function App() {
     <div class="inline-notice"><p>{t('PS 加载登记：')}{t(({directory:'使用 External 目录扫描',registered:'已登记到用户索引',missing:'用户索引缺少本插件',disabled:'本插件加载登记已禁用',outdated:'本插件加载登记待同步',invalid:'加载索引需要检查'})[state().uxp?.registration?.state] || '检查中…')}</p><Show when={state().uxp?.registration?.error}><p class="error">{t(state().uxp.registration.error)}</p></Show><Show when={state().uxp?.installed && state().uxp?.registration?.needs_repair}><p>{t('保存并关闭 PS 后修复，只维护本插件条目，保留其他插件；再次启动后核对连接。')}</p><button disabled={managedBusy() || !!state().uxp?.error} onClick={()=>perform('uxp.repair-registration')}>{t('修复并启用加载登记')}</button></Show></div>
     <div class="buttons"><Show when={!state().uxp?.installed || !state().uxp?.matches_builtin}><button class="primary" disabled={managedBusy()} onClick={()=>installUxp(null)}>{state().uxp?.installed?t("安装／更新为内置版本"):t("安装内置插件")}</button></Show><Show when={state().uxp?.installed}><button disabled={managedBusy() || !!state().uxp?.error} onClick={()=>perform(state().uxp?.enabled?'uxp.disable':'uxp.enable')}>{state().uxp?.enabled?t("禁用执行"):t("启用执行")}</button></Show><button onClick={()=>selectTab('updates')}>{t("离线更新包")}</button></div>
     <Show when={state().uxp?.language_pending}><div class="inline-notice"><p>{t('PS 插件名称待应用')} · {state().uxp?.desired_name}</p><p>{t('关闭 Photoshop 后点击应用，不会自动关闭或丢弃文档。')}</p><button disabled={managedBusy() || !!state().uxp?.error} onClick={()=>perform('uxp.apply-language')}>{t('应用插件名称语言')}</button></div></Show>
-    <UxpFollow/><details class="help"><summary>{t("安装说明")}</summary><p>{t("主程序自带离线插件，安装、更新和回退均在此管理，无需单独安装器或 Adobe 工具。安装／更换／卸载前请先保存并正常关闭 Photoshop。已有用户索引时同步本插件登记，没有索引时保留目录扫描；重启 PS 后以实际连接为准。")}</p><p>{t("禁用立即生效并保留插件文件；已加载的插件仍驻留 PS，卸载才会移除。运行中的任务结束前不能禁用或更换。")}</p></details>
+    <UxpFollow/><details class="help"><summary>{t("安装说明")}</summary><p>{t("保存并关闭 Photoshop 后安装、更新或卸载插件。重新打开 Photoshop 后查看连接状态。")}</p></details>
     <details class="help"><summary>{t("安装详情与维护")}</summary><p>{t('安装检测：')}{t(({missing:'未安装',invalid:'安装不完整或凭据异常',installed:'文件与凭据校验通过'})[state().uxp?.installation] || '检查中…')}</p><p>{t('检测目录：')}{state().uxp?.plugin_dir || '—'}</p><div class="buttons"><button disabled={managedBusy()} onClick={()=>installUxp(null)}>{t("安装／更新为内置版本")}</button><button disabled={managedBusy() || !state().uxp?.can_rollback} onClick={()=>perform('uxp.rollback')}>{t("回退上次安装")}</button><button class="danger" disabled={managedBusy() || !state().uxp?.installed} onClick={()=>perform('uxp.uninstall')}>{t("卸载 UXP 插件")}</button></div><label class="advanced-field">{t("Photoshop.exe 完整路径")}<input value={photoshopExe()} placeholder={t("留空自动检测")} onInput={e=>setPhotoshopExe(e.target.value)}/></label></details>
   </section></div>;}
   function ShortcutPicker(props){
@@ -219,30 +251,43 @@ function App() {
     link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
-  const [subpages,setSubpages]=createSignal({settings:'behavior',plugins:'installed'});
   const [taskId,setTaskId]=createSignal(null);
   const selectedTask=()=>state().tasks?.items?.find(task=>task.id===taskId()) || state().tasks?.items?.[0];
-  const currentTab=()=>subpages()[page()];
-  const tabItems=()=>({settings:[['behavior','常用'],['keys','快捷键'],['advanced','高级']],plugins:[['installed','安装与状态'],['updates','离线更新包']]})[page()] || [];
-  function selectTab(id){setSubpages(previous=>({...previous,[page()]:id}));}
+  const currentTab=()=>route().tab;
+  const tabItems=()=>tabsFor(page());
+  function syncRoute(){
+    const next=readRoute(location.hash);
+    const enteringLogs=next.page==='logs' && page()!=='logs';
+    setRoute(next);
+    if(enteringLogs)readLogs();
+  }
+  function choose(name,tab){
+    const href=routeHref(name,tab);
+    if(location.hash!==href)history.pushState(null,'',href);
+    syncRoute();
+  }
+  function selectTab(id){choose(page(),id);}
   function tabKeys(event){
+    if(event.key===' ' && event.target.matches('[role=tab]')){event.preventDefault();event.target.click();return;}
     const ids=tabItems().map(([id])=>id),index=ids.indexOf(currentTab());
     const next=event.key==='ArrowRight'?(index+1)%ids.length:event.key==='ArrowLeft'?(index+ids.length-1)%ids.length:event.key==='Home'?0:event.key==='End'?ids.length-1:-1;
     if(next<0)return;event.preventDefault();selectTab(ids[next]);event.currentTarget.querySelectorAll('[role=tab]')[next].focus();
   }
   function SaveBar(){return <Show when={dirty()}><footer class="save-bar"><span>{invalidShortcuts()?t("请先修正快捷键设置"):dirty()?t("有未保存的修改"):t("设置已同步")}</span><div class="buttons"><button class="primary" disabled={disabled() || !dirty() || invalidShortcuts()} onClick={save}>{t("保存并立即生效")}</button><button disabled={!dirty()} onClick={()=>{setForm(structuredClone(state().settings));setDirty(false);}}>{t("放弃修改")}</button></div></footer></Show>;}
-  function choose(name){setPage(name);if(name==='logs')readLogs();}
-  onMount(()=>client.connect());onCleanup(()=>client.close());
+  onMount(()=>{
+    window.addEventListener('hashchange',syncRoute);
+    client.connect();
+  });
+  onCleanup(()=>{window.removeEventListener('hashchange',syncRoute);client.close();});
   return <div class="shell">
     <aside><div class="brand"><img src="/icon.png?v=ps-menu-hand-3" alt=""/><div><strong>151500px-menu</strong><small>{t("后台管理")}</small></div></div>
       <label class="language-switch"><span>{t("语言 / Language")}</span><select aria-label="语言 / Language" value={state().language || 'zh-CN'} disabled={disabled()} onChange={e=>perform('language.set',{language:e.target.value})}><option value="zh-CN">{t("简体中文")}</option><option value="en">English</option></select></label>
-      <nav aria-label={t("主导航")}><For each={pages}>{([name,label])=><button aria-current={page()===name?'page':undefined} classList={{selected:page()===name}} onClick={()=>choose(name)}>{t(label)}</button>}</For></nav>
-      <div class="aside-note">{t("仅在 Photoshop 内唤出")}</div><div class="version">{state().version ? `${t('应用 v'+state().version)}${connection()==='connected'?'':t("（上次连接）")}` : t("应用版本待确认")}</div>
+      <nav aria-label={t("主导航")}><For each={pages}>{([name,label])=><a class="button" href={routeHref(name)} aria-current={page()===name?'page':undefined} classList={{selected:page()===name}}>{t(label)}</a>}</For></nav>
     </aside>
-    <main><header><div><h1>{t(pages.find(([name])=>name===page())?.[1])}</h1><p>{t(({overview:'连接状态和常用操作',settings:'调整菜单行为与快捷键',plugins:'管理 Photoshop 执行插件',updates:'检查与安装正式版本',tasks:'查看操作结果与耗时',logs:'按需查看服务诊断'})[page()])}</p></div><div class="header-status"><span class="version-tag">{state().version ? 'v'+state().version : '—'}</span><span classList={{badge:true,online:connection()==='connected'}}>{connection()==='connected'?t("后台在线"):connection()==='connecting'?t("正在连接"):t("已断开 · 自动重连")}</span></div></header>
+    <main><header><h1>{t(pages.find(([name])=>name===page())?.[1])}</h1><div class="header-status"><span class="version-tag">{state().version ? 'v'+state().version : '—'}</span><span classList={{badge:true,online:connection()==='connected'}}>{connection()==='connected'?t("后台在线"):connection()==='connecting'?t("正在连接"):t("已断开 · 自动重连")}</span></div></header>
       <Show when={notice().message}><div classList={{notice:true,error:!notice().ok}} role="status"><span>{t(notice().message)}</span><button class="dismiss" aria-label={t("关闭提示")} onClick={()=>setNotice({message:'',ok:true})}>×</button></div></Show>
       <Show when={health().alert}><div class="notice" role="status"><span>{t(health().message)}</span><button disabled={disabled()} onClick={()=>{choose('overview');queueMicrotask(()=>document.getElementById('version-health')?.scrollIntoView({block:'nearest'}));}}>{t('查看自检报告')}</button><button disabled={disabled()} onClick={()=>perform('version.health.acknowledge')}>{t('标为已读')}</button></div></Show>
-      <Show when={tabItems().length}><div class="subtabs" role="tablist" aria-label={t("页面选项")} onKeyDown={tabKeys}><For each={tabItems()}>{([id,label])=><button id={'tab-'+page()+'-'+id} role="tab" aria-selected={currentTab()===id} aria-controls="active-panel" tabIndex={currentTab()===id?0:-1} classList={{selected:currentTab()===id}} onClick={()=>selectTab(id)}>{t(label)}</button>}</For></div></Show>
+      <Show when={tabItems().length}><div class="subtabs" role="tablist" aria-label={t("本页分区")} onKeyDown={tabKeys}><For each={tabItems()}>{([id,label])=><a class="button" href={routeHref(page(),id)} id={'tab-'+page()+'-'+id} role="tab" aria-selected={currentTab()===id} aria-controls="active-panel" tabIndex={currentTab()===id?0:-1} classList={{selected:currentTab()===id}}>{t(label)}</a>}</For></div></Show>
       <div id="active-panel" class="workspace" role={tabItems().length?'tabpanel':undefined} aria-labelledby={tabItems().length?'tab-'+page()+'-'+currentTab():undefined}>
 <Show when={page()==='overview'}><Overview/></Show>
 <Show when={page()==='updates'}><div class="panel-scroll"><ApplicationUpdate/></div></Show>

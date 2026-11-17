@@ -97,7 +97,8 @@ class ControlWindow:
             try:
                 self.process = subprocess.Popen([str(self.edge), "--app=" + self.url,
                                   "--user-data-dir=" + str((self.runtime / "control-profile").resolve()),
-                                  "--no-first-run", "--window-size=1120,820"],
+                                  "--no-first-run", "--disable-extensions",
+                                  "--disable-background-mode", "--window-size=1120,820"],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, creationflags=0x08000000)
                 self.owned_pids.add(self.process.pid)

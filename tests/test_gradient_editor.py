@@ -3,6 +3,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -217,6 +218,29 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await editor.request_view({'serial':3,'refresh':True})
             self.assertNotIn('retry', editor.send.await_args.args[0])
             self.assertIsNone(editor.send.await_args.args[0]['view'])
+
+    async def test_com_unavailable_uses_view_from_the_single_owned_uxp_host(self):
+        target={'session':'selected-uxp','document_id':3,'active_layer_id':7,'layer_ids':[7]}
+        view={'matrix':[1,0,0,1,0,0],'viewport':[100,100,800,600],
+              'document':[700,500],'layer':None,'tool':'moveTool'}
+        unavailable=OSError('Operation unavailable')
+        unavailable.hresult=-2147221021
+        transport=SimpleNamespace(observe=Mock(return_value=(None,{'session':target['session']})),
+                                  call=Mock(return_value={'session':target['session'],'gradient_view':view}))
+        bridge=SimpleNamespace(executor=None,transport=transport,_application=Mock(side_effect=unavailable))
+        editor=GradientEditor(SimpleNamespace(bridge=bridge))
+        editor.target,editor.owner=target,777
+        editor.require_focus=Mock()
+        process=SimpleNamespace(GetWindowThreadProcessId=lambda hwnd:(4,9))
+        with patch.dict(sys.modules,win32process=process), patch('backend.gradient_editor.photoshop_process_ids') as pids:
+            pids.return_value=(9,)
+            self.assertEqual(await editor.read_view(),view)
+            transport.call.assert_called_once_with('inspect',gradient_view_target=target)
+            transport.call.reset_mock()
+            pids.return_value=(9,12)
+            with self.assertRaisesRegex(RuntimeError,'唯一'):
+                await editor.read_view()
+            transport.call.assert_not_called()
 
     async def test_temporary_hand_tool_keeps_overlay_but_settled_tool_change_closes_it(self):
         editor = GradientEditor(SimpleNamespace(operation_lock=asyncio.Lock()))

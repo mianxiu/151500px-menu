@@ -14,6 +14,7 @@ from .operation_target import guarded_script, validate_target
 from .paths import overlay_command
 from .settings import atomic_json
 from .shape_paint import metadata, parameters
+from .uxp_management import photoshop_process_ids
 
 VIEW_SCRIPT = r'''(function(){
     var s=stringIDToTypeID,d=app.activeDocument;
@@ -182,8 +183,25 @@ class GradientEditor:
             _, heartbeat = bridge.transport.observe()
             if heartbeat.get('session') != self.target['session']:
                 raise RuntimeError('Photoshop 会话已改变')
-            raw = bridge._application().DoJavaScript(script)
-            return checked_view(json.loads(raw))
+            try:
+                application = bridge._application()
+            except Exception as error:
+                if getattr(error, 'hresult', None) != -2147221021 or self.legacy_preview:
+                    raise
+                # COM may point at another installed version. The UXP snapshot
+                # must come from the only running PS, bound to this editor.
+                import win32process
+                owner_pid = win32process.GetWindowThreadProcessId(self.owner)[1]
+                if not owner_pid or photoshop_process_ids() != (owner_pid,):
+                    raise RuntimeError('无法确认唯一的 Photoshop 进程') from error
+                response = bridge.transport.call('inspect', gradient_view_target=self.target)
+                if response.get('session') != self.target['session']:
+                    raise RuntimeError('Photoshop 会话已改变') from error
+                view = checked_view(response.get('gradient_view'))
+                if restore_tool and view.get('tool') in ('handTool','zoomTool') and view['tool'] != restore_tool:
+                    raise RuntimeError('Photoshop 临时导航工具尚未恢复') from error
+                return view
+            return checked_view(json.loads(application.DoJavaScript(script)))
         if self.view_read and not self.view_read.done():
             raise RuntimeError('上一项 Photoshop 画布读取尚未退出')
         self.view_read = asyncio.get_running_loop().run_in_executor(bridge.executor, capture)
