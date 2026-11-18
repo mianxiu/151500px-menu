@@ -338,6 +338,14 @@ class Desktop:
         # never waits for it; this only shortens the conservative window.
         self._native_config()
 
+    def register_gradient_window(self, hwnd, owner):
+        self.gradient_window = (hwnd, owner)
+        sequence = self._native_config()
+        with self.native_applied:
+            ready = bool(sequence) and self.native_applied.wait_for(lambda:self.native_applied_sequence >= sequence, .5)
+        if not ready:
+            raise RuntimeError('渐变输入保护未就绪，本次未打开编辑器')
+
     def prepare_preview_input_guard(self,preview):
         owner=self.target
         hint=getattr(preview,'panel_hint',None) or (self.panel_context.current if self.panel_context else {})

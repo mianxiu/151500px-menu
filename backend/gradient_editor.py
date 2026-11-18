@@ -1,4 +1,4 @@
-"""A resizable gradient editor bound to one Photoshop selection and history."""
+"""A canvas gradient editor bound to one Photoshop selection and history."""
 import asyncio
 import hashlib
 import json
@@ -140,17 +140,6 @@ class GradientEditor:
         self.tint = ''
         self.legacy_preview = False
 
-    def preferred_overlay(self):
-        path = Path(self.app.runtime) / 'gradient-mode.json'
-        try:
-            preference = json.loads(path.read_text('utf-8'))
-            return isinstance(preference, dict) and preference.get('overlay') is True
-        except FileNotFoundError:
-            return False
-        except (OSError, ValueError):
-            logging.warning('Could not read gradient mode preference', exc_info=True)
-            return False
-
     def owns_overlay(self, root):
         if root != self.owner or self.phase not in ('editing','preview') or not self.in_scope():
             return False
@@ -228,19 +217,17 @@ class GradientEditor:
                 raise RuntimeError('菜单或 Photoshop 工作区已改变')
             await asyncio.to_thread(desktop.require_action_focus)
             self.hwnd = hwnd
+            await asyncio.to_thread(desktop.register_gradient_window, hwnd, self.owner)
             await asyncio.to_thread(desktop.gui.SendMessage, desktop.hwnd, 0x801f, process.pid, epoch)
             await self.send({'type':'gradient.open','phase':self.phase,'message':self.message,'draft':self.draft,
                              'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel,
                              'legacy_preview':self.legacy_preview,
-                             'vector':self.vector,'layer_tint':self.tint if len(self.target['layer_ids'])==1 else '',
-                             'prefer_overlay':await asyncio.to_thread(self.preferred_overlay)})
+                             'vector':self.vector,'layer_tint':self.tint if len(self.target['layer_ids'])==1 else ''})
             for _ in range(40):
                 if desktop.gui.IsWindowVisible(hwnd):break
                 if process.returncode is not None:raise RuntimeError('原生渐变窗口已退出')
                 await asyncio.sleep(.05)
             else:raise RuntimeError('原生渐变窗口未显示')
-            desktop.gradient_window = (hwnd, self.owner)
-            await asyncio.to_thread(desktop.sync_native)
             self.reader = asyncio.create_task(self.read_window(process))
         except Exception:
             process.stdin.close()
@@ -276,16 +263,13 @@ class GradientEditor:
                 if action == 'gradient.view':
                     await self.request_view(event)
                     continue
-                if action == 'gradient.preference':
-                    overlay = event.get('overlay')
-                    if type(overlay) is not bool:
-                        raise ValueError('无效渐变编辑模式')
-                    try:
-                        await asyncio.to_thread(atomic_json, Path(self.app.runtime) / 'gradient-mode.json', {'overlay':overlay})
-                    except OSError:
-                        logging.exception('Could not save gradient mode preference')
-                        self.message = '无法保存渐变编辑模式，下次打开将使用上次保存的模式'
-                        await self.send_state()
+                if action == 'gradient.unavailable':
+                    self.message = str(event.get('message', '画布叠加不可用'))[:1000]
+                    logging.warning('Gradient overlay unavailable: %s', self.message)
+                    self.app.desktop._send_menu_event({'type':'gradient.open.failed',
+                        'epoch':self.app.desktop.menu_epoch,'message':self.message})
+                    await self.request('gradient.cancel', event)
+                    await self.send_state(ack=True)
                     continue
                 if action not in ('gradient.update','gradient.apply','gradient.cancel'):
                     raise ValueError('无效渐变窗口事件')
@@ -360,9 +344,11 @@ class GradientEditor:
                     return
                 if entering or self.overlay_tool is None:
                     self.overlay_tool = tool
+                if (entering or refresh) and self.live and self.draft != self.base:
+                    self.resume_preview_after_view = True
         except Exception as error:
             logging.info('Gradient canvas view unavailable: %s', error)
-            message = '无法核对当前画布位置，请重试或切回独立窗口'
+            message = '无法核对当前画布位置，请重新打开渐变编辑'
         response = {'type':'gradient.view','serial':serial,'view':view,'message':message}
         if retry:
             response['retry'] = True
@@ -392,8 +378,8 @@ class GradientEditor:
             return False
         import win32process
         gui = self.app.desktop.gui
-        return (gui.GetClassName(foreground) == 'PhotoshopGradientHandles' and
-                gui.GetWindow(foreground, 4) == self.hwnd and
+        return (gui.GetClassName(foreground) in ('PhotoshopGradientHandles', 'ImGui Platform') and
+                gui.GetAncestor(foreground, 3) == self.hwnd and
                 win32process.GetWindowThreadProcessId(foreground)[1] == self.process.pid)
 
     def require_focus(self):
@@ -441,7 +427,7 @@ class GradientEditor:
                     'menu_epoch':epoch, 'params':paint, 'return_to_menu':True,
                 })
                 if await asyncio.shield(task) is not True:
-                    raise RuntimeError('Caps 调整结果未确认，独立渐变未打开')
+                    raise RuntimeError('Caps 调整结果未确认，渐变编辑未打开')
             else:
                 require_available(app)
                 if paint:
@@ -450,7 +436,7 @@ class GradientEditor:
                     })
                     proof = json.loads(result.get('result', '{}'))
                     if proof.get('verified') is not True or proof.get('cancelled'):
-                        raise RuntimeError('Caps 调整结果未确认，独立渐变未打开')
+                        raise RuntimeError('Caps 调整结果未确认，渐变编辑未打开')
             if (not desktop.visible or desktop.menu_epoch != epoch or desktop.target != owner or
                     not desktop.color_editor_active or desktop.preview_input_guard):
                 raise RuntimeError('菜单或 Photoshop 工作区已改变')
@@ -579,6 +565,16 @@ class GradientEditor:
                 await asyncio.to_thread(self.path.unlink, missing_ok=True)
                 self.phase = 'closed'
             if not commit:self.message = '草稿已保存'
+
+    async def preview_progress(self, preview, progress):
+        if preview is not self.preview or self.phase != 'preview' or preview.phase != 'preview':
+            return
+        frame = progress.get('frame')
+        ready = progress.get('stage') == 'ready' and type(frame) is int and frame >= preview.seq
+        message = '已更新 PS 画布' if ready else '正在更新 PS 画布…'
+        if message != self.message:
+            self.message = message
+            await self.send_state()
 
     async def run_live(self, preview):
         await run_preview(self.app, preview, self.target, self)

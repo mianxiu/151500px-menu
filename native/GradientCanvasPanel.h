@@ -80,7 +80,7 @@ struct GradientCanvasPanel {
         bool current() const{
             RECT bounds{},actual{};
             DWORD currentPid=0;GetWindowThreadProcessId(canvas,&currentPid);
-            return currentPid==pid && canvas && IsWindowVisible(canvas) && IsWindowEnabled(canvas) &&
+            return currentPid==pid && canvas && IsWindowVisible(canvas) &&
                 GetAncestor(canvas,GA_ROOTOWNER)==owner && image && GetParent(image)==canvas &&
                 GradientNavigation::windowClass(image,L"Static") && IsWindowVisible(image) &&
                 ImGui_ImplWin32_GetDpiScaleForHwnd(canvas)==dpi && GetWindowRect(canvas,&bounds) && equal(bounds,surface) &&
@@ -143,7 +143,7 @@ struct GradientCanvasPanel {
     RECT pickerInputClip{},pickerInputEditor{};
     bool pickerInput=false;
     std::array<uint32_t,2> lastSelection{};
-    int lastColorTarget=-1;
+    int lastColorTarget=-1,lastActiveLane=-1;
     static constexpr const wchar_t* hitClass=L"PhotoshopGradientHandles";
     bool foreground() const{
         const HWND front=GetForegroundWindow();
@@ -276,6 +276,14 @@ struct GradientCanvasPanel {
         const Point unit=delta*(1/std::max(.001,delta.length()));
         return view.toScreen(axis.at(t))+Point{-unit.y,unit.x}*offset;
     }
+    Point stopPoint(double location,int lane,bool middle=false) const{
+        const double raw=location/GradientPanel::end,t=axis.reverse?1-raw:raw;
+        const double radius=menuGradientHandleSize*.4*view.dpi;
+        double side=(lane==0?-1.:1.)*(menuGradientBarHeight*.25*view.dpi+radius+(middle?0:menuPanelGap*view.dpi));
+        // Separate the angular endpoints along their own rail while keeping both lanes on one ray.
+        if(axis.angular && location==GradientPanel::end && !middle)side+=(lane==0?-1.:1.)*2*radius;
+        return railPoint(t,side);
+    }
     int stripLocation(Point p,int lane=1) const {
         double t=0;
         if(axis.angular){
@@ -296,11 +304,11 @@ struct GradientCanvasPanel {
         if(!panel->editable() || panel->channel!=channel)return noClick;
         const POINT screen{LONG(p.x),LONG(p.y)};
         if(!PtInRect(&view.clip,screen))return noClick;
-        if(GradientNavigation::sampling(editor) && panel->hasRgbPicker())return sampleColor;
+        if(GradientNavigation::sampling(editor) && panel->canSampleColor())return sampleColor;
         if(at(p)>=0)return noClick;
         if(stripLocation(p)>=0)return addStop;
         if(stripLocation(p,0)>=0)return addOpacity;
-        return panel->hasRgbPicker()?sampleColor:noClick;
+        return panel->canSampleColor()?sampleColor:noClick;
     }
     static COLORREF screenPixel(POINT p){
         const HDC dc=GetDC(nullptr);
@@ -446,17 +454,17 @@ struct GradientCanvasPanel {
         RECT editorRect{};GetWindowRect(editor,&editorRect);
         const bool canvasPicker=panel->hasRgbPicker();
         const int colorTarget=panel->colorTarget();
-        if(channel==panel->channel && lastPaint==panel->paint() && lastSelection==panel->selection && lastColorTarget==colorTarget &&
+        if(channel==panel->channel && lastPaint==panel->paint() && lastSelection==panel->selection && lastColorTarget==colorTarget && lastActiveLane==panel->activeLane &&
             View::equal(editorRect,lastEditor) && (!allowPointer || IsWindowVisible(hit) || (!canvasPicker && !IsWindowVisible(visual))))return true;
         if(channel!=panel->channel && GetCapture()==hit)ReleaseCapture();
-        channel=panel->channel;lastEditor=editorRect;lastSelection=panel->selection;lastColorTarget=colorTarget;
+        lastActiveLane=panel->activeLane;channel=panel->channel;lastEditor=editorRect;lastSelection=panel->selection;lastColorTarget=colorTarget;
         lastPaint=panel->paint();
         if(!axis.read(view,lastPaint,vector,radialAngle)){hide();return false;}
         using namespace Gdiplus;
         const auto clip=view.clip;
         const UINT dpi=std::lround(view.dpi*96);
         auto timeline=panel->dockTimeline(editorRect,dpi);
-        auto picker=canvasPicker?panel->dockPicker(editorRect,dpi):RECT{};
+        auto picker=panel->dockPicker(editorRect,dpi);
         const auto dockTimeline=timeline,dockPicker=picker;
         const auto radius=menuGradientHandleSize*.4*view.dpi,gap=menuPanelGap*view.dpi;
         const auto c=view.toScreen(axis.center),from=view.toScreen(axis.at(0)),to=view.toScreen(axis.at(1));
@@ -476,26 +484,15 @@ struct GradientCanvasPanel {
         if(!axis.radial)add(c+unit*(3*gap)+normal*(halfWidth+radius+3*gap),direction,0,accent,radius);
         for(int lane:{0,1}){
             const auto& stops=panel->track(lane);
-            const auto point=[&](double location,bool middle){
-                const double raw=location/GradientPanel::end,t=axis.reverse?1-raw:raw;
-                const double side=(lane==0?-1.:1.)*(halfWidth+radius+(middle?0:gap));
-                if(axis.angular){
-                    const auto base=view.toScreen(axis.arc(t,arcRadius));
-                    const auto outward=base-c;
-                    return base+outward*(side/std::max(.001,outward.length()));
-                }
-                return view.toScreen(axis.at(t))+normal*side;
-            };
             for(int i=0;i<int(stops.size());++i){
                 const double where=stops[i]["location"];
-                auto at=point(where,false);
-                if(axis.angular && where==GradientPanel::end)at=at-unit*(2*radius);
+                auto at=stopPoint(where,lane);
                 const float gray=lane==0?stops[i]["opacity"].get<float>()/100:0;
                 const auto fill=lane==0?ImGui::ColorConvertFloat4ToU32({gray,gray,gray,1}):GradientPanel::swatch(stops[i],surface);
                 add(at,color,i,fill,radius,lane);
                 if(i+1<int(stops.size())){
                     const double next=stops[i+1]["location"];
-                    if(next>where)add(point(where+(next-where)*stops[i]["midpoint"].get<double>()/100,true),midpoint,i,surface,radius*.72,lane);
+                    if(next>where)add(stopPoint(where+(next-where)*stops[i]["midpoint"].get<double>()/100,lane,true),midpoint,i,surface,radius*.72,lane);
                 }
             }
         }
@@ -550,7 +547,7 @@ struct GradientCanvasPanel {
                     if(i)stroke(g,last,next);last=next;
                 }
             }
-            // Use the same stops and opacity interpolation as the independent timeline.
+            // Use the same stops and opacity interpolation as the timeline.
             const auto stripPoint=[&](double t){
                 return axis.angular?view.toScreen(axis.arc(t,arcRadius)):view.toScreen(axis.at(t));
             };

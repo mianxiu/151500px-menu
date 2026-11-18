@@ -2,16 +2,17 @@
 
 struct GradientPanel {
     static constexpr int end=4096;
-    static constexpr int minWidth=550,minHeight=450,overlayHeight=130;
-    static constexpr int pickerBodyWidth=154;
+    static constexpr int minWidth=560,maxWidth=900,overlayHeight=246;
+    static constexpr int minHeight=overlayHeight;
+    static constexpr int pickerBodyWidth=216;
     static constexpr int pickerWidth=int(pickerBodyWidth+2*menuDenseGap);
-    static constexpr int pickerHeight=int(pickerWidth-menuHueBarWidth-menuHarmonyLaneWidth-menuDenseGap+menuShortcutHeight);
+    static constexpr int pickerHeight=overlayHeight;
     static constexpr float fieldWidth=76,minSpan=64;
     Json draft;
-    std::string title,phase,message;
+    std::string phase,message;
     bool live=false,pending=false,dirty=false,released=false,terminal=false;
-    bool overlay=false,viewWaiting=false,canOverlay=false;
-    int channel=0,cursor=end/2,anchorLane=-1,anchorIndex=-1;
+    bool overlay=false,viewWaiting=false;
+    int channel=0,cursor=end/2,anchorLane=-1,anchorIndex=-1,activeLane=1;
     int primaryColor=-1;
     PerceptualPickerState picker;
     float start=0,span=end;
@@ -22,7 +23,6 @@ struct GradientPanel {
     bool dragged=false;
     float panStart=0,overviewOffset=0;
     enum OverviewDrag { viewportPan, viewportLeft, viewportRight } overviewDrag=viewportPan;
-    RECT dragArea{};
     Json original;
     std::array<uint32_t,2> boxBase{};
     ULONGLONG lastSent=0;
@@ -38,15 +38,22 @@ struct GradientPanel {
     static uint32_t bit(int index){return uint32_t(1)<<index;}
     static RECT dockBounds(RECT clip,UINT dpi){
         const LONG gap=MulDiv(int(menuPanelGap),dpi,96);
-        const LONG height=MulDiv(overlayHeight,dpi,96)+MulDiv(pickerHeight,dpi,96)+gap;
-        return {clip.left+gap,clip.bottom-gap-height,clip.right-gap,clip.bottom-gap};
+        const LONG side=MulDiv(pickerWidth,dpi,96)+gap;
+        const LONG available=clip.right-clip.left-2*gap-side;
+        const LONG width=std::clamp<LONG>(available,MulDiv(minWidth,dpi,96),MulDiv(maxWidth,dpi,96))+side;
+        const LONG height=MulDiv(std::max(overlayHeight,pickerHeight),dpi,96);
+        const LONG left=clip.left+(clip.right-clip.left-width)/2;
+        return {left,clip.bottom-gap-height,left+width,clip.bottom-gap};
     }
     static RECT dockTimeline(RECT frame,UINT dpi){
-        return {frame.left,frame.bottom-MulDiv(overlayHeight,dpi,96),frame.right,frame.bottom};
+        return {frame.left,frame.bottom-MulDiv(overlayHeight,dpi,96),
+            frame.right-MulDiv(pickerWidth+int(menuPanelGap),dpi,96),frame.bottom};
     }
     static RECT dockPicker(RECT frame,UINT dpi){
-        return {frame.right-MulDiv(pickerWidth,dpi,96),frame.top,frame.right,frame.top+MulDiv(pickerHeight,dpi,96)};
+        return {frame.right-MulDiv(pickerWidth,dpi,96),frame.bottom-MulDiv(pickerHeight,dpi,96),frame.right,frame.bottom};
     }
+    bool editingOpacity() const{return activeLane==0 && selection[0];}
+    bool canSampleColor(){return hasRgbPicker() && !editingOpacity();}
     bool hasRgbPicker(){return track(1).front().contains("rgb");}
     bool selected(int lane,int index) const {return (selection[lane]&bit(index))!=0;}
     int colorTarget(){
@@ -67,8 +74,7 @@ struct GradientPanel {
         dirty=refreshBar=true;
     }
     void open(const Json& state){
-        draft=state.at("draft");title=state.value("title","");live=state.value("live",false);
-        canOverlay=state.contains("vector");
+        draft=state.at("draft");live=state.value("live",false);
         channel=state.value("channel",std::string())=="stroke" || draft.at("fill").at("kind")!="gradient"?1:0;
         receive(state);
     }
@@ -93,6 +99,7 @@ struct GradientPanel {
     }
 
     void select(int lane,int index,bool ctrl,bool shift){
+        activeLane=lane;
         if(shift && anchorLane==lane){
             if(!ctrl)selection={};
             for(int i=std::min(index,anchorIndex);i<=std::max(index,anchorIndex);++i)selection[lane]|=bit(i);
@@ -141,7 +148,7 @@ struct GradientPanel {
         if(lane==1){value.erase("origin");value["source"]="userStop";}
         auto at=std::upper_bound(stops.begin(),stops.end(),location,[](int x,const Json& s){return x<s.at("location").get<int>();});
         const int index=int(at-stops.begin());stops.insert(at,std::move(value));
-        selection={};selection[lane]=bit(index);anchorLane=lane;anchorIndex=index;
+        activeLane=lane;selection={};selection[lane]=bit(index);anchorLane=lane;anchorIndex=index;
         if(lane==1){primaryColor=index;picker.key.clear();}
         dirty=refreshBar=true;return true;
     }
@@ -234,6 +241,7 @@ struct GradientPanel {
             gesture=pan;press=mouse;panStart=start;
         }else if(hovered && gesture==none && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
             press=mouse;cursor=location(mouse.x);pressLane=laneAt(mouse.y);dragged=false;
+            if(pressLane>=0)activeLane=pressLane;
             int hit=-1;float distance=marker*.55f;
             if(pressLane>=0)for(int i=0;i<int(track(pressLane).size());++i){
                 const float px=x(track(pressLane)[i].at("location").get<int>());
@@ -419,23 +427,33 @@ struct GradientPanel {
             for(int i=0;i<int(track(lane).size());++i)if(selected(lane,i)){
                 const double next=read(track(lane)[i]);if(found)mixed|=value!=next;else{value=next;found=true;}
             }
-        if(!found)return;
-        if(MenuControls::number(label,value,fieldWidth*scale,step,low,high,mixed?"混合":format)){
+        ImGui::PushID(label);
+        if(label[0]!='#')MenuControls::fieldLabel(label,ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
+        ImGui::BeginDisabled(!found);
+        const float width=std::min(fieldWidth*scale,ImGui::GetContentRegionAvail().x);
+        const std::string placeholder=(label[0]=='#'?std::string(label+2)+" ":std::string())+(!found?"—":"混合");
+        if(MenuControls::number("##value",value,width,step,low,high,!found || mixed?placeholder.c_str():format)){
             for(int lane=0;lane<2;++lane)if(onlyLane<0 || lane==onlyLane)
                 for(int i=0;i<int(track(lane).size());++i)if(selected(lane,i))write(track(lane)[i],value);
             dirty=refreshBar=true;
         }
+        ImGui::EndDisabled();ImGui::PopID();
     }
     void optionValue(const char* label,const char* key,double low,double high,float step,const char* format){
         auto& option=paint()["options"][key];double value=option;
-        if(MenuControls::number(label,value,fieldWidth*scale,step,low,high,format)){
+        ImGui::PushID(label);MenuControls::fieldLabel(label,ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
+        if(MenuControls::number("##value",value,fieldWidth*scale,step,low,high,format)){
             option=value;dirty=refreshBar=true;
         }
+        ImGui::PopID();
     }
     template<size_t N> void choice(const char* label,Json& value,const char* const (&keys)[N],const char* const (&names)[N]){
         size_t index=0;while(index+1<N && value!=keys[index])++index;
+        ImGui::PushID(label);
+        MenuControls::fieldLabel(label,ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
         ImGui::SetNextItemWidth(fieldWidth*scale);
-        if(MenuControls::choice(label,names,index)){value=keys[index];dirty=refreshBar=true;}
+        if(MenuControls::choice("##value",names,index)){value=keys[index];dirty=refreshBar=true;}
+        ImGui::PopID();
     }
     void types(){
         const char* styles[]={"linear","radial","angle","reflected","diamond"},*names[]={"线性","径向","角度","对称","菱形"};
@@ -458,20 +476,52 @@ struct GradientPanel {
             else ImGui::Dummy({0,0});
         }
     }
-    static void nextField(const char* label){
-        const auto x=ImGui::GetCursorScreenPos().x;
-        const auto gap=ImGui::GetStyle().ItemSpacing.x;
-        if(ImGui::GetItemRectMax().x+gap+fieldWidth*scale+ImGui::CalcTextSize(label).x+gap<=x+ImGui::GetContentRegionAvail().x)
-            ImGui::SameLine();
+    void opacityPicker(float width){
+        const auto at=ImGui::GetCursorScreenPos();
+        const float height=perceptualSquareSide(width);
+        ImGui::InvisibleButton("##gradient-opacity-picker",{width,height});
+        auto* draw=ImGui::GetWindowDrawList();
+        const auto black=ImGui::ColorConvertFloat4ToU32({0,0,0,1}),white=ImGui::ColorConvertFloat4ToU32({1,1,1,1});
+        draw->AddRectFilledMultiColor(at,{at.x+width,at.y+height},black,white,white,black);
+        draw->AddRect(at,{at.x+width,at.y+height},ImGui::GetColorU32(ImGuiCol_Border),ImGui::GetStyle().FrameRounding,0,scale);
+        if(ImGui::IsItemActive() && ImGui::IsMouseDown(0)){
+            const double value=std::clamp(double((ImGui::GetIO().MousePos.x-at.x)/width),0.,1.)*100;
+            for(int i=0;i<int(track(0).size());++i)if(selected(0,i) && track(0)[i]["opacity"]!=value){
+                track(0)[i]["opacity"]=value;dirty=refreshBar=true;
+            }
+        }
+        for(int i=0;i<int(track(0).size());++i)if(selected(0,i)){
+            const float x=at.x+width*track(0)[i]["opacity"].get<float>()/100;
+            draw->AddLine({x,at.y},{x,at.y+height},ImGui::GetColorU32(ImGuiCol_CheckMark),2*scale);
+        }
+        opacityValue();
     }
-    void draw(bool checkLayout=false,void (*switchMode)(bool)=nullptr,void (*sampleScreen)()=nullptr){
+    void colorValues(){
+        const auto& first=track(1).front();const bool native=first.contains("native");
+        const std::string model=native?first.at("native").at("model").get<std::string>():"rgb";
+        const char* const rgb[]={"R","G","B"},*const cmyk[]={"C","M","Y","K"},*const lab[]={"L*","a*","b*"},*const gray[]={"灰度"};
+        const auto names=model=="cmyk"?cmyk:model=="lab"?lab:model=="gray"?gray:rgb;
+        const int count=model=="cmyk"?4:model=="gray"?1:3;
+        if(ImGui::BeginTable("##gradient-color-values",count,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame)){
+            ImGui::TableNextRow();
+            for(int i=0;i<count;++i){
+                ImGui::TableSetColumnIndex(i);
+                const std::string id=std::string("##")+names[i];
+                const std::string format=std::string(names[i])+(native?" %.2f":" %.0f");
+                selectionValue(id.c_str(),1,model=="lab" && i>0?-128:0,!native?255:model=="lab" && i>0?127:100,.25f,format.c_str(),
+                    [=](const Json& stop){return (native?stop.at("native").at("values"):stop.at("rgb"))[i].get<double>();},
+                    [=](Json& stop,double value){if(native)stop["native"]["values"][i]=value;else stop["rgb"][i]=int(std::lround(value));stop["source"]="userStop";});
+            }
+            ImGui::EndTable();
+        }
+    }
+    void draw(bool checkLayout=false,void (*sampleScreen)()=nullptr){
         auto* viewport=ImGui::GetMainViewport();
         const ImVec2 origin=viewport->Pos;
         const RECT frame{0,0,LONG(viewport->Size.x),LONG(viewport->Size.y)};
         const UINT dpi=std::lround(96*scale);
         const auto timelineRect=overlay?dockTimeline(frame,dpi):frame;
         const auto pickerRect=dockPicker(frame,dpi);
-        const bool docked=overlay;
         constexpr ImGuiWindowFlags flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|
             ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse;
         const ImVec2 at{origin.x+timelineRect.left,origin.y+timelineRect.top};
@@ -480,35 +530,30 @@ struct GradientPanel {
         ImGui::SetNextWindowViewport(viewport->ID);
         ImGui::SetNextWindowPos(at);
         ImGui::SetNextWindowSize(size);
-        ImGui::Begin(docked?"##gradient-dock":"##gradient",nullptr,flags);
+        ImGui::Begin("##gradient-dock",nullptr,flags);
         if(!ready()){ImGui::End();return;}
+        if(!overlay){
+            MenuControls::detailLine("正在核对 Photoshop 画布…",scale);
+            if(MenuControls::button("关闭",scale,true))finish(false);
+            ImGui::End();return;
+        }
         MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),at,{at.x+size.x,at.y+size.y},scale);
         {
             const auto header=ImGui::GetCursorScreenPos();
             const float side=menuShortcutHeight*scale,closeX=header.x+ImGui::GetContentRegionAvail().x-side;
-            if(!docked)MenuControls::detailLine(title.c_str(),scale,side+menuPanelGap*scale);
             const auto actions=ImGui::GetCursorScreenPos();
             ImGui::SetCursorScreenPos({closeX,header.y});
             ImGui::BeginDisabled(terminal);
             if(MenuControls::iconButton("关闭并保留草稿",41,scale,true))finish(false);
             ImGui::EndDisabled();
-            ImGui::SetCursorScreenPos(actions);
-            dragArea={0,0,LONG(closeX-at.x),LONG(ImGui::GetCursorPosY())};
+            ImGui::SetCursorScreenPos({closeX-menuDenseGap*scale-ImGui::CalcTextSize("应用").x-2*menuDenseGap*scale,header.y});
             if(ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsAnyItemActive())finish(false);
             ImGui::BeginDisabled(!editable());
             if(MenuControls::button("应用",scale,true))finish(true);
             ImGui::EndDisabled();
-            if(!docked){ImGui::SameLine();MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextUnformatted(live?"实时更新 PS":"确认后更新 PS");}
-            bool changeMode=false;
-            int mode=docked?1:0;
-            if(canOverlay && switchMode){
-                ImGui::SameLine();
-                ImGui::BeginDisabled(terminal || viewWaiting || (!editable() && !overlay));
-                const char* modes[]={"独立窗口","画布叠加"};
-                changeMode=MenuControls::segments("##gradient-edit-mode",modes,mode,scale,true);
-                ImGui::EndDisabled();
-            }
+            ImGui::SetCursorScreenPos(actions);
             ImGui::BeginDisabled(!editable());
+            types();
             const auto timelineZoom=[&]{
                 char fit[16];std::snprintf(fit,sizeof(fit),"%.0f%%",end*100.f/span);
                 const char* zoomNames[]={"−",fit,"+"};int zoomAction=-1;
@@ -523,31 +568,16 @@ struct GradientPanel {
                 if(MenuControls::segments("##gradient-channel",names,channel,scale,true)){selection={};anchorLane=primaryColor=-1;gesture=none;refreshBar=true;}
             };
             const auto nodeButtons=[&]{
-                ImGui::BeginDisabled(track(1).size()>=32);if(MenuControls::button(docked?"加色标":"添加色标",scale,true))add(1,cursor);ImGui::EndDisabled();
-                ImGui::SameLine();ImGui::BeginDisabled(track(0).size()>=32);if(MenuControls::button(docked?"加透明度":"添加不透明度节点",scale,true))add(0,cursor);ImGui::EndDisabled();
-                ImGui::SameLine();ImGui::BeginDisabled(!canRemove());if(MenuControls::button(docked?"删除":"删除选中",scale,true))remove();ImGui::EndDisabled();
+                ImGui::BeginDisabled(track(1).size()>=32);if(MenuControls::button("加色标",scale,true))add(1,cursor);ImGui::EndDisabled();
+                ImGui::SameLine();ImGui::BeginDisabled(track(0).size()>=32);if(MenuControls::button("加透明度",scale,true))add(0,cursor);ImGui::EndDisabled();
+                ImGui::SameLine();ImGui::BeginDisabled(!canRemove());if(MenuControls::button("删除",scale,true))remove();ImGui::EndDisabled();
             };
-            if(docked){
-                ImGui::SameLine();timelineZoom();
-                if(bothChannels){ImGui::SameLine();channels();}
-                ImGui::SameLine();nodeButtons();
-                if(checkLayout && ImGui::GetItemRectMax().x+menuCompactGap*scale>closeX)
-                    throw std::runtime_error("Gradient dock toolbar overlaps its close button");
-            }else if(ImGui::BeginTable("##gradient-track-tools",2,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame)){
-                ImGui::TableSetupColumn("##zoom",ImGuiTableColumnFlags_WidthFixed,125*scale);
-                ImGui::TableSetupColumn("##channel",ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);timelineZoom();
-                if(bothChannels){
-                    ImGui::TableSetColumnIndex(1);channels();
-                }
-                ImGui::EndTable();
-            }
+            if(bothChannels){ImGui::SameLine();channels();}
+            timelineZoom();ImGui::SameLine();nodeButtons();
+            if(checkLayout && ImGui::GetItemRectMax().x+menuCompactGap*scale>closeX)
+                throw std::runtime_error("Gradient dock toolbar overlaps its close button");
             timeline(scale);
-            const bool dockOpacity=docked && selection[0];
-            const auto& style=ImGui::GetStyle();
-            overview(dockOpacity?fieldWidth*scale+ImGui::CalcTextSize("不透明度").x+style.ItemInnerSpacing.x+style.ItemSpacing.x:0);
-            if(dockOpacity){ImGui::SameLine();opacityValue();}
-            if(!docked)nodeButtons();
+            overview();
             if(editable() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive()){
                 const auto& io=ImGui::GetIO();
                 if(ImGui::IsKeyPressed(ImGuiKey_Delete))remove();
@@ -556,62 +586,40 @@ struct GradientPanel {
                     const Json base=paint();const int delta=shift(base,sign*(io.KeyShift?41:4));if(delta)moveBy(base,delta);
                 }
             }
-            if(!docked){
-            const bool rgb=track(1).front().contains("rgb");
-            const float pickerWidth=menuPanelWidth*scale;
-            const bool sideBySide=rgb && ImGui::BeginTable("##gradient-parameters",2,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame);
-            if(sideBySide){
-                ImGui::TableSetupColumn("##settings",ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("##picker",ImGuiTableColumnFlags_WidthFixed,pickerWidth);
+            if(ImGui::BeginTable("##gradient-parameters",3,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame)){
                 ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
-            }
-            if(selection[0] || selection[1]){
-                for(int lane=0;lane<2;++lane)if(selection[lane]){
-                    for(int i=0;i<int(track(lane).size());++i)if(selected(lane,i)){
-                        const int location=track(lane)[i].at("location");double value=location*100./end;
-                        if(MenuControls::number("位置",value,fieldWidth*scale,.1f,0,100,"%.2f%%")){
-                            const Json base=paint();const int delta=shift(base,int(std::lround(value*end/100))-location);if(delta)moveBy(base,delta);
-                        }
-                        break;
-                    }
-                    break;
+                const int lane=selection[activeLane]?activeLane:1-activeLane;
+                int selectedIndex=0;while(selectedIndex<int(track(lane).size()) && !selected(lane,selectedIndex))++selectedIndex;
+                const int location=selectedIndex<int(track(lane).size())?track(lane)[selectedIndex]["location"].get<int>():0;
+                double position=location*100./end;
+                ImGui::BeginDisabled(!selection[lane]);
+                MenuControls::fieldLabel("位置",ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
+                if(MenuControls::number("##node-position",position,fieldWidth*scale,.1f,0,100,"%.1f%%")){
+                    const Json base=paint();const int delta=shift(base,int(std::lround(position*end/100))-location);if(delta)moveBy(base,delta);
                 }
-                nextField("中点");selectionValue("中点",-1,0,100,.2f,"%.0f%%",[](const Json& stop){return stop.at("midpoint").get<double>();},[](Json& stop,double value){stop["midpoint"]=int(std::lround(value));});
-                if(selection[0]){nextField("不透明度");opacityValue();}
-                if(selection[1]){
-                    const auto& first=track(1).front();const bool native=first.contains("native");
-                    const std::string model=native?first.at("native").at("model").get<std::string>():"rgb";
-                    const char* const rgbNames[]={"R","G","B"},*const cmyk[]={"C","M","Y","K"},*const lab[]={"L*","a*","b*"},*const gray[]={"灰度"};
-                    const auto names=model=="cmyk"?cmyk:model=="lab"?lab:model=="gray"?gray:rgbNames;
-                    const int count=model=="cmyk"?4:model=="gray"?1:3;
-                    for(int i=0;i<count;++i){
-                        if(i)nextField(names[i]);
-                        selectionValue(names[i],1,model=="lab" && i>0?-128:0,!native?255:model=="lab" && i>0?127:100,.25f,native?"%.2f":"%.0f",
-                            [=](const Json& stop){return (native?stop.at("native").at("values"):stop.at("rgb"))[i].get<double>();},
-                            [=](Json& stop,double value){if(native)stop["native"]["values"][i]=value;else stop["rgb"][i]=int(std::lround(value));stop["source"]="userStop";});
-                    }
+                ImGui::EndDisabled();
+                ImGui::TableSetColumnIndex(1);
+                selectionValue("中点",-1,0,100,.2f,"%.0f%%",[](const Json& stop){return stop.at("midpoint").get<double>();},[](Json& stop,double value){stop["midpoint"]=int(std::lround(value));});
+                ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+                const char* methods[]={"classic","linear","perceptual"},*methodNames[]={"经典","线性","感知"};
+                choice("插值",paint()["method"],methods,methodNames);
+                const std::string type=paint()["options"]["style"];
+                const bool radial=type=="radial",angular=type=="angle";
+                ImGui::TableSetColumnIndex(1);
+                if(!radial){optionValue(angular?"起始角度":"方向","angle",-360,360,.25f,"%.1f°");ImGui::SameLine();direction();}
+                ImGui::TableSetColumnIndex(2);
+                if(!angular)optionValue(radial?"半径缩放":"缩放","scale",1,1000,.25f,"%.1f%%");
+                ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+                if(paint()["options"].contains("offset_x"))optionValue("中心 X","offset_x",-1000,1000,.25f,"%.1f%%");
+                ImGui::TableSetColumnIndex(1);
+                if(paint()["options"].contains("offset_y"))optionValue("中心 Y","offset_y",-1000,1000,.25f,"%.1f%%");
+                ImGui::TableSetColumnIndex(2);
+                auto& smoothness=paint()["options"]["smoothness"];double smooth=smoothness.get<double>()*100/end;
+                MenuControls::fieldLabel("平滑度",ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
+                if(MenuControls::number("##smoothness",smooth,fieldWidth*scale,.25f,0,100,"%.0f%%")){
+                    smoothness=int(std::lround(smooth*end/100));dirty=refreshBar=true;
                 }
-            }
-            const char* methods[]={"classic","linear","perceptual"},*methodNames[]={"经典","线性","感知"};
-            types();
-            const std::string type=paint()["options"]["style"];
-            const bool radial=type=="radial",angular=type=="angle";
-            choice("插值",paint()["method"],methods,methodNames);
-            if(!angular){
-                const char* sizeLabel=radial?"半径缩放":"缩放";
-                nextField(sizeLabel);optionValue(sizeLabel,"scale",1,1000,.25f,"%.2f%%");
-            }
-            if(!radial){direction();ImGui::SameLine();optionValue(angular?"起始角度":"方向","angle",-360,360,.25f,"%.2f°");}
-            auto& smoothness=paint()["options"]["smoothness"];double smooth=smoothness.get<double>()*100/end;
-            nextField("平滑度");
-            if(MenuControls::number("平滑度",smooth,fieldWidth*scale,.25f,0,100,"%.1f%%")){
-                smoothness=int(std::lround(smooth*end/100));dirty=refreshBar=true;
-            }
-            if(paint()["options"].contains("offset_x") && paint()["options"].contains("offset_y")){
-                optionValue("中心 X","offset_x",-1000,1000,.25f,"%.2f%%");
-                if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("相对原点的水平偏移；0% 居中，正值向右",scale);
-                nextField("中心 Y");optionValue("中心 Y","offset_y",-1000,1000,.25f,"%.2f%%");
-                if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("相对原点的垂直偏移；0% 居中，正值向下",scale);
+                ImGui::EndTable();
             }
             const char* names[]={"反向","仿色","与图层对齐"},*keys[]={"reverse","dither","align"};
             auto& options=paint()["options"];
@@ -620,23 +628,18 @@ struct GradientPanel {
                 for(size_t i=0;i<flags.size();++i)options[keys[i]]=flags[i];
                 dirty=refreshBar=true;
             }
-            if(sideBySide){
-                ImGui::TableSetColumnIndex(1);colorPicker(pickerWidth);ImGui::EndTable();
-            }
-            }
             ImGui::EndDisabled();
+            ImGui::SameLine();
             const bool routine=message=="空格平移，Z 缩放，Esc 退出" || message=="草稿已保存";
-            if(!docked || !editable() || (!routine && !message.empty()))
-                MenuControls::detailLine(phase=="applying"?"正在确认 Photoshop 修改…":phase=="closing"?"正在恢复原渐变…":
-                    phase=="error"?message.c_str():viewWaiting?"正在核对画布位置…":pending || dirty?"正在保存草稿…":message.c_str(),scale);
+            MenuControls::detailLine(phase=="applying"?"正在确认 Photoshop 修改…":phase=="closing"?"正在恢复原渐变…":
+                    phase=="error"?message.c_str():viewWaiting?"正在核对画布位置…":pending || dirty?"正在保存草稿…":routine || message.empty()?(live?"实时更新 PS":"确认后更新 PS"):message.c_str(),scale);
             if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>size.y ||
                 ImGui::GetScrollMaxY()>0 || ImGui::GetScrollMaxX()>0))
                 throw std::runtime_error("Gradient controls exceeded the minimum client size: bottom="+std::to_string(ImGui::GetCursorPosY())+
                     ", height="+std::to_string(size.y)+", scroll="+std::to_string(ImGui::GetScrollMaxX())+","+std::to_string(ImGui::GetScrollMaxY()));
-            if(changeMode)switchMode(mode==1);
         }
         ImGui::End();
-        if(docked && overlay && hasRgbPicker()){
+        if(overlay){
             const ImVec2 pickerAt{origin.x+pickerRect.left,origin.y+pickerRect.top};
             const ImVec2 pickerSize{float(pickerRect.right-pickerRect.left),float(pickerRect.bottom-pickerRect.top)};
             ImGui::SetNextWindowViewport(viewport->ID);
@@ -646,20 +649,27 @@ struct GradientPanel {
             MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),pickerAt,{pickerAt.x+pickerSize.x,pickerAt.y+pickerSize.y},scale);
             {
                 ImGui::BeginDisabled(!editable());
-                colorPicker(pickerBodyWidth*scale);
-                const auto target=track(1)[colorTarget()]["location"].get<int>();
+                if(editingOpacity())opacityPicker(pickerBodyWidth*scale);
+                else if(hasRgbPicker())colorPicker(pickerBodyWidth*scale);
+                if(!editingOpacity())colorValues();
+                const int lane=editingOpacity()?0:1;
+                int index=lane==0?anchorIndex:colorTarget();
+                if(index<0 || index>=int(track(lane).size()) || (lane==0 && !selected(0,index)))index=0;
+                const auto target=track(lane)[index]["location"].get<int>();
                 {
                     MenuTextStyle text(MenuTextRole::Secondary);
-                    ImGui::AlignTextToFramePadding();ImGui::Text("色标 %.0f%%",target*100./end);
+                    ImGui::AlignTextToFramePadding();ImGui::Text(lane==0?"透明度节点 %.0f%%":"色标 %.0f%%",target*100./end);
                 }
-                if(sampleScreen){
+                if(sampleScreen && canSampleColor()){
                     ImGui::SameLine(pickerSize.x-(menuDenseGap+menuShortcutHeight)*scale);
                     if(MenuControls::iconButton("从画布取色",34,scale,true))sampleScreen();
                 }
                 ImGui::EndDisabled();
                 if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>pickerSize.y ||
                     ImGui::GetScrollMaxY()>0 || ImGui::GetScrollMaxX()>0))
-                    throw std::runtime_error("Docked gradient picker exceeded its bounds");
+                    throw std::runtime_error("Docked gradient picker exceeded its bounds: bottom="+std::to_string(ImGui::GetCursorPosY())+
+                        ", height="+std::to_string(pickerSize.y)+", scroll="+std::to_string(ImGui::GetScrollMaxX())+","+
+                        std::to_string(ImGui::GetScrollMaxY())+", opacity="+std::to_string(editingOpacity()));
             }
             ImGui::End();
         }

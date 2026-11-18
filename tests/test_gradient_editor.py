@@ -98,6 +98,18 @@ class GradientEditorTests(unittest.TestCase):
         self.assertEqual(check.returncode,0,check.stderr)
 
 
+class GradientInputRegistrationTests(unittest.TestCase):
+    def test_registration_requires_hook_ack_before_editor_opens(self):
+        import threading
+        from backend.desktop import Desktop
+        desktop=SimpleNamespace(native_applied=threading.Condition(),native_applied_sequence=4,_native_config=Mock(return_value=4))
+        Desktop.register_gradient_window(desktop,101,202)
+        self.assertEqual(desktop.gradient_window,(101,202))
+        desktop._native_config.return_value=0
+        with self.assertRaisesRegex(RuntimeError,'输入保护未就绪'):
+            Desktop.register_gradient_window(desktop,303,202)
+
+
 class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_tint_follows_only_the_verified_target(self):
         target = {'session':'s','document_id':2,'layer_ids':[4]}
@@ -132,26 +144,18 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await reader
         editor.request_view.assert_awaited_once_with(event)
 
-    async def test_explicit_mode_choice_survives_new_editor_and_view_failure(self):
-        with tempfile.TemporaryDirectory() as root:
-            app = SimpleNamespace(runtime=root, desktop=SimpleNamespace(sync_native=Mock()))
-            async def run_window(*events):
-                stream = AsyncMock(side_effect=[json.dumps(e).encode() for e in events] + [b''])
-                process = SimpleNamespace(stdout=SimpleNamespace(readline=stream), stdin=Mock())
-                editor = GradientEditor(app)
-                editor.process = process
-                editor.request_view = AsyncMock()  # A failed view leaves the window independent.
-                await editor.read_window(process)
-                return editor
-
-            self.assertFalse(GradientEditor(app).preferred_overlay())
-            view = {'type':'gradient.view','serial':1,'refresh':False,'entering':True}
-            editor = await run_window({'type':'gradient.preference','overlay':True}, view)
-            editor.request_view.assert_awaited_once_with(view)
-            self.assertTrue(GradientEditor(app).preferred_overlay())
-            await run_window({'type':'gradient.preference','overlay':False})
-            self.assertFalse(GradientEditor(app).preferred_overlay())
-            self.assertEqual(json.loads((Path(root)/'gradient-mode.json').read_text('utf-8')), {'overlay':False})
+    async def test_unavailable_overlay_saves_draft_and_closes_without_mode_fallback(self):
+        app = SimpleNamespace(desktop=SimpleNamespace(sync_native=Mock(), _send_menu_event=Mock(), menu_epoch=42))
+        event = {'type':'gradient.unavailable','message':'画布空间不足','draft':deepcopy(BASE)}
+        stream = AsyncMock(side_effect=[json.dumps(event).encode(), b''])
+        process = SimpleNamespace(stdout=SimpleNamespace(readline=stream), stdin=Mock())
+        editor = GradientEditor(app)
+        editor.process = process
+        editor.send = AsyncMock()
+        editor.request = AsyncMock()
+        await editor.read_window(process)
+        editor.request.assert_awaited_once_with('gradient.cancel', event)
+        self.assertEqual(editor.message, '画布空间不足')
 
     async def test_verified_rollback_refreshes_host_revision_without_replacing_draft_identity(self):
         shape = {**deepcopy(BASE), 'available':True, 'revision':'fresh:2', 'baseline':'raw-original'}
@@ -295,6 +299,41 @@ class GradientWindowLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await editor.request_view({'serial':2,'refresh':True,'tracking':False})
         editor.request.assert_awaited_once_with('gradient.update', {'draft':editor.draft})
         editor.read_view.assert_awaited_once_with('moveTool')
+
+    async def test_preview_feedback_requires_the_latest_verified_host_frame(self):
+        editor=GradientEditor(None);editor.phase='preview';editor.send_state=AsyncMock()
+        preview=editor.preview=SimpleNamespace(phase='preview',seq=4)
+        await editor.preview_progress(preview,{'stage':'ready','frame':3})
+        self.assertEqual(editor.message,'正在更新 PS 画布…')
+        await editor.preview_progress(preview,{'stage':'ready','frame':4})
+        self.assertEqual(editor.message,'已更新 PS 画布')
+        preview.phase='cancel';editor.message='保留取消状态'
+        await editor.preview_progress(preview,{'stage':'ready','frame':5})
+        self.assertEqual(editor.message,'保留取消状态')
+        self.assertEqual(editor.send_state.await_count,2)
+
+    async def test_owned_dropdown_keeps_preview_scope_and_foreign_windows_are_rejected(self):
+        gui=SimpleNamespace(GetClassName=Mock(return_value='ImGui Platform'),GetAncestor=Mock(return_value=11))
+        editor=GradientEditor(SimpleNamespace(desktop=SimpleNamespace(gui=gui)))
+        editor.hwnd=11;editor.process=SimpleNamespace(pid=22)
+        process=SimpleNamespace(GetWindowThreadProcessId=Mock(return_value=(33,22)))
+        with patch.dict(sys.modules,win32process=process):
+            self.assertTrue(editor.owns_foreground(44))
+            gui.GetAncestor.return_value=99
+            self.assertFalse(editor.owns_foreground(44))
+            gui.GetAncestor.return_value=11;process.GetWindowThreadProcessId.return_value=(33,99)
+            self.assertFalse(editor.owns_foreground(44))
+
+    async def test_returning_to_photoshop_resumes_saved_preview_after_fresh_view(self):
+        editor=GradientEditor(SimpleNamespace(operation_lock=asyncio.Lock()))
+        editor.phase='editing';editor.live=True;editor.base={};editor.draft={'edited':True}
+        editor.require_focus=Mock();editor.send=AsyncMock();editor.read_view=AsyncMock(return_value={'tool':'moveTool'})
+        editor.overlay_tool='moveTool';editor.request=AsyncMock()
+        with patch('backend.gradient_editor.require_available'):
+            await editor.request_view({'serial':1,'refresh':True})
+        editor.read_view.assert_awaited_once_with('moveTool')
+        editor.request.assert_awaited_once_with('gradient.update',{'draft':editor.draft})
+        self.assertFalse(editor.resume_preview_after_view)
 
     async def test_mode_switch_keeps_live_preview_and_uses_same_view(self):
         editor=GradientEditor(None)

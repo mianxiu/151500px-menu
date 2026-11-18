@@ -36,7 +36,7 @@
 
 ## 查找说明
 
-[菜单与默认按键](https://github.com/mianxiu/151500px-menu/wiki/Menu-guide) · [颜色与蒙版](https://github.com/mianxiu/151500px-menu/wiki/Mask-preview) · [独立渐变编辑](https://github.com/mianxiu/151500px-menu/wiki/Gradient-editor) · [更新方法](https://github.com/mianxiu/151500px-menu/wiki/Updates) · [故障排查](https://github.com/mianxiu/151500px-menu/wiki/Troubleshooting)
+[菜单与默认按键](https://github.com/mianxiu/151500px-menu/wiki/Menu-guide) · [颜色与蒙版](https://github.com/mianxiu/151500px-menu/wiki/Mask-preview) · [画布渐变编辑](https://github.com/mianxiu/151500px-menu/wiki/Gradient-editor) · [更新方法](https://github.com/mianxiu/151500px-menu/wiki/Updates) · [故障排查](https://github.com/mianxiu/151500px-menu/wiki/Troubleshooting)
 
 正式下载与开发候选分开说明，见[版本状态](https://github.com/mianxiu/151500px-menu/wiki/Versions)。源码中可能包含尚未发布的改动。
 

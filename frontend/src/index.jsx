@@ -80,14 +80,14 @@ function App() {
   function ApplicationUpdate(){return <section>
     <div class="section-heading"><h2>{t("GitHub 应用更新")}</h2><span class="version-tag">v{state().version || '—'}</span></div>
     <p class="update-message" role="status">{t(appUpdate().message || '尚未检查 GitHub 正式版本')}</p>
-    <Show when={appUpdate().release?.version}><p>{t("正式版本")} v{appUpdate().release.version}</p></Show>
+    <Show when={appUpdate().release?.version}><p class="caption">{t("上次查到的正式版")} v{appUpdate().release.version}</p></Show>
     <Show when={appUpdate().error}><p class="error">{t(appUpdate().error)}</p></Show>
     <Show when={appUpdate().phase==='downloading'}><progress aria-label={t("下载进度")} max="100" value={appUpdate().progress || 0}/><p>{appUpdate().progress || 0}%</p></Show>
     <div class="buttons"><button class="primary" disabled={disabled() || updateBusy()} onClick={()=>perform('application.update.check')}>{t("检查应用更新")}</button><Show when={appUpdate().available || appUpdate().staged}><button disabled={disabled() || updateBusy() || !appUpdate().available} onClick={()=>perform('application.update.download')}>{t("下载并校验")}</button><button disabled={disabled() || updateBusy() || dirty() || !appUpdate().supported || !appUpdate().staged || state().photoshop.busy || state().photoshop_start?.active || state().menu?.visible} onClick={installApplication}>{t("安装并重启后台")}</button></Show></div>
     <label class="option-row"><input type="checkbox" checked={appUpdate().auto_check ?? true} disabled={disabled() || appUpdate().phase==='installing'} onChange={e=>perform('application.update.auto',{enabled:e.target.checked})}/><span>{t("每天检查更新")}</span></label>
     <Show when={appUpdate().last_checked}><p class="caption">{t("上次检查：")}{new Date(appUpdate().last_checked*1000).toLocaleString(state().language || 'zh-CN')}</p></Show>
     <details class="help"><summary>{t("更新说明")}</summary><p>{t("更新只正常重启后台，保留配置与旧版本，不关闭 Photoshop。任务忙碌或结果待核对时拒绝安装，不自动重发操作。")}</p><p>{t("内置 UXP 随应用更新；已安装插件默认在保存并关闭PS后自动跟随较新内置版。")}</p><a href={appUpdate().source || 'https://github.com/mianxiu/151500px-menu/releases'} target="_blank" rel="noreferrer">{t("打开 GitHub Releases")}</a><Show when={!appUpdate().supported}><p>{t("源码运行模式可以检查与下载；自动安装请使用 Windows 发行版。")}</p></Show></details>
-    <Show when={appUpdate().release?.notes}><details class="help"><summary>{t("发行说明")}</summary><pre class="release-notes">{appUpdate().release.notes}</pre></details></Show>
+    <Show when={appUpdate().release?.notes}><details class="help"><summary>{t("发行说明")} · v{appUpdate().release.version}</summary><p class="release-notes">{appUpdate().release.notes}</p></details></Show>
   </section>;}
   function edit(key,value){setDirty(true);setForm({...form(),[key]:value});}
   function shortcut(key,value){setDirty(true);setForm({...form(),shortcuts:{...form().shortcuts,[key]:value}});}

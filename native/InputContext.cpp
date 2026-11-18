@@ -1,5 +1,6 @@
 // Runs only in the verified PS UI thread. No text or document data is read.
 #include <windows.h>
+#include "GradientNavigation.h"
 #include <imm.h>
 #include <tlhelp32.h>
 #include "InputContextTsf.h"
@@ -82,9 +83,9 @@ static ULONGLONG policyTick=0;
 
 static bool ownMenu(HWND window) {
     if(!window || !owner || WaitForSingleObject(owner,0)!=WAIT_TIMEOUT)return false;
-    window=GetAncestor(window,GA_ROOT);
+    window=GetAncestor(window,GA_ROOTOWNER);
     wchar_t name[64]{};GetClassNameW(window,name,64);
-    if(wcscmp(name,L"PhotoshopMenuImGui")!=0)return false;
+    if(!GradientNavigation::editorClass(name))return false;
     DWORD pid=0;GetWindowThreadProcessId(window,&pid);
     if(menuProcess && menuPid==pid && WaitForSingleObject(menuProcess,0)==WAIT_TIMEOUT)return true;
     if(menuProcess){CloseHandle(menuProcess);menuProcess=nullptr;menuPid=0;}

@@ -243,6 +243,7 @@ export default {
   "GitHub 应用更新":"GitHub app updates",
   "当前版本":"Running version",
   "正式版本":"Stable release",
+  "上次查到的正式版":"Stable release at last check",
   "检查应用更新":"Check app updates",
   "下载并校验":"Download and verify",
   "安装并重启后台":"Install and restart backend",

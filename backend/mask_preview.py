@@ -218,7 +218,9 @@ async def run_preview(app, preview, target, editor=None):
                 if feedback:feedback()
                 try:
                     progress=await asyncio.to_thread(preview.progress)
-                    if progress:progress['epoch']=app.desktop.menu_epoch
+                    if progress:
+                        progress['epoch']=app.desktop.menu_epoch
+                        if editor:await editor.preview_progress(preview,progress)
                     if progress and progress!=last_progress:
                         app.desktop.event(progress);last_progress=progress
                 except Exception:

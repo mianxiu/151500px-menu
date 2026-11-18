@@ -34,6 +34,11 @@ struct PanelStyle {
     ~PanelStyle(){ImGui::PopStyleVar(6);ImGui::PopFont();}
 };
 inline bool button(const char* label,float scale,bool compact=false) {return ImGui::Button(label,{0,(compact?menuShortcutHeight:menuControlHeight)*scale});}
+inline void fieldLabel(const char* label,float width) {
+    const float left=ImGui::GetCursorPosX();
+    ImGui::AlignTextToFramePadding();ImGui::TextUnformatted(label);
+    ImGui::SameLine();ImGui::SetCursorPosX(left+width);
+}
 inline bool number(const char* label,double& value,float width,float step,double low,double high,const char* format) {
     ImGui::SetNextItemWidth(width);
     return ImGui::DragScalar(label,ImGuiDataType_Double,&value,step,&low,&high,format,ImGuiSliderFlags_AlwaysClamp);

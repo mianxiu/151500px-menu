@@ -107,7 +107,7 @@ static constexpr int shapeTipCount=shapeGradientConfirmTip+1;
 static std::array<RECT,shapeTipCount> shapeTipRows{};
 static const char* shapeTipNames[shapeTipCount]={"填充","描边","纯色","渐变","图案","无填充／无描边","描边宽度：双击输入","复制当前Hex颜色","黑色","白色","交换填充与描边","复制形状填充与描边","粘贴到当前选中的形状图层","羽化：双击数值输入","密度：双击数值输入",
     "","","","","","","","切换渐变插值：感知／线性／经典",perceptualPickerTips[0],perceptualPickerTips[1],
-    perceptualPickerTips[2],perceptualPickerTips[3],perceptualPickerTips[4],perceptualPickerTips[5],"展开／收起","屏幕取色","打开独立渐变编辑","确认当前调整并打开独立渐变编辑"};
+    perceptualPickerTips[2],perceptualPickerTips[3],perceptualPickerTips[4],perceptualPickerTips[5],"展开／收起","屏幕取色","打开渐变画布编辑","确认当前调整并打开渐变画布编辑"};
 static void shapeItemTip(int index,bool allowHover=true) {
     const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();shapeTipRows[index]={LONG(a.x),LONG(a.y),LONG(b.x),LONG(b.y)};
     if(allowHover && ImGui::IsItemHovered() && !ImGui::IsItemActive())shapeTipCandidate=200+index;

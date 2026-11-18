@@ -7,6 +7,11 @@ inline constexpr wchar_t canvasInputProperty[]=L"PhotoshopMenu.GradientNavigatio
 inline constexpr wchar_t sampleProperty[]=L"PhotoshopMenu.GradientNavigation.Sample.v1";
 inline constexpr UINT cancelSample=WM_APP+34;
 
+inline bool editorClass(const wchar_t* name){
+    return wcscmp(name,L"PhotoshopMenuImGui")==0 || wcscmp(name,L"PhotoshopGradientImGui")==0 ||
+        wcscmp(name,L"PhotoshopGradientHandles")==0;
+}
+
 inline bool sampling(HWND editor){return editor && GetPropW(editor,sampleProperty)==editor;}
 
 inline bool canvasInput(HWND hit,HWND editor){
