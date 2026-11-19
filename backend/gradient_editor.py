@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import ntpath
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from .layer_search import require_available
@@ -13,6 +14,7 @@ from .mask_preview import MaskPreview, dispatch_preview, run_preview
 from .operation_target import guarded_script, validate_target
 from .paths import overlay_command
 from .photoshop_com_default import PhotoshopComUnavailable, running_application
+from .plugins import version
 from .settings import atomic_json
 from .shape_paint import metadata, parameters
 from .uxp_management import photoshop_process_ids
@@ -121,6 +123,7 @@ class GradientEditor:
     def __init__(self, app):
         self.app = app
         self.process = None
+        self.standby = None
         self.hwnd = None
         self.reader = None
         self.owner = None
@@ -128,7 +131,8 @@ class GradientEditor:
         self.preview = None
         self.view = None
         self.view_read = None
-        self.resume_preview_after_view = False
+        self.initial_preview_attempted = False
+        self.cancel_requested = False
         self.overlay_tool = None
         self.baseline = None
         self.revision = None
@@ -137,6 +141,7 @@ class GradientEditor:
         self.lock = asyncio.Lock()
         self.phase = 'closed'
         self.message = ''
+        self.live = False
         self.tint = ''
         self.legacy_preview = False
 
@@ -161,7 +166,7 @@ class GradientEditor:
     async def send_state(self, ack=False):
         await self.send({'type':'gradient.state','phase':self.phase,'message':self.message,'ack':ack})
 
-    async def read_view(self, restore_tool=None):
+    async def read_view(self, restore_tool=None, *, focus_return=False):
         bridge = self.app.bridge
         body = VIEW_SCRIPT
         if restore_tool:
@@ -175,18 +180,23 @@ class GradientEditor:
                 raise RuntimeError('Photoshop 会话已改变')
             import win32process
             owner_pid = win32process.GetWindowThreadProcessId(self.owner)[1]
-            try:
-                application = running_application(bridge._application, owner_pid)
-            except PhotoshopComUnavailable as error:
+            def inspect_view():
                 if not owner_pid or photoshop_process_ids() != (owner_pid,):
-                    raise RuntimeError('无法确认唯一的 Photoshop 进程') from error
+                    raise RuntimeError('无法确认唯一的 Photoshop 进程')
                 response = bridge.transport.call('inspect', gradient_view_target=self.target)
                 if response.get('session') != self.target['session'] or photoshop_process_ids() != (owner_pid,):
-                    raise RuntimeError('Photoshop 会话已改变') from error
+                    raise RuntimeError('Photoshop 会话已改变')
                 view = checked_view(response.get('gradient_view'))
                 if restore_tool and view.get('tool') in ('handTool','zoomTool') and view['tool'] != restore_tool:
-                    raise RuntimeError('Photoshop 临时导航工具尚未恢复') from error
+                    raise RuntimeError('Photoshop 临时导航工具尚未恢复')
                 return view
+            # COM can repeatedly raise the workspace in front of the dock during focus return.
+            if focus_return and version(heartbeat.get('probe_version','0.0.0')) >= (0,3,110):
+                return inspect_view()
+            try:
+                application = running_application(bridge._application, owner_pid)
+            except PhotoshopComUnavailable:
+                return inspect_view()
             value = checked_view(json.loads(application.DoJavaScript(script)))
             if photoshop_process_ids() != (owner_pid,):
                 raise RuntimeError('Photoshop 会话已改变')
@@ -197,36 +207,115 @@ class GradientEditor:
         self.view_read.add_done_callback(lambda future: None if future.cancelled() else future.exception())
         return await asyncio.wait_for(asyncio.shield(self.view_read), 2)
 
-    async def start_window(self, desktop, epoch):
+    async def prepare_window(self, desktop, owner=None):
         import win32process
         with (Path(self.app.runtime)/'gradient-window.log').open('ab') as log:
             command = overlay_command(desktop.url, desktop.token, self.app.runtime)
-            self.process = process = await asyncio.create_subprocess_exec(
+            process = await asyncio.create_subprocess_exec(
                 *command, '--gradient-window', '--gradient-anchor', str(desktop.hwnd),
-                '--gradient-owner', str(self.owner),
+                '--gradient-owner', str(self.owner if owner is None else owner),
                 '--render-mode', desktop.settings.get('render_mode','auto'),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=log, creationflags=0x08000000)
         try:
-            event = json.loads(await asyncio.wait_for(process.stdout.readline(), 10))
+            line = await asyncio.wait_for(process.stdout.readline(), 10)
+            if not line:
+                raise RuntimeError('原生渐变窗口在交接前退出')
+            event = json.loads(line)
             hwnd = event.get('hwnd')
             if (event.get('type') != 'ready' or event.get('pid') != process.pid or type(hwnd) is not int
                 or not desktop.gui.IsWindow(hwnd) or win32process.GetWindowThreadProcessId(hwnd)[1] != process.pid
                 or desktop.gui.GetClassName(hwnd) != 'PhotoshopGradientImGui'):
                 raise RuntimeError('原生渐变窗口身份校验失败')
+            return process, hwnd
+        except BaseException:
+            process.stdin.close()
+            raise
+
+    @asynccontextmanager
+    async def warming_window(self, desktop, owner):
+        self.reader = None
+        warmup = None
+        if self.standby:
+            key, pending = self.standby
+            self.standby = None
+            if key == self.window_key(desktop, owner) and not pending.cancelled() and (
+                    not pending.done() or not pending.exception() and pending.result()[0].returncode is None):
+                warmup = pending
+            else:
+                pending.add_done_callback(self.discard_window)
+        if warmup is None:
+            warmup = asyncio.create_task(self.prepare_window(desktop, owner))
+        try:
+            yield warmup
+        finally:
+            await asyncio.gather(warmup, return_exceptions=True)
+            if not self.reader:
+                self.discard_window(warmup)
+
+    @staticmethod
+    def discard_window(warmup):
+        if not warmup.cancelled() and not warmup.exception():
+            warmup.result()[0].stdin.close()
+
+    @staticmethod
+    def window_key(desktop, owner):
+        import win32process
+        return (owner, win32process.GetWindowThreadProcessId(owner)[1], desktop.hwnd,
+                desktop.settings.get('render_mode', 'auto'))
+
+    def prewarm(self, desktop, owner=None):
+        if not desktop.settings.get('gradient_direct_overlay') or not desktop.hwnd:
+            if self.standby:
+                self.standby[1].add_done_callback(self.discard_window)
+                self.standby = None
+            return
+        if self.lock.locked() or self.process and self.process.returncode is None:
+            return
+        if owner is None:
+            if desktop.visible:
+                return
+            owner = desktop._workspace_root(desktop.gui.GetForegroundWindow())
+        if not owner:
+            if self.standby and not desktop.gui.IsWindow(self.standby[0][0]):
+                self.standby[1].add_done_callback(self.discard_window)
+                self.standby = None
+            return
+        key = self.window_key(desktop, owner)
+        if self.standby:
+            previous, pending = self.standby
+            if previous == key and (not pending.done() or pending.exception() or pending.result()[0].returncode is None):
+                return
+            pending.add_done_callback(self.discard_window)
+        self.standby = key, asyncio.create_task(self.prepare_window(desktop, owner))
+
+    async def start_window(self, desktop, epoch, warmup):
+        process, hwnd = await asyncio.shield(warmup)
+        self.process = process
+        try:
             if not desktop.visible or desktop.menu_epoch != epoch or desktop.target != self.owner:
                 raise RuntimeError('菜单或 Photoshop 工作区已改变')
             await asyncio.to_thread(desktop.require_action_focus)
             self.hwnd = hwnd
             await asyncio.to_thread(desktop.register_gradient_window, hwnd, self.owner)
-            await asyncio.to_thread(desktop.gui.SendMessage, desktop.hwnd, 0x801f, process.pid, epoch)
+            foreground = desktop.gui.GetForegroundWindow()
+            if desktop._is_menu_window(foreground):
+                await asyncio.to_thread(desktop.gui.SendMessageTimeout, desktop.hwnd, 0x8019, self.owner, 0, 2, 500)
+                for _ in range(50):
+                    if desktop._workspace_root(desktop.gui.GetForegroundWindow()) == self.owner:
+                        break
+                    if not desktop._is_menu_window(desktop.gui.GetForegroundWindow()):
+                        break
+                    await asyncio.sleep(.01)
+            if desktop._workspace_root(desktop.gui.GetForegroundWindow()) != self.owner:
+                raise RuntimeError('Photoshop 工作区未取得焦点，渐变未打开')
             await self.send({'type':'gradient.open','phase':self.phase,'message':self.message,'draft':self.draft,
                              'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel,
                              'legacy_preview':self.legacy_preview,
                              'vector':self.vector,'layer_tint':self.tint if len(self.target['layer_ids'])==1 else ''})
-            for _ in range(40):
+            for _ in range(200):
                 if desktop.gui.IsWindowVisible(hwnd):break
                 if process.returncode is not None:raise RuntimeError('原生渐变窗口已退出')
-                await asyncio.sleep(.05)
+                await asyncio.sleep(.01)
             else:raise RuntimeError('原生渐变窗口未显示')
             self.reader = asyncio.create_task(self.read_window(process))
         except Exception:
@@ -253,6 +342,7 @@ class GradientEditor:
 
     async def read_window(self, process):
         tint_task = asyncio.create_task(self.watch_tint_target(process)) if self.tint and len(self.target['layer_ids'])==1 else None
+        view_task = None
         try:
             # The saved overlay can request a view while open() still owns the Photoshop operation lock.
             async with self.lock:
@@ -260,8 +350,11 @@ class GradientEditor:
             while line := await process.stdout.readline():
                 event = json.loads(line)
                 action = event.get('type')
+                if view_task and action not in ('gradient.cancel', 'gradient.unavailable'):
+                    await view_task
+                    view_task = None
                 if action == 'gradient.view':
-                    await self.request_view(event)
+                    view_task = asyncio.create_task(self.request_view(event))
                     continue
                 if action == 'gradient.unavailable':
                     self.message = str(event.get('message', '画布叠加不可用'))[:1000]
@@ -297,28 +390,31 @@ class GradientEditor:
                     self.preview.cancel()
                 elif not self.task or self.task.done():
                     self.phase = 'closed'
+            if view_task:
+                await asyncio.gather(view_task, return_exceptions=True)
 
     async def request_view(self, event):
         serial, refresh = event.get('serial'), event.get('refresh')
         tracking = event.get('tracking', False)
         entering = event.get('entering', False)
+        focus_return = event.get('focus_return', False)
         if (type(serial) is not int or not 0 < serial < 2**31 or
                 type(refresh) is not bool or type(tracking) is not bool or type(entering) is not bool or
-                tracking and (not refresh or entering)):
+                type(focus_return) is not bool or (tracking or focus_return) and (not refresh or entering) or
+                tracking and focus_return):
             raise ValueError('无效画布位置请求')
         message, view, retry = '', None, False
         try:
             self.require_focus()
             if self.phase not in ('editing','preview'):
                 raise RuntimeError('渐变事务尚未就绪')
-            if refresh and self.preview:
+            if refresh and self.preview and not focus_return:
                 # The old host owns COM until the preview returns. End just the
                 # transient preview before an independent, fresh view read.
                 self.preview.cancel()
                 await asyncio.wait_for(asyncio.shield(self.task), 8)
                 if self.phase != 'editing':
                     raise RuntimeError('原渐变恢复未确认')
-                self.resume_preview_after_view = True
             if tracking:
                 # Reading through COM while Space is held can interrupt Photoshop's temporary Hand tool.
                 await self.send({'type':'gradient.view','serial':serial,'tracking':True})
@@ -326,26 +422,31 @@ class GradientEditor:
             if not self.preview:
                 require_available(self.app)
                 async with self.app.operation_lock:
+                    if self.phase != 'editing' or self.cancel_requested:
+                        return
                     try:
-                        restore = self.overlay_tool if refresh and not entering else None
-                        self.view = await self.read_view(restore) if restore else await self.read_view()
+                        if focus_return:
+                            self.view = await self.read_view(focus_return=True)
+                        elif refresh and not entering and self.overlay_tool:
+                            self.view = await self.read_view(self.overlay_tool)
+                        else:
+                            self.view = await self.read_view()
                     except Exception as error:
                         # RPC_E_CALL_REJECTED and RPC_E_SERVERCALL_RETRYLATER
                         retry = getattr(error, 'hresult', None) in (-2147418111, -2147417846)
                         raise
+            if self.phase not in ('editing', 'preview') or self.cancel_requested:
+                return
             self.require_focus()
             view = self.view
             if view:
                 tool = view.get('tool')
                 if (not entering and tool and self.overlay_tool and tool != self.overlay_tool and
                         tool not in ('handTool','zoomTool')):
-                    self.resume_preview_after_view = False
                     await self.send({'type':'gradient.view','serial':serial,'tool_changed':True})
                     return
                 if entering or self.overlay_tool is None:
                     self.overlay_tool = tool
-                if (entering or refresh) and self.live and self.draft != self.base:
-                    self.resume_preview_after_view = True
         except Exception as error:
             logging.info('Gradient canvas view unavailable: %s', error)
             message = '无法核对当前画布位置，请重新打开渐变编辑'
@@ -355,8 +456,9 @@ class GradientEditor:
         if tracking:
             response['tracking'] = True
         await self.send(response)
-        if self.resume_preview_after_view and view is not None and self.draft != self.base:
-            self.resume_preview_after_view = False
+        if (entering and not self.initial_preview_attempted and self.live and view is not None
+                and self.phase == 'editing' and not self.cancel_requested and self.draft != self.base):
+            self.initial_preview_attempted = True
             try:
                 await self.request('gradient.update', {'draft':self.draft})
             except (RuntimeError, ValueError, OSError) as error:
@@ -444,7 +546,7 @@ class GradientEditor:
             require_available(app)
             if not desktop.visible or desktop.menu_epoch != epoch or desktop.target != owner:
                 raise RuntimeError('菜单或 Photoshop 工作区已改变')
-            async with app.operation_lock:
+            async with app.operation_lock, self.warming_window(desktop, owner) as warmup:
                 result = await asyncio.to_thread(app.bridge.transport.call, 'inspect', shape_inspect=True, gradient_details=True)
                 target = result.get('gradient_target', {})
                 shape = result.get('shape_editor', {})
@@ -467,7 +569,8 @@ class GradientEditor:
                 self.legacy_preview = base.get('preview_engine') == 'legacy-com'
                 self.vector = base.get('vector') is True
                 self.view = None
-                self.resume_preview_after_view = False
+                self.initial_preview_attempted = False
+                self.cancel_requested = False
                 self.overlay_tool = None
                 status = app.bridge._status_snapshot()
                 self.theme = status.get('ui_theme') or 'dark-gray'
@@ -477,7 +580,7 @@ class GradientEditor:
                 self.phase = 'editing'
                 self.message = '已恢复上次草稿' if self.draft != self.base else ''
                 try:
-                    await self.start_window(desktop, epoch)
+                    await self.start_window(desktop, epoch, warmup)
                 except Exception:
                     self.phase = 'closed'
                     raise
@@ -514,6 +617,7 @@ class GradientEditor:
             if self.phase not in allowed:
                 raise RuntimeError('渐变编辑已结束或正在确认')
             if action == 'gradient.cancel':
+                self.cancel_requested = True
                 if 'draft' in args:
                     await self.save(checked_draft(self.base, args['draft']))
                 if self.preview:
@@ -601,20 +705,29 @@ class GradientEditor:
         if proof.get('cancelled'):
             if proof.get('rollback_verified') is not True:
                 raise RuntimeError('原渐变恢复待核对，草稿已保留')
-            if self.phase == 'preview' and self.hwnd:
-                self.refresh_revision = True
-                self.phase = 'editing'
-                self.message = '已恢复 Photoshop 原渐变，草稿已保留'
-                return
+            self.finish_cancelled(restored=True)
         else:
             await asyncio.to_thread(self.path.unlink, missing_ok=True)
-        self.phase = 'closed'
+            self.phase = 'closed'
+
+    def finish_cancelled(self, restored):
+        if self.phase == 'preview' and self.hwnd:
+            self.refresh_revision |= restored
+            self.phase = 'editing'
+            self.message = '已恢复 Photoshop 原渐变，草稿已保留' if restored else '草稿已保留'
+        else:
+            self.phase = 'closed'
 
     async def failed(self, error):
         self.phase = 'error'
         self.message = str(error)
 
     async def close(self):
+        if self.standby:
+            _, warmup = self.standby
+            self.standby = None
+            await asyncio.gather(warmup, return_exceptions=True)
+            self.discard_window(warmup)
         if self.preview:
             self.phase = 'closing'
             self.preview.cancel()

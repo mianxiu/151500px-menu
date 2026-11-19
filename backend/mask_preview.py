@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from .shape_paint import parameters
+from .tasks import TaskCancelled
 
 
 class MaskPreview:
@@ -234,6 +235,7 @@ async def run_preview(app, preview, target, editor=None):
             try:await asyncio.wait_for(publish_wake.wait(),.08)
             except asyncio.TimeoutError:pass
     publisher=asyncio.create_task(pump())
+    cancelled_before_preview=TaskCancelled('渐变编辑已取消，本次未开始预览')
     try:
         await app.broadcast({'type':'operation','busy':True,'action':'shape.paint'})
         await asyncio.to_thread(editor.require_focus if editor else app.desktop.require_action_focus)
@@ -241,8 +243,9 @@ async def run_preview(app, preview, target, editor=None):
         if prepare_guard:await asyncio.to_thread(prepare_guard,preview)
         async def before_dispatch(captured):
             if editor:
-                if preview.phase=='cancel':raise RuntimeError('渐变编辑已取消，本次未开始预览')
+                if preview.phase=='cancel':raise cancelled_before_preview
                 await asyncio.to_thread(editor.require_target,captured)
+                if preview.phase=='cancel':raise cancelled_before_preview
                 return
             if (app.desktop.menu_epoch!=preview.epoch or preview.phase=='cancel'
                     or not app.desktop.visible and preview.phase!='commit'):
@@ -264,6 +267,9 @@ async def run_preview(app, preview, target, editor=None):
         await app.broadcast({'type':'notice','scope':'operation','action':'shape.paint','ok':True,'message':result['message']})
     except Exception as error:
         preview.cancel()
+        if error is cancelled_before_preview:
+            editor.finish_cancelled(restored=False)
+            return
         if editor:
             await editor.failed(error)
         elif app.desktop.menu_epoch==preview.epoch and app.desktop.visible:

@@ -774,6 +774,16 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
         await reuse(port, headless)
         return
     loop = asyncio.get_running_loop()
+    def warm_gradient(desktop, owner=None):
+        editor = getattr(app, 'gradient_editor', None)
+        if (not desktop or app.closing or app.updating or app.bridge.busy or app.operation_lock.locked()
+                or app.stability.active or not (editor or desktop.settings.get('gradient_direct_overlay'))):
+            return
+        if not editor:
+            from .gradient_editor import GradientEditor
+            app.gradient_editor = editor = GradientEditor(app)
+        editor.prewarm(desktop, owner)
+
     async def notification(action):
         try:
             event_args = {}
@@ -799,6 +809,9 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
                 action='document.recent'
                 mapping[action]=action
             await app.dispatch(mapping.get(action, "action.execute"), event_args if action in mapping else {**event_args,"name": action})
+            if action=='hold_begin' and app.desktop and app.desktop.hold_active and app.desktop.visible:
+                try:warm_gradient(app.desktop, app.desktop.target)
+                except Exception:logging.exception('Gradient standby initialization failed')
         except Exception as exc:
             logging.exception("Desktop action failed")
             if action=='gradient.open' and app.desktop:
@@ -821,6 +834,8 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
                 app.version_health.observe({'version':APP_VERSION, '_status_unavailable':True})
                 await app.broadcast({'type':'version-health','data':app.version_health.snapshot()})
             desktop=app.desktop
+            try:warm_gradient(desktop)
+            except Exception:logging.exception('Gradient standby initialization failed')
             idle=desktop and not desktop.photoshop_foreground and not desktop.visible and not app.clients and not (
                 app.bridge.busy or app.operation_lock.locked() or app.photoshop_launcher.active or app.stability.active)
             try:

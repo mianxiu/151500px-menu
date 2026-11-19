@@ -233,6 +233,34 @@ int main(int argc,char** argv) {
         check((command(2)&35)==35 && (command(3)&15)==5,"fresh TSF context cannot be independently protected and restored");
         for(int i=0;i<20;i++)check((command(2)&99)==99 && (command(3)&15)==5 && tsf.references==1 && !tsf.watching(),"repeated lease leaked subscriptions or failed readback");
         VariantClear(&secondPrior);secondKeyboard->Release();secondCompartments->Release();associate(document);manager->SetFocus(document);secondDocument->Pop(TF_POPF_ALL);secondText->Release();secondDocument->Release();
+        SetFocus(policyCanvas);
+        check(SUCCEEDED(manager->SetFocus(document)),"policy TSF initial context");
+        check((SendMessageW(control,controlMessage,(12345<<8)|5,1)&0x120)==0x120 &&
+            tsf.currentDisabled(),"focus policy did not disable the current TSF context");
+        // Pass a held Zoom shortcut through the production queue hook on our own canvas.
+        const auto zoomMessage=[&](UINT kind,LPARAM flags){
+            check(PostMessageW(policyCanvas,kind,'Z',flags)!=0,"queue Z");
+            MSG message{};
+            check(PeekMessageW(&message,policyCanvas,kind,kind,PM_REMOVE) &&
+                message.message==kind && message.wParam=='Z' && message.lParam==flags,"Z edge lost or rewritten");
+            DispatchMessageW(&message);
+            check(GetFocus()==policyCanvas && !associated(policyCanvas) && tsf.currentDisabled(),
+                "held Z enabled the canvas IME");
+        };
+        zoomMessage(WM_KEYDOWN,0x002c0001);
+        for(int repeat=0;repeat<32;++repeat){
+            Sleep(repeat==0?500:32);
+            MSG pending{};
+            while(PeekMessageW(&pending,control,0,0,PM_REMOVE))DispatchMessageW(&pending);
+            zoomMessage(WM_KEYDOWN,0x402c0001);
+        }
+        zoomMessage(WM_KEYUP,0xc02c0001);
+        check(GetKeyboardLayout(0)==layout,"held Z changed keyboard layout");
+        std::puts("Held Z: initial down, 32 repeats and release delivered with canvas IMM/TSF protection");
+        SetFocus(edit);
+        check(SUCCEEDED(keyboard->GetValue(&value)) && value.vt==VT_I4 && value.lVal==0 &&
+            !policyTsf,"edit focus did not restore the TSF compartment");VariantClear(&value);
+        check(!(SendMessageW(control,controlMessage,(12345<<8)|5,0)&0x300),"policy TSF fixture did not release");
         VariantClear(&prior);VariantClear(&value);keyboard->Release();compartments->Release();manager->SetFocus(nullptr);document->Pop(TF_POPF_ALL);text->Release();document->Release();manager->Deactivate();manager->Release();CoUninitialize();
         // Focus policy: synchronous IMM detach in WM_SETFOCUS, no lease, no
         // mouse/edit-key restoration, PSFloatC dialogs excluded.

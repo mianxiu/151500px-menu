@@ -791,8 +791,7 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
                     if(!repeated)gradientBlocked[key]=true;
                     return 1;
                 }
-                if((logical==VK_SPACE || logical=='Z') && (!down || !repeated) && !(keys.held[VK_LWIN] || keys.held[VK_RWIN]))
-                    PostMessageW(config.gradient,WM_APP+33,0,0);
+                // The canvas yields to held navigation keys; pointer navigation invalidates the view.
                 return timing.next(code,message,data);
             }
         }

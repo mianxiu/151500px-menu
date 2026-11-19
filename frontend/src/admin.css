@@ -37,11 +37,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,su
 }
 a{color:var(--ui-accent);text-underline-offset:3px}
 label{display:block;font:inherit}
-input:not([type=checkbox]):not([type=file]),select,textarea{
+input:not([type=checkbox],[type=radio],[type=file]),select,textarea{
   display:block;width:100%;min-height:var(--ui-control-height);margin:var(--ui-gap) 0 0;padding:2px 7px;
   color:var(--ui-text);background:var(--ui-fill);border:1px solid var(--ui-border);border-radius:var(--ui-radius);
 }
-input[type=checkbox]{width:14px;height:14px;flex:none;margin:3px 0 0;accent-color:var(--ui-accent)}
+input:is([type=checkbox],[type=radio]){width:14px;height:14px;flex:none;margin:3px 0 0;accent-color:var(--ui-accent)}
 input::placeholder{color:var(--ui-muted)}
 .upload input{display:none}
 h1,h2,h3,p,dl,pre{margin:0}
@@ -113,15 +113,17 @@ section:last-child{margin-bottom:0}
 .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--ui-group-gap);margin-top:var(--ui-gap)}
 .shortcut-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
 .fields label,.advanced-field{display:flex;flex-direction:column;gap:var(--ui-gap);min-width:0}
-.fields input:not([type=checkbox]):not([type=file]),.fields select{margin:0}
+.fields input:not([type=checkbox],[type=radio],[type=file]),.fields select{margin:0}
 .shortcut-field{display:flex;flex-direction:column;gap:var(--ui-gap);min-width:0}
 .shortcut-controls{display:grid;grid-template-columns:minmax(0,3fr) minmax(72px,2fr);gap:var(--ui-gap)}
 .shortcut-controls select{min-width:0}
 .shortcut-controls select[aria-invalid=true]{border-color:var(--ui-danger)}
 .field-error{color:var(--ui-danger)}
 .checks{display:grid;gap:var(--ui-gap)}.checks label{display:flex;align-items:center;gap:var(--ui-group-gap);min-height:var(--ui-control-height);cursor:pointer}
-.checks input[type=checkbox]{margin:0}
+.checks input:is([type=checkbox],[type=radio]){margin:0}
 .checks label:first-child{padding-top:0}
+.gradient-settings .option-row{gap:var(--ui-group-gap);flex-wrap:wrap}
+.gradient-settings .option-row input[type=color]{margin:0;flex:none}
 .option-row{display:flex;align-items:center;gap:var(--ui-gap);margin-top:var(--ui-gap)}
 .option-row input[type=checkbox],.option-row .option-row,.option-row select{margin:0}
 .option-row input[type=color]{width:48px;margin:0 0 0 var(--ui-group-gap)}

@@ -20,7 +20,8 @@ inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool
     if(!first)draw->AddLine(a,vertical?ImVec2{b.x,a.y}:ImVec2{a.x,b.y},ImGui::GetColorU32(ImGuiCol_Border),menuControlBorder*scale);
 }
 struct PanelStyle {
-    explicit PanelStyle(float scale,bool compact=false) {
+    bool stableVisual;
+    explicit PanelStyle(float scale,bool compact=false,bool stableVisual=false):stableVisual(stableVisual) {
         const float padding=(compact?menuDenseGap:menuControlPadding)*scale;
         const float gap=(compact?menuDenseGap:menuPanelGap)*scale;
         ImGui::PushFont(compact?menuFont(MenuTextRole::Shortcut):menuFont(MenuTextRole::Control));
@@ -30,8 +31,9 @@ struct PanelStyle {
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,ImGui::GetStyle().FrameRounding);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{padding,padding});
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{gap,gap});
+        if(stableVisual)ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha,1.f);
     }
-    ~PanelStyle(){ImGui::PopStyleVar(6);ImGui::PopFont();}
+    ~PanelStyle(){ImGui::PopStyleVar(stableVisual?7:6);ImGui::PopFont();}
 };
 inline bool button(const char* label,float scale,bool compact=false) {return ImGui::Button(label,{0,(compact?menuShortcutHeight:menuControlHeight)*scale});}
 inline void fieldLabel(const char* label,float width) {

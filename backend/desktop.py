@@ -1065,7 +1065,9 @@ class Desktop:
         if self.menu_layer_context is not None:
             from .layer_context import flags as layer_flags
             flags |= layer_flags(self.menu_layer_context)
-        if hold:flags |= (min(65534,anchor)+1)<<40 | int(editor_right)<<56
+        if hold:
+            flags |= (min(65534,anchor)+1)<<40 | int(editor_right)<<56
+            flags |= int(self.settings.get('gradient_direct_overlay', False))<<57
         self.gui.SendMessage(self.hwnd, 0x8011, flags, self.menu_epoch)
         if hold and origin is not None:self.gui.SendMessage(self.hwnd,0x8017,origin[0],origin[1])
         class CopyData(ctypes.Structure):

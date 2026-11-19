@@ -123,6 +123,36 @@ struct GradientCanvasPanel {
     GradientPanel* panel=nullptr;
     HWND visual=nullptr,hit=nullptr,editor=nullptr;
     HWND returnFocus=nullptr;
+    HCURSOR eyedropper=nullptr;
+    static HCURSOR makeEyedropper(){
+        using namespace Gdiplus;
+        Bitmap bitmap(32,32,PixelFormat32bppARGB);
+        {
+            Graphics g(&bitmap);g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.TranslateTransform(2,2);g.ScaleTransform(3,3);
+            GraphicsPath body,cap;
+            const auto path=[](GraphicsPath& path,const auto& commands){
+                PointF last{};
+                for(const auto& cmd:commands){
+                    if(cmd.op=='M')path.StartFigure();
+                    if(cmd.op=='L')path.AddLine(last,PointF(cmd.x,cmd.y));
+                    if(cmd.op=='Z')path.CloseFigure();
+                    last=PointF(cmd.x,cmd.y);
+                }
+            };
+            path(body,styledPath34_0);path(cap,styledPath34_2);
+            Pen light(Color::White,1.7f),dark(Color::Black,0.85f);SolidBrush fill(Color::White);
+            g.DrawPath(&light,&body);g.DrawPath(&light,&cap);g.FillPath(&fill,&body);
+            g.DrawPath(&dark,&body);g.DrawPath(&dark,&cap);
+        }
+        HICON icon=nullptr;ICONINFO info{};HCURSOR cursor=nullptr;
+        if(bitmap.GetHICON(&icon)==Ok && GetIconInfo(icon,&info)){
+            info.fIcon=FALSE;info.xHotspot=5;info.yHotspot=26;
+            cursor=CreateIconIndirect(&info);DeleteObject(info.hbmMask);DeleteObject(info.hbmColor);
+        }
+        if(icon)DestroyIcon(icon);
+        return cursor;
+    }
     ULONG_PTR graphics=0;
     int active=-1,channel=-1,appliedDelta=0;
     enum Click { noClick, addStop, addOpacity, sampleColor } click=noClick;
@@ -174,6 +204,7 @@ struct GradientCanvasPanel {
         view=updated;
     }
     ~GradientCanvasPanel(){
+        if(eyedropper)DestroyCursor(eyedropper);
         hide();if(hit)DestroyWindow(hit);if(visual)DestroyWindow(visual);
         if(surfaceBitmap){SelectObject(surfaceDC,oldBitmap);DeleteObject(surfaceBitmap);}
         if(surfaceDC)DeleteDC(surfaceDC);
@@ -209,7 +240,7 @@ struct GradientCanvasPanel {
             if(msg==WM_SETCURSOR && LOWORD(lp)==HTCLIENT && self->foreground() && !navigationKeyHeld()){
                 POINT p{};
                 if(GetCursorPos(&p) && self->clickAt({double(p.x),double(p.y)})==sampleColor){
-                    SetCursor(LoadCursorW(nullptr,IDC_CROSS));return TRUE;
+                    SetCursor(self->eyedropper?self->eyedropper:LoadCursorW(nullptr,IDC_CROSS));return TRUE;
                 }
             }
             if(msg==WM_CAPTURECHANGED){self->active=-1;self->click=noClick;return 0;}
@@ -237,6 +268,7 @@ struct GradientCanvasPanel {
         if(hit && visual)return true;
         Gdiplus::GdiplusStartupInput input;
         if(Gdiplus::GdiplusStartup(&graphics,&input,nullptr)!=Gdiplus::Ok)return false;
+        if(!eyedropper)eyedropper=makeEyedropper();
         WNDCLASSW wc{};wc.lpfnWndProc=procedure;wc.hInstance=GetModuleHandleW(nullptr);
         wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.lpszClassName=hitClass;
         if(!RegisterClassW(&wc))return false;
@@ -487,8 +519,7 @@ struct GradientCanvasPanel {
             for(int i=0;i<int(stops.size());++i){
                 const double where=stops[i]["location"];
                 auto at=stopPoint(where,lane);
-                const float gray=lane==0?stops[i]["opacity"].get<float>()/100:0;
-                const auto fill=lane==0?ImGui::ColorConvertFloat4ToU32({gray,gray,gray,1}):GradientPanel::swatch(stops[i],surface);
+                const auto fill=lane==0?GradientPanel::opacitySwatch(stops[i]):GradientPanel::swatch(stops[i],surface);
                 add(at,color,i,fill,radius,lane);
                 if(i+1<int(stops.size())){
                     const double next=stops[i+1]["location"];
@@ -614,12 +645,15 @@ struct GradientCanvasPanel {
                 Pen paint(&ramp,float(2*halfWidth));
                 g.DrawLine(&paint,a,b);
             }
+            HatchBrush checker(HatchStyleSmallCheckerBoard,Color(128,128,128),Color(204,204,204));
             for(const auto& h:handles){
                 const auto p=screen(h.p);
                 const float r=float(h.radius);
                 SolidBrush fill(ink(h.fill));
                 const bool selected=h.kind==color && (panel->selected(h.lane,h.index) || (h.lane==1 && h.index==colorTarget));
                 Pen outline(ink(selected?accent:text),float(view.dpi));
+                if(h.kind==color && h.lane==0 && (h.fill & IM_COL32_A_MASK)!=IM_COL32_A_MASK)
+                    g.FillEllipse(&checker,p.X-r,p.Y-r,r*2,r*2);
                 g.FillEllipse(&fill,p.X-r,p.Y-r,r*2,r*2);
                 g.DrawEllipse(&outline,p.X-r,p.Y-r,r*2,r*2);
                 if(h.kind==direction){
@@ -646,8 +680,7 @@ struct GradientCanvasPanel {
             if(!SetWindowRgn(hit,region,FALSE)){DeleteObject(region);hide();return false;}
             pickerInput=false;
         }
-        SetWindowPos(visual,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW|
-            (focused?0:SWP_NOZORDER));
+        if(!IsWindowVisible(visual))ShowWindow(visual,SW_SHOWNOACTIVATE);
         if(allowPointer){
             if(canvasPicker)return showPickerInput(editorRect,dockTimeline,dockPicker);
             SetWindowPos(hit,visual,destination.x,destination.y,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);

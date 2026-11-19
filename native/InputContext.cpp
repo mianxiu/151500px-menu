@@ -78,6 +78,7 @@ static constexpr int focusCapacity=8;
 static FocusEntry focusEntries[focusCapacity];
 static int focusCount=0;
 static bool focusPolicy=false,policyRestoreFailed=false;
+static bool policyTsf=false;
 static DWORD policyReason=0;
 static ULONGLONG policyTick=0;
 
@@ -215,6 +216,19 @@ static int focusIndex(HWND window) {
     return -1;
 }
 static DWORD focusReason(HWND window);
+static bool policyTsfForeground() {
+    const auto front=GetForegroundWindow();
+    return front && (front==root || GetAncestor(front,GA_ROOTOWNER)==root);
+}
+static bool syncPolicyTsf(HWND window) {
+    if(!policyTsfForeground() || GetFocus()!=window || changing || tsf.currentDisabled())return true;
+    changing=true;
+    policyTsf=true;
+    const bool ok=tsf.restore() && tsf.start() && tsf.currentDisabled();
+    if(!ok && tsf.restore())policyTsf=false;
+    changing=false;
+    return ok;
+}
 static bool disableFocus(HWND window,DWORD reason) {
     if(!focusPolicy || !protectedFocus(window))return false;
     const auto current=associated(window);
@@ -229,6 +243,7 @@ static bool disableFocus(HWND window,DWORD reason) {
         // newest association is the one to restore on leaving that focus.
         focusEntries[index].context=current;
     }
+    const bool tsfOk=syncPolicyTsf(window);
     if(current) {
         changing=true;ImmAssociateContext(window,nullptr);changing=false;
     }
@@ -238,11 +253,18 @@ static bool disableFocus(HWND window,DWORD reason) {
         return false;
     }
     policyChanged(reason,window);
-    return true;
+    return tsfOk;
 }
 static bool restoreFocus(DWORD reason) {
-    if(!focusCount){policyRestoreFailed=false;return true;}
-    bool ok=true;int keep=0;FocusEntry next[focusCapacity]{};
+    if(!focusCount && !policyTsf){policyRestoreFailed=false;return true;}
+    bool ok=true;
+    if(policyTsf){
+        changing=true;
+        ok=tsf.restore();
+        changing=false;
+        if(ok)policyTsf=false;
+    }
+    int keep=0;FocusEntry next[focusCapacity]{};
     for(int i=focusCount-1;i>=0;--i) {
         const auto entry=focusEntries[i];
         focusEntries[i]={};
@@ -378,7 +400,9 @@ static void verifyContext() {
             if(focusCount)restoreFocus(PolicyRestoreOther);
             return;
         }
-        if(focusIndex(focus)<0)disableFocus(focus,focusReason(focus));
+        if(!policyTsfForeground())return;
+        if(focusIndex(focus)<0 || associated(focus))disableFocus(focus,focusReason(focus));
+        else syncPolicyTsf(focus);
         // Drop entries whose window disappeared. A non-null association that PS
         // restored itself is left untouched (and dropped when focus leaves),
         // matching restore()'s existing replacement protection.
@@ -432,8 +456,9 @@ static LRESULT state(HWND focus) {
         (restoreFailed?8:0) | (restored?16:0) | (tsf.keyboard && tsf.currentDisabled()?32:0) | (tsf.watching()?64:0) |
         (((disabledWindow || (focusPolicy && focusCount))) && (menuActive() || menuReturning())?128:0);
     if(focusPolicy)value|=0x100;
-    if(policyRestoreFailed || (!focusPolicy && focusCount) ||
-       (focusPolicy && protectedTarget && focusIndex(focus)<0 && !canvasOpen))value|=0x200;
+    if(policyRestoreFailed || (!focusPolicy && (focusCount || policyTsf)) ||
+       (focusPolicy && protectedTarget && !canvasOpen &&
+        (focusIndex(focus)<0 || (focus==GetFocus() && policyTsfForeground() && !tsf.currentDisabled()))))value|=0x200;
     value|=LRESULT(focusCount&0xff)<<16;
     value|=LRESULT(policyReason&0xff)<<24;
     value|=LRESULT(canvasTextEditing?1:0)<<32;
@@ -531,8 +556,8 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
             restore();
         }
         verifyContext();
-        if(!focusPolicy && focusCount && policyRestoreFailed && GetTickCount64()-policyTick>1000)restoreFocus(PolicyOff);
-        if(exited && !disabledWindow && !focusCount)DestroyWindow(window);
+        if(!focusPolicy && (focusCount || policyTsf) && policyRestoreFailed && GetTickCount64()-policyTick>1000)restoreFocus(PolicyOff);
+        if(exited && !disabledWindow && !focusCount && !policyTsf)DestroyWindow(window);
         return 0;
     }
     if(message==WM_DESTROY) {
