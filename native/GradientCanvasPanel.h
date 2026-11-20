@@ -141,19 +141,27 @@ struct GradientCanvasPanel {
                 }
             };
             path(body,styledPath34_0);path(cap,styledPath34_2);
-            Pen light(Color::White,1.7f),dark(Color::Black,0.85f);SolidBrush fill(Color::White);
+            Pen light(Color::White,1.55f),dark(Color::Black,0.7f);SolidBrush fill(Color::White),rubber(Color::Black);
             g.DrawPath(&light,&body);g.DrawPath(&light,&cap);g.FillPath(&fill,&body);
-            g.DrawPath(&dark,&body);g.DrawPath(&dark,&cap);
+            g.DrawPath(&dark,&body);g.FillPath(&rubber,&cap);g.DrawPath(&dark,&cap);
         }
         HICON icon=nullptr;ICONINFO info{};HCURSOR cursor=nullptr;
         if(bitmap.GetHICON(&icon)==Ok && GetIconInfo(icon,&info)){
-            info.fIcon=FALSE;info.xHotspot=5;info.yHotspot=26;
+            info.fIcon=FALSE;info.xHotspot=4;info.yHotspot=27;
             cursor=CreateIconIndirect(&info);DeleteObject(info.hbmMask);DeleteObject(info.hbmColor);
         }
         if(icon)DestroyIcon(icon);
         return cursor;
     }
     ULONG_PTR graphics=0;
+    HCURSOR sampleCursor(){
+        if(!graphics){
+            Gdiplus::GdiplusStartupInput input;
+            if(Gdiplus::GdiplusStartup(&graphics,&input,nullptr)!=Gdiplus::Ok)return LoadCursorW(nullptr,IDC_CROSS);
+        }
+        if(!eyedropper)eyedropper=makeEyedropper();
+        return eyedropper?eyedropper:LoadCursorW(nullptr,IDC_CROSS);
+    }
     int active=-1,channel=-1,appliedDelta=0;
     enum Click { noClick, addStop, addOpacity, sampleColor } click=noClick;
     bool vector=false;
@@ -163,7 +171,6 @@ struct GradientCanvasPanel {
     Json startPaint,lastPaint;
     Json rampTracks=Json::array();
     std::array<ImU32,129> rampSamples{};
-    bool rampAngular=false;
     HDC surfaceDC=nullptr;
     HBITMAP surfaceBitmap=nullptr;
     HGDIOBJ oldBitmap=nullptr;
@@ -183,7 +190,7 @@ struct GradientCanvasPanel {
         return front==view.owner && root==view.owner;
     }
     static bool navigationKeyHeld(){
-        return ((GetAsyncKeyState(VK_SPACE)|GetAsyncKeyState('Z'))&0x8000)!=0;
+        return GradientNavigation::held();
     }
 
     void suspendPointer(){
@@ -239,8 +246,14 @@ struct GradientCanvasPanel {
             if(msg==WM_KEYDOWN && wp==VK_ESCAPE){PostMessageW(self->editor,WM_CLOSE,0,0);return 0;}
             if(msg==WM_SETCURSOR && LOWORD(lp)==HTCLIENT && self->foreground() && !navigationKeyHeld()){
                 POINT p{};
-                if(GetCursorPos(&p) && self->clickAt({double(p.x),double(p.y)})==sampleColor){
-                    SetCursor(self->eyedropper?self->eyedropper:LoadCursorW(nullptr,IDC_CROSS));return TRUE;
+                if(GetCursorPos(&p)){
+                    const Point point{double(p.x),double(p.y)};
+                    const auto action=self->clickAt(point);
+                    if(action==sampleColor)SetCursor(self->sampleCursor());
+                    else if(action!=noClick)SetCursor(LoadCursorW(nullptr,IDC_HAND));
+                    else if(self->panel->editable() && self->at(point)>=0)SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));
+                    else return DefWindowProcW(hwnd,msg,wp,lp);
+                    return TRUE;
                 }
             }
             if(msg==WM_CAPTURECHANGED){self->active=-1;self->click=noClick;return 0;}
@@ -266,9 +279,8 @@ struct GradientCanvasPanel {
     }
     bool create(HWND host,GradientPanel& model){
         if(hit && visual)return true;
-        Gdiplus::GdiplusStartupInput input;
-        if(Gdiplus::GdiplusStartup(&graphics,&input,nullptr)!=Gdiplus::Ok)return false;
-        if(!eyedropper)eyedropper=makeEyedropper();
+        sampleCursor();
+        if(!graphics)return false;
         WNDCLASSW wc{};wc.lpfnWndProc=procedure;wc.hInstance=GetModuleHandleW(nullptr);
         wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.lpszClassName=hitClass;
         if(!RegisterClassW(&wc))return false;
@@ -585,11 +597,10 @@ struct GradientCanvasPanel {
             const auto& colors=panel->track(1);
             const auto& opacity=panel->track(0);
             const bool rgb=colors.front().contains("rgb");
-            if(rgb && (rampAngular!=axis.angular || rampTracks.size()!=2 || rampTracks[0]!=colors || rampTracks[1]!=opacity)){
+            if(!axis.angular && rgb && (rampTracks.size()!=2 || rampTracks[0]!=colors || rampTracks[1]!=opacity)){
                 rampTracks=Json::array({colors,opacity});
-                rampAngular=axis.angular;
-                for(int i=0;i<(rampAngular?128:129);++i)
-                    rampSamples[i]=GradientPanel::rampColor(colors,opacity,(i+(rampAngular?.5f:0))*(GradientPanel::end/128.f));
+                for(int i=0;i<=128;++i)
+                    rampSamples[i]=GradientPanel::rampColor(colors,opacity,i*(GradientPanel::end/128.f));
             }
             Pen edge(ink(text),float(2*halfWidth+view.dpi));
             GraphicsPath outline;
@@ -599,7 +610,8 @@ struct GradientCanvasPanel {
                 const auto from=screen(stripPoint(a)),to=screen(stripPoint(b));
                 outline.AddLine(from,to);
             }
-            g.DrawPath(&edge,&outline);
+            Pen range(ink(text),float(view.dpi));
+            g.DrawPath(axis.angular?&range:&edge,&outline);
             if(colors.size()<32 && region && outline.Widen(&edge)==Ok){
                 Region strip(&outline);
                 if(HRGN body=strip.GetHRGN(&g)){CombineRgn(region,region,body,RGN_OR);DeleteObject(body);}
@@ -617,19 +629,15 @@ struct GradientCanvasPanel {
                     if(HRGN body=strip.GetHRGN(&g)){CombineRgn(region,region,body,RGN_OR);DeleteObject(body);}
                 }
             }
-            const int tiles=axis.angular?128:rgb?16:1;
-            Pen paper(ink(border),float(2*halfWidth)),paint(ink(text),float(2*halfWidth));
+            const int tiles=axis.angular?0:rgb?16:1;
+            Pen paper(ink(border),float(2*halfWidth));
             for(int i=0;i<tiles;++i){
                 const double a=double(i)/tiles,b=double(i+1)/tiles;
                 const auto from=screen(stripPoint(a)),to=screen(stripPoint(b));
-                paper.SetColor(ink(rgb && (axis.angular?i/8:i)%2?surface:border));
+                paper.SetColor(ink(rgb && i%2?surface:border));
                 paper.SetStartCap(i?LineCapSquare:LineCapFlat);
                 paper.SetEndCap(i+1<tiles?LineCapSquare:LineCapFlat);
                 g.DrawLine(&paper,from,to);
-                if(axis.angular && rgb){
-                    paint.SetColor(ink(rampSamples[axis.reverse?127-i:i]));
-                    g.DrawLine(&paint,from,to);
-                }
             }
             if(!axis.angular && rgb){
                 // One translucent stroke avoids seams where separately antialiased samples meet.

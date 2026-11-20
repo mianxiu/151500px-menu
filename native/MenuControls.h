@@ -35,7 +35,16 @@ struct PanelStyle {
     }
     ~PanelStyle(){ImGui::PopStyleVar(stableVisual?7:6);ImGui::PopFont();}
 };
-inline bool button(const char* label,float scale,bool compact=false) {return ImGui::Button(label,{0,(compact?menuShortcutHeight:menuControlHeight)*scale});}
+inline void buttonCursor() {
+    if(!ImGui::IsItemHovered() || GetCapture())return;
+    POINT at{};
+    if(GetCursorPos(&at) && WindowFromPoint(at)==ImGui::GetWindowViewport()->PlatformHandleRaw)
+        SetCursor(LoadCursorW(nullptr,IDC_HAND));
+}
+inline bool button(const char* label,float scale,bool compact=false) {
+    const bool clicked=ImGui::Button(label,{0,(compact?menuShortcutHeight:menuControlHeight)*scale});
+    buttonCursor();return clicked;
+}
 inline void fieldLabel(const char* label,float width) {
     const float left=ImGui::GetCursorPosX();
     ImGui::AlignTextToFramePadding();ImGui::TextUnformatted(label);
@@ -136,11 +145,15 @@ inline void detailLine(const char* value,float scale,float reserve=0) {
         ImGui::TextUnformatted(value);ImGui::PopTextWrapPos();ImGui::EndTooltip();
     }
 }
+inline bool check(const char* label,bool& value) {
+    const bool clicked=ImGui::Checkbox(label,&value);buttonCursor();return clicked;
+}
 inline bool iconButton(const char* label,int icon,float scale,bool compact=false) {
     const auto a=ImGui::GetCursorScreenPos();
     const float side=(compact?menuShortcutHeight:menuControlHeight)*scale,glyph=figmaDisplayIconSize*scale,inset=(side-glyph)*.5f;
     const ImVec2 b={a.x+side,a.y+side};
     const bool clicked=ImGui::InvisibleButton(label,{side,side},ImGuiButtonFlags_EnableNav);
+    buttonCursor();
     const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
     auto* draw=ImGui::GetWindowDrawList();
     surface(draw,a,b,scale,false);
@@ -249,6 +262,7 @@ bool textSegments(const char* id,const char* const (&names)[N],float scale,IsSel
             ImGui::SetCursorScreenPos({x,y});ImGui::PushID(int(i));const bool clicked=ImGui::InvisibleButton(names[i],{widths[i],h},ImGuiButtonFlags_EnableNav);
             const auto mouse=ImGui::GetIO().MousePos;
             const bool seam=i>first && mouse.x<x+scale || i<last && mouse.x>=x+widths[i]-scale;
+            if(!seam)buttonCursor();
             const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
             segment(draw,{x,y},{x+widths[i],y+h},i==first,i==last,!disabled && ((!seam && ImGui::IsItemHovered()) || isSelected(i)),scale);
             const auto text=ImGui::CalcTextSize(names[i]);

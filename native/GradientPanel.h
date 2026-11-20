@@ -9,8 +9,9 @@ struct GradientPanel {
     RECT moveGrip{};
     static constexpr float fieldWidth=76,minSpan=64;
     Json draft;
+    Json* embeddedPaint=nullptr;
     std::string phase,message;
-    bool live=false,pending=false,dirty=false,released=false,terminal=false;
+    bool live=false,pending=false,dirty=false,released=false,terminal=false,dismissRequested=false;
     bool overlay=false,viewWaiting=false,showParameters=false;
     int channel=0,cursor=end/2,anchorLane=-1,anchorIndex=-1,activeLane=1;
     int primaryColor=-1;
@@ -30,7 +31,7 @@ struct GradientPanel {
     float barStart=-1,barSpan=0;
     std::array<ImU32,129> barColors{};
 
-    Json& paint(){return draft[channel==0?"fill":"stroke"];}
+    Json& paint(){return embeddedPaint?*embeddedPaint:draft[channel==0?"fill":"stroke"];}
     Json& track(int lane){return paint()[lane==0?"opacity_stops":"stops"];}
     static const Json& track(const Json& paint,int lane){return paint.at(lane==0?"opacity_stops":"stops");}
     bool ready() const {return draft.is_object();}
@@ -81,14 +82,16 @@ struct GradientPanel {
     void receive(const Json& state){
         phase=state.at("phase").get<std::string>();message=state.value("message","");
         if(state.value("ack",false))pending=false;
-        if(phase=="error")terminal=false;
+        if(phase=="error")terminal=dismissRequested=false;
     }
     void emit(const char* action){
         pending=true;dirty=released=false;lastSent=GetTickCount64();
         std::cout<<Json{{"type",action},{"draft",draft}}.dump()<<std::endl;
     }
     void finish(bool apply){
-        if(!ready() || terminal || (apply && !editable()))return;
+        if(!ready())return;
+        if(!apply)dismissRequested=true;
+        if(terminal || (apply && !editable()))return;
         terminal=true;gesture=none;
         phase=apply?"applying":"closing";
         emit(apply?"gradient.apply":"gradient.cancel");
@@ -461,6 +464,50 @@ struct GradientPanel {
         while(index+1<IM_ARRAYSIZE(styles) && type!=styles[index])++index;
         if(MenuControls::segments("##gradient-type",names,index,scale,true)){type=styles[index];dirty=true;}
     }
+    void parameters(){
+        if(ImGui::BeginTable("##gradient-parameters",3,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame)){
+            ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+            const int lane=selection[activeLane]?activeLane:1-activeLane;
+            int selectedIndex=0;while(selectedIndex<int(track(lane).size()) && !selected(lane,selectedIndex))++selectedIndex;
+            const int location=selectedIndex<int(track(lane).size())?track(lane)[selectedIndex]["location"].get<int>():0;
+            double position=location*100./end;
+            ImGui::BeginDisabled(!selection[lane]);
+            MenuControls::fieldLabel("位置",ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
+            if(MenuControls::number("##node-position",position,fieldWidth*scale,.1f,0,100,"%.1f%%")){
+                const Json base=paint();const int delta=shift(base,int(std::lround(position*end/100))-location);if(delta)moveBy(base,delta);
+            }
+            ImGui::EndDisabled();
+            ImGui::TableSetColumnIndex(1);
+            selectionValue("中点",-1,0,100,.2f,"%.0f%%",[](const Json& stop){return stop.at("midpoint").get<double>();},[](Json& stop,double value){stop["midpoint"]=int(std::lround(value));});
+            ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+            const char* methods[]={"classic","linear","perceptual"},*methodNames[]={"经典","线性","感知"};
+            choice("插值",paint()["method"],methods,methodNames);
+            const std::string type=paint()["options"]["style"];
+            const bool radial=type=="radial",angular=type=="angle";
+            ImGui::TableSetColumnIndex(1);
+            if(!radial){optionValue(angular?"起始角度":"方向","angle",-360,360,.25f,"%.1f°");ImGui::SameLine();direction();}
+            ImGui::TableSetColumnIndex(2);
+            if(!angular)optionValue(radial?"半径缩放":"缩放","scale",1,1000,.25f,"%.1f%%");
+            ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
+            if(paint()["options"].contains("offset_x"))optionValue("中心 X","offset_x",-1000,1000,.25f,"%.1f%%");
+            ImGui::TableSetColumnIndex(1);
+            if(paint()["options"].contains("offset_y"))optionValue("中心 Y","offset_y",-1000,1000,.25f,"%.1f%%");
+            ImGui::TableSetColumnIndex(2);
+            auto& smoothness=paint()["options"]["smoothness"];double smooth=smoothness.get<double>()*100/end;
+            MenuControls::fieldLabel("平滑度",ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
+            if(MenuControls::number("##smoothness",smooth,fieldWidth*scale,.25f,0,100,"%.0f%%")){
+                smoothness=int(std::lround(smooth*end/100));dirty=refreshBar=true;
+            }
+            ImGui::EndTable();
+        }
+        const char* names[]={"反向","仿色","与图层对齐"},*keys[]={"reverse","dither","align"};
+        auto& options=paint()["options"];
+        std::array<bool,3> flags={options["reverse"],options["dither"],options["align"]};
+        if(MenuControls::toggles("##gradient-options",names,flags,scale,true)){
+            for(size_t i=0;i<flags.size();++i)options[keys[i]]=flags[i];
+            dirty=refreshBar=true;
+        }
+    }
     void colorPicker(float width){
         auto& stops=track(1);
         const int index=colorTarget();
@@ -524,14 +571,14 @@ struct GradientPanel {
             ImGui::EndTable();
         }
     }
-    void draw(bool checkLayout=false,bool viewBlocked=false){
+    void draw(bool checkLayout=false,bool viewBlocked=false,bool loading=false,bool awaitingPointer=false){
         moveGrip={};
         const bool canEdit=editable() && !viewBlocked;
         auto* viewport=ImGui::GetMainViewport();
         const ImVec2 origin=viewport->Pos;
         const RECT frame{0,0,LONG(viewport->Size.x),LONG(viewport->Size.y)};
         const UINT dpi=std::lround(96*scale);
-        const auto timelineRect=overlay?dockTimeline(frame,dpi):frame;
+        const auto timelineRect=overlay || loading?dockTimeline(frame,dpi):frame;
         const auto pickerRect=dockPicker(frame,dpi);
         constexpr ImGuiWindowFlags flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|
             ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse;
@@ -542,21 +589,20 @@ struct GradientPanel {
         ImGui::SetNextWindowPos(at);
         ImGui::SetNextWindowSize(size);
         ImGui::Begin("##gradient-dock",nullptr,flags);
-        if(!ready()){ImGui::End();return;}
-        if(!overlay){
-            MenuControls::detailLine("正在核对 Photoshop 画布…",scale);
-            if(MenuControls::button("关闭",scale,true))finish(false);
+        if(loading || (ready() && !overlay)){
+            MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),at,{at.x+size.x,at.y+size.y},scale);
+            MenuControls::detailLine(awaitingPointer?"移入此面板编辑渐变":"正在核对 Photoshop 画布…",scale);
+            if(!awaitingPointer && MenuControls::button("关闭",scale,true))PostMessageW(window,WM_CLOSE,0,0);
             ImGui::End();return;
         }
+        if(!ready()){ImGui::End();return;}
         MenuControls::panelFrame(ImGui::GetBackgroundDrawList(viewport),at,{at.x+size.x,at.y+size.y},scale);
         {
             const auto header=ImGui::GetCursorScreenPos();
             const float side=menuShortcutHeight*scale,closeX=header.x+ImGui::GetContentRegionAvail().x-side;
             const auto actions=ImGui::GetCursorScreenPos();
             ImGui::SetCursorScreenPos({closeX,header.y});
-            ImGui::BeginDisabled(terminal);
             if(MenuControls::iconButton("关闭并保留草稿",41,scale,true))finish(false);
-            ImGui::EndDisabled();
             ImGui::SetCursorScreenPos({closeX-menuDenseGap*scale-ImGui::CalcTextSize("应用").x-2*menuDenseGap*scale,header.y});
             if(ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsAnyItemActive())finish(false);
             ImGui::BeginDisabled(!canEdit);
@@ -604,48 +650,7 @@ struct GradientPanel {
                     const Json base=paint();const int delta=shift(base,sign*(io.KeyShift?41:4));if(delta)moveBy(base,delta);
                 }
             }
-            if(showParameters && ImGui::BeginTable("##gradient-parameters",3,ImGuiTableFlags_NoSavedSettings|ImGuiTableFlags_SizingStretchSame)){
-                ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
-                const int lane=selection[activeLane]?activeLane:1-activeLane;
-                int selectedIndex=0;while(selectedIndex<int(track(lane).size()) && !selected(lane,selectedIndex))++selectedIndex;
-                const int location=selectedIndex<int(track(lane).size())?track(lane)[selectedIndex]["location"].get<int>():0;
-                double position=location*100./end;
-                ImGui::BeginDisabled(!selection[lane]);
-                MenuControls::fieldLabel("位置",ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
-                if(MenuControls::number("##node-position",position,fieldWidth*scale,.1f,0,100,"%.1f%%")){
-                    const Json base=paint();const int delta=shift(base,int(std::lround(position*end/100))-location);if(delta)moveBy(base,delta);
-                }
-                ImGui::EndDisabled();
-                ImGui::TableSetColumnIndex(1);
-                selectionValue("中点",-1,0,100,.2f,"%.0f%%",[](const Json& stop){return stop.at("midpoint").get<double>();},[](Json& stop,double value){stop["midpoint"]=int(std::lround(value));});
-                ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
-                const char* methods[]={"classic","linear","perceptual"},*methodNames[]={"经典","线性","感知"};
-                choice("插值",paint()["method"],methods,methodNames);
-                const std::string type=paint()["options"]["style"];
-                const bool radial=type=="radial",angular=type=="angle";
-                ImGui::TableSetColumnIndex(1);
-                if(!radial){optionValue(angular?"起始角度":"方向","angle",-360,360,.25f,"%.1f°");ImGui::SameLine();direction();}
-                ImGui::TableSetColumnIndex(2);
-                if(!angular)optionValue(radial?"半径缩放":"缩放","scale",1,1000,.25f,"%.1f%%");
-                ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);
-                if(paint()["options"].contains("offset_x"))optionValue("中心 X","offset_x",-1000,1000,.25f,"%.1f%%");
-                ImGui::TableSetColumnIndex(1);
-                if(paint()["options"].contains("offset_y"))optionValue("中心 Y","offset_y",-1000,1000,.25f,"%.1f%%");
-                ImGui::TableSetColumnIndex(2);
-                auto& smoothness=paint()["options"]["smoothness"];double smooth=smoothness.get<double>()*100/end;
-                MenuControls::fieldLabel("平滑度",ImGui::CalcTextSize("起始角度").x+menuDenseGap*scale);
-                if(MenuControls::number("##smoothness",smooth,fieldWidth*scale,.25f,0,100,"%.0f%%")){
-                    smoothness=int(std::lround(smooth*end/100));dirty=refreshBar=true;
-                }
-                ImGui::EndTable();
-            }
-            const char* names[]={"反向","仿色","与图层对齐"},*keys[]={"reverse","dither","align"};
-            auto& options=paint()["options"];
-            std::array<bool,3> flags={options["reverse"],options["dither"],options["align"]};
-            if(showParameters && MenuControls::toggles("##gradient-options",names,flags,scale,true)){
-                for(size_t i=0;i<flags.size();++i)options[keys[i]]=flags[i];
-                dirty=refreshBar=true;
-            }
+            if(showParameters)parameters();
             ImGui::EndDisabled();
             if(phase=="error")MenuControls::detailLine(message.c_str(),scale);
             if(checkLayout && (ImGui::GetCursorPosY()-ImGui::GetStyle().ItemSpacing.y+ImGui::GetStyle().WindowPadding.y>size.y ||

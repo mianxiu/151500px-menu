@@ -132,6 +132,7 @@ class GradientEditor:
         self.view = None
         self.view_read = None
         self.initial_preview_attempted = False
+        self.resume_preview_after_view = False
         self.cancel_requested = False
         self.overlay_tool = None
         self.baseline = None
@@ -171,7 +172,7 @@ class GradientEditor:
         body = VIEW_SCRIPT
         if restore_tool:
             body = ("(function(){var tool=app.currentTool, previous="+json.dumps(restore_tool)+";"
-                    " if(tool!==previous && (tool==='zoomTool'||tool==='handTool')) app.currentTool=previous;})();\n"+body)
+                    " if(tool!==previous && (tool==='zoomTool'||tool==='handTool'||tool==='rotateTool')) app.currentTool=previous;})();\n"+body)
         script = guarded_script(body, self.target)
         def capture():
             self.require_focus()
@@ -187,7 +188,7 @@ class GradientEditor:
                 if response.get('session') != self.target['session'] or photoshop_process_ids() != (owner_pid,):
                     raise RuntimeError('Photoshop 会话已改变')
                 view = checked_view(response.get('gradient_view'))
-                if restore_tool and view.get('tool') in ('handTool','zoomTool') and view['tool'] != restore_tool:
+                if restore_tool and view.get('tool') in ('handTool','zoomTool','rotateTool') and view['tool'] != restore_tool:
                     raise RuntimeError('Photoshop 临时导航工具尚未恢复')
                 return view
             # COM can repeatedly raise the workspace in front of the dock during focus return.
@@ -251,6 +252,10 @@ class GradientEditor:
             await asyncio.gather(warmup, return_exceptions=True)
             if not self.reader:
                 self.discard_window(warmup)
+                if self.hwnd and desktop.gradient_window == (self.hwnd, owner):
+                    desktop.gradient_window = (0, 0)
+                    self.hwnd = None
+                    await asyncio.to_thread(desktop.sync_native)
 
     @staticmethod
     def discard_window(warmup):
@@ -288,7 +293,27 @@ class GradientEditor:
             pending.add_done_callback(self.discard_window)
         self.standby = key, asyncio.create_task(self.prepare_window(desktop, owner))
 
-    async def start_window(self, desktop, epoch, warmup):
+    async def offer(self, epoch):
+        desktop = self.app.desktop
+        owner = desktop.target
+        def current():
+            return (desktop.visible and desktop.menu_epoch == epoch and desktop.target == owner and
+                    desktop.color_editor_active and desktop.settings.get('gradient_direct_overlay'))
+        if not current():
+            return
+        self.prewarm(desktop, owner)
+        standby = self.standby
+        if not standby:
+            return
+        process, _ = await asyncio.shield(standby[1])
+        if self.standby is standby and current() and process.returncode is None:
+            status = self.app.bridge._status_snapshot()
+            event = {'type':'gradient.offer','epoch':epoch,'theme':status.get('ui_theme') or 'dark-gray',
+                     'font':status.get('ui_font_size') or 'small'}
+            process.stdin.write((json.dumps(event)+'\n').encode())
+            await asyncio.wait_for(process.stdin.drain(),2)
+
+    async def show_loading(self, desktop, epoch, warmup):
         process, hwnd = await asyncio.shield(warmup)
         self.process = process
         try:
@@ -308,6 +333,21 @@ class GradientEditor:
                     await asyncio.sleep(.01)
             if desktop._workspace_root(desktop.gui.GetForegroundWindow()) != self.owner:
                 raise RuntimeError('Photoshop 工作区未取得焦点，渐变未打开')
+            if desktop.input_focus:
+                desktop.input_focus.refresh()
+            if desktop.input_language:
+                desktop.input_language.wake.set()
+            await self.send({'type':'gradient.loading','epoch':epoch,'theme':self.theme,'font':self.font})
+        except BaseException:
+            process.stdin.close()
+            raise
+
+    async def start_window(self, desktop, epoch, warmup):
+        process, hwnd = await warmup
+        try:
+            if (not desktop.visible or desktop.menu_epoch != epoch or desktop.target != self.owner or
+                    process.returncode is not None or not desktop.gui.IsWindow(hwnd)):
+                raise RuntimeError('渐变加载已取消')
             await self.send({'type':'gradient.open','phase':self.phase,'message':self.message,'draft':self.draft,
                              'title':self.title,'live':self.live,'theme':self.theme,'font':self.font,'channel':self.channel,
                              'legacy_preview':self.legacy_preview,
@@ -385,9 +425,10 @@ class GradientEditor:
                 self.app.desktop.gradient_window = (0, 0)
                 await asyncio.to_thread(self.app.desktop.sync_native)
                 self.hwnd = None
-                if self.preview and self.phase != 'applying':
-                    self.phase = 'closing'
-                    self.preview.cancel()
+                if self.preview:
+                    if self.phase not in ('applying','closing'):
+                        self.phase = 'closing'
+                        self.preview.cancel()
                 elif not self.task or self.task.done():
                     self.phase = 'closed'
             if view_task:
@@ -415,6 +456,7 @@ class GradientEditor:
                 await asyncio.wait_for(asyncio.shield(self.task), 8)
                 if self.phase != 'editing':
                     raise RuntimeError('原渐变恢复未确认')
+                self.resume_preview_after_view = True
             if tracking:
                 # Reading through COM while Space is held can interrupt Photoshop's temporary Hand tool.
                 await self.send({'type':'gradient.view','serial':serial,'tracking':True})
@@ -442,7 +484,7 @@ class GradientEditor:
             if view:
                 tool = view.get('tool')
                 if (not entering and tool and self.overlay_tool and tool != self.overlay_tool and
-                        tool not in ('handTool','zoomTool')):
+                        tool not in ('handTool','zoomTool','rotateTool')):
                     await self.send({'type':'gradient.view','serial':serial,'tool_changed':True})
                     return
                 if entering or self.overlay_tool is None:
@@ -456,9 +498,10 @@ class GradientEditor:
         if tracking:
             response['tracking'] = True
         await self.send(response)
-        if (entering and not self.initial_preview_attempted and self.live and view is not None
+        if ((entering and not self.initial_preview_attempted or self.resume_preview_after_view) and self.live and view is not None
                 and self.phase == 'editing' and not self.cancel_requested and self.draft != self.base):
             self.initial_preview_attempted = True
+            self.resume_preview_after_view = False
             try:
                 await self.request('gradient.update', {'draft':self.draft})
             except (RuntimeError, ValueError, OSError) as error:
@@ -547,6 +590,11 @@ class GradientEditor:
             if not desktop.visible or desktop.menu_epoch != epoch or desktop.target != owner:
                 raise RuntimeError('菜单或 Photoshop 工作区已改变')
             async with app.operation_lock, self.warming_window(desktop, owner) as warmup:
+                self.owner = owner
+                status = app.bridge._status_snapshot()
+                self.theme = status.get('ui_theme') or 'dark-gray'
+                self.font = status.get('ui_font_size') or 'small'
+                await self.show_loading(desktop, epoch, warmup)
                 result = await asyncio.to_thread(app.bridge.transport.call, 'inspect', shape_inspect=True, gradient_details=True)
                 target = result.get('gradient_target', {})
                 shape = result.get('shape_editor', {})
@@ -570,11 +618,9 @@ class GradientEditor:
                 self.vector = base.get('vector') is True
                 self.view = None
                 self.initial_preview_attempted = False
+                self.resume_preview_after_view = False
                 self.cancel_requested = False
                 self.overlay_tool = None
-                status = app.bridge._status_snapshot()
-                self.theme = status.get('ui_theme') or 'dark-gray'
-                self.font = status.get('ui_font_size') or 'small'
                 self.tint = getattr(desktop,'settings',{}).get('gradient_layer_tint','')
                 self.title = ' · '.join(str(shape.get(key, ''))[:256] for key in ('document_name', 'layer_name'))
                 self.phase = 'editing'

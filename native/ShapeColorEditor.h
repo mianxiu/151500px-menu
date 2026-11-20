@@ -7,6 +7,8 @@ struct ShapeColorEditor {
     std::string nativeModel;
     int batchCount=0;Json maskValues,maskMixed;
     int channel=0,stop=0;
+    std::array<GradientPanel,2> gradients;
+    std::array<std::array<ImU32,129>,2> previewColors{};
     Json original,draft,patterns,lastPreview;
     std::array<Json,2> modes;
     std::array<Json,2> lastStops;
@@ -30,7 +32,7 @@ struct ShapeColorEditor {
                 ImGui::ClearActiveID();
         }
         maskPreviewStarted=false;shapeDraftOnly=false;livePreview=false;batchMask=false;batchCount=0;maskValues=maskMixed=Json::object();
-        lastPreview=Json();maskInputIDs={};rgbInputIDs={};rgbBounds={};methodExplicit={};
+        lastPreview=Json();maskInputIDs={};rgbInputIDs={};rgbBounds={};methodExplicit={};gradients={};
         available=false;dirty=false;gradientEditor=false;nativeModel.clear();bounds=maskBounds=copyBounds=gradientBounds=featherBounds=densityBounds=hexBounds={};gradientDragging=false;gradientDragOffset=0;channel=stop=0;modes={};hexInput[0]=0;hexKey.clear();copiedAt=0;copyFailed=false;
         if(!data.value("available",false))return;
         if(data.value("mask_batch",false)) {
@@ -51,6 +53,15 @@ struct ShapeColorEditor {
         if(vector && data.contains("mask") && data["mask"].is_object())original["mask"]=draft["mask"]=data["mask"];
     }
     Json& current(){return draft.at(channel?"stroke":"fill");}
+    void setRgb(const Json& rgb){
+        auto& p=current();
+        if(p.at("kind")=="solid")p["rgb"]=rgb;
+        else if(p.contains("options") && p.contains("opacity_stops")){
+            auto& g=gradients[channel];
+            g.embeddedPaint=&p;g.applyRgb(rgb);g.embeddedPaint=nullptr;g.dirty=false;
+        }else p["stops"][stop]["rgb"]=rgb;
+        p["enabled"]=true;changed();
+    }
     bool nativePaint(){const auto& p=current();return !nativeModel.empty() || p.contains("native") || p.contains("stops") && std::any_of(p["stops"].begin(),p["stops"].end(),[](const Json& s){return s.contains("native");});}
     static Json colorOf(const Json& p){return p.contains("native")?Json{{"native",p["native"]}}:Json{{"rgb",p.value("rgb",Json::array({0,0,0}))}};}
     static Json nativeWhite(const std::string& model){return Json{{"native",{{"model",model},{"values",model=="cmyk"?Json::array({0,0,0,0}):model=="lab"?Json::array({100,0,0}):Json::array({0})}}}};}
@@ -58,6 +69,7 @@ struct ShapeColorEditor {
         && !layerLocked && !layerBackground && !inputFocused
         && (canExecute() || maskPreviewStarted && allowed && !taskBusy && !busyFeedback) && !holdFinished;}
     void changed(){
+        gradients[channel].refreshBar=true;
         if(!batchMask)for(int i=0;i<2;++i){
             auto& p=draft[i?"stroke":"fill"];
             const auto stops=p.value("stops",Json());
@@ -68,6 +80,7 @@ struct ShapeColorEditor {
         dirty=draft!=original;
     }
     void mode(int next) {
+        gradients[channel]=GradientPanel{};
         auto& p=current();const std::string old=p.at("kind");modes[channel][old]=p;
         const bool enabled=p.value("enabled",true);const double width=p.value("width",1.);
         if(modes[channel].contains(shapePaintKinds[next]))p=modes[channel][shapePaintKinds[next]];
@@ -76,7 +89,13 @@ struct ShapeColorEditor {
             if(!nativeModel.empty() && !p.contains("rgb") && !p.contains("native") && !p.contains("stops"))color=nativeWhite(nativeModel);
             p=Json{{"kind",shapePaintKinds[next]},{"enabled",enabled}};
             if(next==0)p.update(color);
-            if(next==1){Json white=color.contains("native")?nativeWhite(color["native"]["model"]):Json{{"rgb",Json::array({255,255,255})}};color["location"]=0;white["location"]=4096;p["stops"]=Json::array({color,white});p["method"]="perceptual";}
+            if(next==1){Json white=color.contains("native")?nativeWhite(color["native"]["model"]):Json{{"rgb",Json::array({255,255,255})}};color["location"]=0;white["location"]=4096;p["stops"]=Json::array({color,white});p["method"]="perceptual";
+                if(gradientEditor){
+                    for(auto& node:p["stops"]){node["midpoint"]=50;node["source"]="userStop";}
+                    p["opacity_stops"]=Json::array({Json{{"location",0},{"midpoint",50},{"opacity",100}},Json{{"location",4096},{"midpoint",50},{"opacity",100}}});
+                    p["options"]={{"style","linear"},{"angle",0},{"scale",100},{"offset_x",0},{"offset_y",0},{"reverse",false},{"dither",false},{"align",true},{"smoothness",4096}};
+                }
+            }
             if(next==2)p["name"]=patterns.empty()?"":patterns[0].get<std::string>();
             if(channel)p["width"]=width;
         }
@@ -95,7 +114,7 @@ static ShapeColorEditor shapeEditor;
 // Presentation only: a hidden panel retains its request, draft and rollback.
 // A new menu session always starts with the ordinary operations visible.
 static bool shapePanelOpen=false,shapeReturning=false,shapeHoverReady=false;
-static int shapeHoverEntry=-1,shapeHoverMode=-1;
+static int shapeHoverEntry=-1,shapeHoverMode=-1,shapePressedEntry=-1;
 static bool shapeDirectGradient=false;
 static double shapeDirectHoverSince=0;
 static RECT shapeModeBounds{},shapeHoverBounds{};
@@ -380,7 +399,7 @@ static bool beginShapeEyedrop() {
     shapeEyedropEpoch=menuEpoch;shapeEyedropRevision=shapeEditor.draft.value("revision",std::string());shapeEyedropChannel=shapeEditor.channel;shapeEyedropStop=shapeEditor.stop;
     shapeEyedropActive=true;shapeEyedropDown=false;shapeHoverReady=false;
     hoverTip.reset();tipVisual.reset();renderedHit=pendingHit=-1;
-    SetCursor(LoadCursorW(nullptr,IDC_CROSS));
+    SetCursor(gradientCanvas.sampleCursor());
     if(!selfTest){
         SetCapture(window);
         if(GetCapture()!=window || !SetPropW(window,screenSampleProperty,window)){stopShapeEyedrop();return false;}
@@ -394,14 +413,13 @@ static bool applyShapeSample(COLORREF pixel) {
     if(!valid)return false;
     auto& p=shapeEditor.current();const auto kind=p.value("kind","");
     if(kind!="solid" && kind!="gradient")return false;
-    auto& rgb=kind=="solid"?p["rgb"]:p["stops"][shapeEditor.stop]["rgb"];
-    rgb=Json::array({GetRValue(pixel),GetGValue(pixel),GetBValue(pixel)});p["enabled"]=true;shapeEditor.changed();
+    shapeEditor.setRgb(Json::array({GetRValue(pixel),GetGValue(pixel),GetBValue(pixel)}));
     return true;
 }
 static bool shapeEyedropMessage(UINT msg,WPARAM wp,LPARAM lp) {
     if(!shapeEyedropActive)return false;
     if(!shapeEyedropAllowed()){stopShapeEyedrop();return false;}
-    if(msg==WM_SETCURSOR){SetCursor(LoadCursorW(nullptr,IDC_CROSS));return true;}
+    if(msg==WM_SETCURSOR){SetCursor(gradientCanvas.sampleCursor());return true;}
     if(msg==WM_CAPTURECHANGED || msg==WM_CANCELMODE){stopShapeEyedrop();return false;}
     // Esc must continue to the existing menu cancellation/rollback path.
     if(msg==WM_KEYDOWN && wp==VK_ESCAPE){stopShapeEyedrop();return false;}
@@ -427,13 +445,14 @@ static bool shapeGradientReady(){
         !ImGui::GetIO().WantTextInput;
 }
 static void openShapeGradient(){
+    gradientOffered=false;
     gradientLaunching=true;
     send("gradient.open",{{"channel",shapeEditor.channel?"stroke":"fill"},
         {"draft",shapeEditor.dirty || maskPreviewStarted?shapeEditor.draft:Json()},{"preview",maskPreviewStarted}});
 }
 static void drawShapeModeSwitch(const RECT& row) {
     shapeModeBounds={};shapeModeRows={};
-    if(!shapeEditor.ready())return;
+    if(!shapeEditor.ready()){shapePressedEntry=-1;return;}
     auto* font=menuFont(MenuTextRole::Control);const float textSize=font->LegacySize;
     const float inset=figmaBasicRightPadding*scale;
     const int count=shapeEditor.batchMask?1:3;
@@ -448,27 +467,39 @@ static void drawShapeModeSwitch(const RECT& row) {
     const auto saved=ImGui::GetCursorScreenPos();ImGui::SetCursorScreenPos({x,y});
     ImGui::PushFont(font);
     ImGui::BeginChild("editor-mode",{width,height*count},ImGuiChildFlags_None,
-        ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+        ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
     auto* draw=ImGui::GetWindowDrawList();const float rounding=ImGui::GetStyle().FrameRounding;
     const auto mouse=ImGui::GetIO().MousePos;
     int hovered=-1;
+    bool entryActive=false;
     for(int i=0;i<count;++i){
         const auto& r=shapeModeRows[i]={LONG(x),LONG(y+height*i),LONG(x+width),LONG(y+height*(i+1))};
+        ImGui::PushID(i);
+        ImGui::SetCursorScreenPos({float(r.left),float(r.top)});
+        ImGui::InvisibleButton("##paint-entry",{width,height});
+        entryActive|=ImGui::IsItemActive();
+        ImGui::PopID();
         if(mouse.x>=r.left && mouse.x<r.right && mouse.y>=r.top+(i?scale:0) && mouse.y<r.bottom)hovered=i;
     }
-    const bool editing=ImGui::IsAnyItemActive() || ImGui::GetIO().WantTextInput || ImGui::IsMouseDown(0) || ImGui::IsMouseDown(1) ||
+    const bool editing=(ImGui::IsAnyItemActive() && !entryActive) || ImGui::GetIO().WantTextInput || ImGui::IsMouseDown(1) ||
         ImGui::IsPopupOpen("",ImGuiPopupFlags_AnyPopupId);
-    const bool canSwitch=!pieAnimating && !holdFinished && !editing && !shapeEyedropActive && !gradientLaunching;
+    const bool available=!pieAnimating && !holdFinished && !editing && !shapeEyedropActive && !gradientLaunching;
+    const bool canSwitch=available && !ImGui::IsMouseDown(0);
+    const bool current=shapeEditor.batchMask || (hovered>=0 && shapeEditor.current().at("kind")==shapePaintKinds[hovered]);
+    if(!available || hovered!=shapePressedEntry || ImGui::IsMouseDragging(0))shapePressedEntry=-1;
+    if(available && (current || shapeEditor.vector) && ImGui::IsMouseClicked(0))shapePressedEntry=hovered;
+    const bool clicked=ImGui::IsMouseReleased(0) && std::exchange(shapePressedEntry,-1)==hovered && hovered>=0;
     const int previous=std::exchange(shapeHoverEntry,hovered);
     const bool entered=hovered>=0 && (shapeHoverReady || (previous>=0 && hovered!=previous));
-    shapeHoverReady=hovered<0;
+    shapeHoverReady=hovered<0 || pieAnimating;
     const bool direct=canSwitch && hovered==1 && shapeDirectGradient && shapeGradientReady() &&
         !shapeEditor.dirty && !maskPreviewStarted && shapeEditor.current().at("kind")=="gradient";
     if(!direct && !gradientLaunching)shapeDirectHoverSince=0;
     // One transition per entry. Holding over the icon cannot oscillate, and
     // an entry during dragging/input/sampling is consumed rather than deferred.
-    if(canSwitch && entered){
-        const bool close=!direct && shapePanelOpen && (shapeEditor.batchMask || hovered==std::max(0,shapeHoverMode));
+    if(canSwitch && ((current && entered) || clicked)){
+        if(!direct)gradientOffered=false;
+        const bool close=!clicked && !direct && shapePanelOpen && (shapeEditor.batchMask || hovered==std::max(0,shapeHoverMode));
         if(close && shapeEditor.dirty && !shapeEditor.livePreview){commitShapeDraft(true);shapeReturning=true;updateBusy(true);pinned=true;}
         if(close && maskPreviewStarted){emitMaskPreview(true,true);shapeReturning=true;updateBusy(true);pinned=true;}
         shapePanelOpen=!close && !direct;shapeEditor.gradientDragging=false;
@@ -477,8 +508,14 @@ static void drawShapeModeSwitch(const RECT& row) {
         shapeEditor.copyBounds=shapeEditor.gradientBounds=shapeEditor.featherBounds=shapeEditor.densityBounds=shapeEditor.hexBounds={};
         shapeEditor.rgbBounds={};shapeTipCandidate=-1;hoverTip.reset();tipVisual.reset();renderedHit=pendingHit=-1;
         if(direct)shapeDirectHoverSince=ImGui::GetTime();
+        if(clicked && !current && hovered!=2){
+            shapeEditor.mode(hovered);shapeEditor.current()["enabled"]=true;shapeEditor.changed();
+            if(hovered==1 && shapeDirectGradient && shapeGradientReady())openShapeGradient();
+        }
     }
-    if(direct && shapeDirectHoverSince && ImGui::GetTime()-shapeDirectHoverSince>=.15)openShapeGradient();
+    if(direct && !gradientOffered && shapeDirectHoverSince && ImGui::GetTime()-shapeDirectHoverSince>=.15){
+        gradientOffered=true;send("gradient.offer");
+    }
     const ImVec2 a={x,y},b={x+width,y+height*count};
     if(shapeEditor.batchMask){
         const auto surface=tint(shapePanelOpen?ImGuiCol_ButtonActive:hovered==0?ImGuiCol_ButtonHovered:ImGuiCol_Button);
@@ -492,8 +529,9 @@ static void drawShapeModeSwitch(const RECT& row) {
         MenuControls::surface(draw,a,b,scale,false);
         for(int i=0;i<count;++i){
             const auto& r=shapeModeRows[i];
-            MenuControls::segment(draw,{float(r.left),float(r.top)},{float(r.right),float(r.bottom)},scale,i==0,i==count-1,
-                (shapePanelOpen && i==std::max(0,shapeHoverMode)) || (canSwitch && i==hovered),true);
+            const bool selected=shapePanelOpen?i==shapeHoverMode:shapeEditor.current().at("kind")==shapePaintKinds[i];
+            MenuControls::segment(draw,{float(r.left),float(r.top)},{float(r.right),float(r.bottom)},i==0,i==count-1,
+                selected || (canSwitch && i==hovered),scale,true);
             draw->AddText(font,textSize,{std::round(x+(width-measure(shapePaintLabels[i]))*.5f),
                 std::round(r.top+(height-textSize)*.5f)},tint(ImGuiCol_Text),shapePaintLabels[i]);
         }
@@ -502,12 +540,71 @@ static void drawShapeModeSwitch(const RECT& row) {
     ImGui::Dummy({0,0});
     ImGui::EndChild();ImGui::PopFont();ImGui::SetCursorScreenPos(saved);
 }
+static void drawSimpleGradientPreview(GradientPanel& model,float width){
+    if(!model.hasRgbPicker())return;
+    const auto at=ImGui::GetCursorScreenPos();
+    const float height=2*menuControlHeight*scale;
+    ImGui::Dummy({width,height});
+    auto* draw=ImGui::GetWindowDrawList();
+    ImGui::RenderColorRectWithAlphaCheckerboard(draw,at,{at.x+width,at.y+height},0,menuPanelGap*scale,{0,0});
+    const auto& o=model.paint().at("options");
+    const std::string type=o.at("style");
+    const bool radial=type=="radial",angular=type=="angle",diamond=type=="diamond",reflected=type=="reflected";
+    const double angle=o.at("angle").get<double>()*GradientCanvasPanel::Axis::pi/180;
+    const double dx=std::cos(angle),dy=-std::sin(angle);
+    const double cx=width*(.5+o.value("offset_x",0.)/100),cy=height*(.5+o.value("offset_y",0.)/100);
+    const double radius=std::max(1.,(radial || diamond?height:width*std::abs(dx)+height*std::abs(dy))*.5*o.at("scale").get<double>()/100);
+    auto& colors=shapeEditor.previewColors[shapeEditor.channel];
+    if(model.refreshBar)for(int i=0;i<int(colors.size());++i)
+        colors[i]=GradientPanel::rampColor(model.track(1),model.track(0),float(i)*GradientPanel::end/(colors.size()-1));
+    const bool reverse=o.at("reverse");
+    constexpr int columns=64,rows=20;
+    for(int y=0;y<rows;++y)for(int x=0;x<columns;++x){
+        const double px=(x+.5)*width/columns-cx,py=(y+.5)*height/rows-cy;
+        const double along=px*dx+py*dy,across=-px*dy+py*dx;
+        double t=(1+along/radius)*.5;
+        if(radial)t=std::hypot(px,py)/radius;
+        else if(angular)t=std::fmod(std::atan2(-across,along)/(2*GradientCanvasPanel::Axis::pi)+1,1.);
+        else if(reflected)t=std::abs(along)/radius;
+        else if(diamond)t=(std::abs(along)+std::abs(across))/radius;
+        const auto color=colors[std::lround(std::clamp(reverse?1-t:t,0.,1.)*(colors.size()-1))];
+        draw->AddRectFilled({at.x+width*x/columns,at.y+height*y/rows},{at.x+width*(x+1)/columns,at.y+height*(y+1)/rows},color);
+    }
+}
+static void drawSimpleGradient(float width,float cell){
+    auto& g=shapeEditor.gradients[shapeEditor.channel];
+    g.embeddedPaint=&shapeEditor.current();g.overlay=true;
+    if(g.primaryColor<0 && !g.selection[0] && !g.selection[1])g.select(1,0,false,false);
+    g.types();
+    drawSimpleGradientPreview(g,width);
+    g.timeline(scale);
+    shapeEditor.gradientDragging=g.gesture!=GradientPanel::none;
+    const int target=g.colorTarget();
+    if(target>=0)shapeEditor.stop=target;
+    const auto method=g.paint().at("method");
+    if(MenuControls::button("参数",scale,true))ImGui::OpenPopup("##simple-gradient-options");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!g.canRemove());
+    if(MenuControls::button("删除",scale,true))g.remove();
+    ImGui::EndDisabled();ImGui::SameLine();
+    if(shapeIconButton("gradient-editor",14,shapeEditor.dirty || maskPreviewStarted?shapeGradientConfirmTip:shapeGradientEditorTip,cell,
+        shapeGradientReady(),false,figmaDisplayWidgetHeight))openShapeGradient();
+    ImGui::SetNextWindowSize({std::min(ImGui::GetMainViewport()->WorkSize.x,GradientPanel::minWidth*scale),0},ImGuiCond_Appearing);
+    if(ImGui::BeginPopup("##simple-gradient-options")){g.parameters();ImGui::EndPopup();}
+    if(method!=g.paint().at("method"))shapeEditor.methodExplicit[shapeEditor.channel]=true;
+    const float pickerWidth=std::min(width,std::max(100*scale,ImGui::GetContentRegionAvail().y-2*ImGui::GetFrameHeightWithSpacing()));
+    if(g.editingOpacity())g.opacityPicker(pickerWidth);
+    else {if(g.hasRgbPicker())g.colorPicker(pickerWidth);g.colorValues();}
+    shapeEditor.stop=std::clamp(shapeEditor.stop,0,int(g.track(1).size())-1);
+    if(g.dirty){g.dirty=false;g.paint()["enabled"]=true;shapeEditor.changed();}
+    g.embeddedPaint=nullptr;
+}
 static void drawShapeEditor(const RECT& anchor) {
     shapeTipCandidate=-1;shapeTipRows={};
     shapeEditor.bounds=shapeEditor.maskBounds=shapeEditor.copyBounds=shapeEditor.gradientBounds=shapeEditor.featherBounds=shapeEditor.densityBounds=shapeEditor.hexBounds={};shapeEditor.rgbBounds={};
     drawShapeModeSwitch(anchor);
     if(shapeEyedropActive && !shapeEyedropAllowed())stopShapeEyedrop();
-    if(shapeEyedropActive)SetCursor(LoadCursorW(nullptr,IDC_CROSS));
+    if(shapeEyedropActive)SetCursor(gradientCanvas.sampleCursor());
     if(!shapePanelVisible())return;
     const auto windowPos=ImGui::GetWindowPos(),windowSize=ImGui::GetWindowSize();
     const float rightStart=pieCenter.x+65*scale;
@@ -567,7 +664,8 @@ static void drawShapeEditor(const RECT& anchor) {
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,scale);
     float inner=width-2*menuControlPadding*scale;
     if(!shapeEditor.batchMask) {
-    ImGui::BeginChild("shape-color",{width,height},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+    const bool detailed=kind=="gradient" && shapeEditor.current().contains("options") && shapeEditor.current().contains("opacity_stops");
+    ImGui::BeginChild("shape-color",{width,height},ImGuiChildFlags_Borders,detailed?ImGuiWindowFlags_None:ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::SetWindowFontScale(1.f);
     if(selfTest && std::abs(ImGui::GetFontSize()-controlTextSize)>.01f)
         throw std::runtime_error("Shape controls must share the menu panel body font");
@@ -575,7 +673,10 @@ static void drawShapeEditor(const RECT& anchor) {
     inner=ImGui::GetContentRegionAvail().x;
     if(!shapeEditor.vector)shapeEditor.channel=0;
     const auto toolsAt=ImGui::GetCursorScreenPos();const float channelWidth=(shapeEditor.vector?2:1)*figmaDisplayIconWidth*scale;
-    if(shapeSegment("channel",shapeEditor.vector?std::vector<std::string>{"填充","描边"}:std::vector<std::string>{"填充"},shapeEditor.channel,channelWidth,false,shapeEditor.vector?std::vector<int>{11,12}:std::vector<int>{11},0)){shapeEditor.stop=0;shapeEditor.gradientDragging=false;}
+    if(shapeSegment("channel",shapeEditor.vector?std::vector<std::string>{"填充","描边"}:std::vector<std::string>{"填充"},shapeEditor.channel,channelWidth,false,shapeEditor.vector?std::vector<int>{11,12}:std::vector<int>{11},0)){
+        shapeEditor.stop=0;shapeEditor.gradientDragging=false;
+        const auto& kind=shapeEditor.current().at("kind");shapeHoverMode=kind=="solid"?0:kind=="gradient"?1:2;
+    }
     auto& p=shapeEditor.current();std::string paintKind=p.at("kind");int mode=paintKind=="solid"?0:paintKind=="gradient"?1:2;
     if(shapeEditor.vector && !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Tab,false) && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt){
         mode=(mode+(ImGui::GetIO().KeyShift?2:1))%3;shapeEditor.mode(mode);shapeHoverMode=mode;
@@ -614,6 +715,8 @@ static void drawShapeEditor(const RECT& anchor) {
             ImGui::EndCombo();
         }
         if(shapeEditor.patterns.empty())ImGui::TextWrapped("没有已加载的图案预设");
+    } else if(paintKind=="gradient" && p.contains("options") && p.contains("opacity_stops")){
+        drawSimpleGradient(inner,cell);
     } else {
         if(paintKind=="gradient"){
             const auto gradientAt=ImGui::GetCursorScreenPos();
@@ -657,13 +760,14 @@ static void drawShapeEditor(const RECT& anchor) {
     }
     if(!needsType){
     const auto actionsAt=ImGui::GetCursorScreenPos();
-    if(paintKind!="pattern" && !shapeEditor.nativePaint()){
+    const bool quickColors=paintKind!="pattern" && !shapeEditor.nativePaint() &&
+        !(paintKind=="gradient" && shapeEditor.gradients[shapeEditor.channel].editingOpacity());
+    if(quickColors){
         int quickColor=-1;
         if(shapeSegment("quick-color",{"黑色","白色"},quickColor,2*cell,false,{19,20},8)){
-            auto& c=paintKind=="solid"?p["rgb"]:p["stops"][shapeEditor.stop]["rgb"];
-            c=quickColor?Json::array({255,255,255}):Json::array({0,0,0});p["enabled"]=true;shapeEditor.changed();}
+            shapeEditor.setRgb(quickColor?Json::array({255,255,255}):Json::array({0,0,0}));}
     }
-    if(paintKind!="pattern" && !shapeEditor.nativePaint()){
+    if(quickColors){
         ImGui::SetCursorScreenPos({actionsAt.x+2*cell+gap,actionsAt.y});
         if(shapeIconButton("##screen-eyedrop",34,shapeEyedropTip,cell,true,false,figmaDisplayWidgetHeight) && !beginShapeEyedrop())notice="无法开始屏幕取色，请保持菜单在前台";
     }
@@ -672,7 +776,7 @@ static void drawShapeEditor(const RECT& anchor) {
         const double widthValue=shapeEditor.draft["stroke"].value("width",1.);
         Json fill=shapeEditor.draft["fill"],stroke=shapeEditor.draft["stroke"];stroke.erase("width");
         fill["width"]=widthValue;shapeEditor.draft["fill"]=stroke;shapeEditor.draft["stroke"]=fill;
-        shapeEditor.modes={};for(int i=0;i<2;++i){const auto& v=shapeEditor.draft[i?"stroke":"fill"];shapeEditor.modes[i]=Json::object();shapeEditor.modes[i][v.at("kind").get<std::string>()]=v;}
+        shapeEditor.modes={};shapeEditor.gradients={};for(int i=0;i<2;++i){const auto& v=shapeEditor.draft[i?"stroke":"fill"];shapeEditor.modes[i]=Json::object();shapeEditor.modes[i][v.at("kind").get<std::string>()]=v;}
         shapeEditor.stop=0;shapeEditor.changed();
     }
     if(shapeEditor.vector){ImGui::SetCursorScreenPos({actionsAt.x+inner-2*cell,actionsAt.y+(wrapActions?iconRow:0)});shapePaintToolbar(inner);}

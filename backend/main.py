@@ -687,6 +687,21 @@ class Application(web.Application):
         if action == "control.open":
             async with self.panel_lock:
                 return await asyncio.to_thread(self.control.open)
+        if action == "menu.settings.save":
+            if not self.desktop or not self.desktop.visible or args.get("menu_epoch") != self.desktop.menu_epoch:
+                raise RuntimeError("请从当前 Caps 菜单保存设置")
+            changes = args.get("params")
+            allowed = {"enabled", "right_click_hide", "gradient_direct_overlay", "gradient_layer_tint",
+                       "remote_compatibility", "render_mode", "shortcuts"}
+            if not isinstance(changes, dict) or not changes or changes.keys() - allowed:
+                raise ValueError("无效的全局菜单设置")
+            if "shortcuts" in changes:
+                bindings = changes["shortcuts"]
+                current = self.preferences.data["shortcuts"]
+                if not isinstance(bindings, dict) or not bindings or bindings.keys() - (current.keys() - {"moveUp", "moveDown"}):
+                    raise ValueError("无效的菜单快捷键")
+                changes = {**changes, "shortcuts": {**current, **bindings}}
+            return await self.dispatch("settings.save", {"settings": {**self.preferences.data, **changes}})
         if action == "settings.save":
             previous_url = self.preferences.data["update_url"]
             data = self.preferences.save(args.get("settings"))
@@ -794,13 +809,17 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
                     return
             mapping = {"toggle": "panel.toggle", "context": "panel.context", "open": "panel.open", "hide": "panel.hide", "dismiss": "panel.dismiss", "hold_begin": "panel.hold_begin", "hold_release": "panel.hold_release", "hold_cancel": "panel.hold_cancel", "control": "control.open", "quit": "service.quit"}
             mapping['hold_pin'] = 'panel.hold_pin'
+            mapping['menu.settings.save'] = 'menu.settings.save'
             mapping['tools.search']='menu.tools.open'
             mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview')})
             mapping['document.new'] = 'document.new'
-            if action=='gradient.open':
+            if action in ('gradient.offer','gradient.open'):
                 from .gradient_editor import GradientEditor
                 if not getattr(app,'gradient_editor',None):app.gradient_editor=GradientEditor(app)
-                await app.gradient_editor.open(event_args)
+                if action=='gradient.offer':
+                    await app.gradient_editor.offer(event_args['menu_epoch'])
+                else:
+                    await app.gradient_editor.open(event_args)
                 return
             mapping.update({name:name for name in ('mask.preview.update','mask.preview.commit')})
             mapping.update({name:name for name in ('layer.frame.commit','layer.frame.restore')})
@@ -809,12 +828,16 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
                 action='document.recent'
                 mapping[action]=action
             await app.dispatch(mapping.get(action, "action.execute"), event_args if action in mapping else {**event_args,"name": action})
+            if action=='menu.settings.save':
+                app.desktop._send_menu_event({'type':'menu.settings.result','epoch':event_args['menu_epoch'],'ok':True})
             if action=='hold_begin' and app.desktop and app.desktop.hold_active and app.desktop.visible:
                 try:warm_gradient(app.desktop, app.desktop.target)
                 except Exception:logging.exception('Gradient standby initialization failed')
         except Exception as exc:
             logging.exception("Desktop action failed")
-            if action=='gradient.open' and app.desktop:
+            if action=='menu.settings.save' and app.desktop:
+                app.desktop._send_menu_event({'type':'menu.settings.result','epoch':event_args.get('menu_epoch'),'ok':False,'message':str(exc)})
+            if action in ('gradient.offer','gradient.open') and app.desktop:
                 app.desktop._send_menu_event({'type':'gradient.open.failed','epoch':event_args.get('menu_epoch'),'message':str(exc)})
             if action in ('mask.preview.update','mask.preview.commit') and not getattr(app,'_mask_preview',None) and app.desktop:
                 app.desktop.event({'type':'mask.preview','active':False})

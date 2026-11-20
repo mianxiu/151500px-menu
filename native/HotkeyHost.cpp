@@ -549,11 +549,7 @@ static bool gradientNavigationPointer(HWND pointed,const Config& settings,int bu
     if(!canvas || !IsWindowVisible(image) || !gradientWorkspace(image,settings))return false;
     const bool onImage=pointed==image || IsChild(image,pointed);
     const bool onScrollbar=GradientNavigation::scrollbar(pointed,canvas,image);
-    const bool zoomHeld=(GetAsyncKeyState('Z')&0x8000) && GradientNavigation::key('Z',
-        (GetAsyncKeyState(VK_CONTROL)&0x8000)!=0,(GetAsyncKeyState(VK_MENU)&0x8000)!=0,
-        ((GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000)!=0);
-    const bool navigating=(GetAsyncKeyState(VK_SPACE)&0x8000) || zoomHeld;
-    return GradientNavigation::pointer(button,onImage,onScrollbar,navigating);
+    return GradientNavigation::pointer(button,onImage,onScrollbar,GradientNavigation::held());
 }
 static bool taskbarWindow(HWND hwnd) {
     if (!hwnd) return false;
@@ -957,7 +953,7 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
             if(message==WM_LBUTTONDOWN && gradientNavigationLocked(config) &&
                 gradientPointerScope(foreground,nullptr,config,true) &&
                 GradientNavigation::canvasInput(pointed,editor) &&
-                !((GetAsyncKeyState(VK_SPACE)|GetAsyncKeyState('Z'))&0x8000) &&
+                !GradientNavigation::held() &&
                 GradientNavigation::postCanvasButton(pointed,WM_LBUTTONDOWN,mouse.pt)){
                 gradientCanvasClick=pointed;
                 return 1;
@@ -1928,6 +1924,7 @@ int main(int argc,char** argv) {
             DestroyWindow(dialog);
             check(GradientNavigation::key(VK_SPACE,true,false,false) &&
                 GradientNavigation::key('Z',false,false,false) &&
+                GradientNavigation::key('R',false,false,false) && !GradientNavigation::key('R',true,false,false) &&
                 GradientNavigation::key(VK_ESCAPE,false,false,false) &&
                 !GradientNavigation::key('Z',true,false,false) &&
                 !GradientNavigation::key('B',false,false,false));

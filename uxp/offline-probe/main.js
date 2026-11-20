@@ -2,7 +2,7 @@
 const {app} = require('photoshop');
 const uxp = require('uxp');
 const token = require('./probe-config.js');
-const probeVersion = '0.3.110';
+const probeVersion = '0.3.111';
 const session = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
 // Independent read-only mailbox; never enters modal execution or blocks commands.
 const inputTool=(()=>{
@@ -250,7 +250,7 @@ async function refreshMenuContext(folder,now) {
   observation.menu={selection_ms:readDone-started,completed_at_ms:readDone,phase:basic.menu_phase};
   if(needsShape) {
     let shape={available:false},error='';
-    try {await checkpoint(true);shape=await labels.observeShape(context,true,null,checkpoint);await checkpoint(true);}
+    try {await checkpoint(true);shape=await labels.observeShape(context,true,null,checkpoint,true);await checkpoint(true);}
     catch(e){if(e.menuReadInterrupted)return true;error=String(e).slice(0,200);}
     let nativeLatest=null;
     if(nativeSelection){try{nativeLatest=await labels.selectionContextFresh(checkpoint);}catch(e){if(e.menuReadInterrupted)return true;throw e;}}

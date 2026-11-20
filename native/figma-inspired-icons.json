@@ -1109,24 +1109,23 @@
       "index": 34,
       "operation": "shape.screenEyedropper",
       "name": "屏幕取色",
-      "adaptation": "Project-authored eyedropper; nine-unit grid and one-unit strokes. Samples displayed RGB, not document color-managed source values.",
+      "adaptation": "Project-authored diagonal glass pipette with a tapered sampling tip, shoulder and dark rubber bulb on the nine-unit grid.",
       "shapes": [
         {
           "kind": "path",
-          "data": "M 1 6 L 5.5 1.5 L 7.5 3.5 L 3 8 L 1 8 Z",
+          "data": "M 0.75 8.25 L 1.5 6.25 L 4.9 2.85 L 6.15 4.1 L 2.75 7.5 Z",
           "tone": 0.67431195
         },
         {
           "kind": "path",
-          "data": "M 1 6 L 5.5 1.5 L 7.5 3.5 L 3 8 L 1 8 L 1 6",
+          "data": "M 0.75 8.25 L 1.5 6.25 L 4.9 2.85 L 6.15 4.1 L 2.75 7.5 Z",
           "tone": 0,
           "stroke": 1
         },
         {
           "kind": "path",
-          "data": "M 4.5 1 L 8 4 M 6 2.5 L 8 0.5",
-          "tone": 0,
-          "stroke": 1
+          "data": "M 3.8 2.7 L 4.5 2 L 5.1 2.6 L 6.8 0.8 L 7.5 0.55 L 8.1 0.9 L 8.45 1.5 L 8.2 2.2 L 6.4 3.9 L 7 4.5 L 6.3 5.2 Z",
+          "tone": 0
         }
       ]
     },
@@ -1387,7 +1386,13 @@
     {"index": 43, "operation": "tool.ellipse", "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill.", "shapes": [{"kind": "path", "tone": 0, "data": "M 8.7500 4.5000 C 8.7500 6.5435 6.8472 8.2000 4.5000 8.2000 C 2.1528 8.2000 0.2500 6.5435 0.2500 4.5000 C 0.2500 2.4565 2.1528 0.8000 4.5000 0.8000 C 6.8472 0.8000 8.7500 2.4565 8.7500 4.5000 Z"}, {"kind": "path", "tone": 0.67431195, "data": "M 7.7500 4.5000 C 7.7500 5.9912 6.2949 7.2000 4.5000 7.2000 C 2.7051 7.2000 1.2500 5.9912 1.2500 4.5000 C 1.2500 3.0088 2.7051 1.8000 4.5000 1.8000 C 6.2949 1.8000 7.7500 3.0088 7.7500 4.5000 Z"}]},
     {"index": 44, "operation": "tool.triangle", "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill.", "shapes": [{"kind": "path", "tone": 0, "data": "M 4.5 .7 L 8.9 8.4 L .1 8.4 Z"}, {"kind": "path", "tone": 0.67431195, "data": "M 4.5 2.72 L 7.18 7.4 L 1.82 7.4 Z"}]},
     {"index": 45, "operation": "tool.polygon", "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with a continuous one-unit border and secondary fill.", "shapes": [{"kind": "path", "tone": 0, "data": "M 2.34 .9 L 6.66 .9 L 8.82 4.5 L 6.66 8.1 L 2.34 8.1 L .18 4.5 Z"}, {"kind": "path", "tone": 0.67431195, "data": "M 2.91 1.9 L 6.09 1.9 L 7.65 4.5 L 6.09 7.1 L 2.91 7.1 L 1.35 4.5 Z"}]},
-    {"index": 46, "operation": "tool.line", "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with matching one-unit diagonal stroke.", "shapes": [{"kind": "path", "tone": 0, "stroke": 1, "data": "M .55 8.45 L 8.45 .55"}]}
+    {"index": 46, "operation": "tool.line", "adaptation": "Photoshop toolbar proportions from the supplied reference, redrawn on the project's nine-unit grid with matching one-unit diagonal stroke.", "shapes": [{"kind": "path", "tone": 0, "stroke": 1, "data": "M .55 8.45 L 8.45 .55"}]},
+    {"index": 47, "operation": "menu.settings", "adaptation": "Two offset slider handles on the shared nine-unit grid.", "shapes": [
+      {"kind": "rect", "tone": 0, "bounds": [0, 2, 9, 1]},
+      {"kind": "rect", "tone": 0.67431195, "bounds": [2, 0.5, 3, 4], "border": 1},
+      {"kind": "rect", "tone": 0, "bounds": [0, 6, 9, 1]},
+      {"kind": "rect", "tone": 0.67431195, "bounds": [5, 4.5, 3, 4], "border": 1}
+    ]}
   ],
   "harmony_markers": {
     "authorship": "Project-authored semantic color handles, adapted to the existing nine-unit Figma family; not original export components.",

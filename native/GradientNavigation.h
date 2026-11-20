@@ -55,8 +55,14 @@ inline bool key(int value,bool ctrl,bool alt,bool windows) {
     if(value==VK_ESCAPE || value==VK_SPACE || value==VK_CONTROL || value==VK_SHIFT ||
         value==VK_MENU || value==VK_LWIN || value==VK_RWIN)return true;
     if((alt && (value==VK_TAB || value==VK_F4)) || (ctrl && value==VK_ESCAPE))return true;
-    if(value=='Z' && !ctrl && !alt)return true;
+    if((value=='Z' || value=='R') && !ctrl && !alt)return true;
     return value!=VK_DELETE && MapVirtualKeyW(value,MAPVK_VK_TO_CHAR)==0;
+}
+
+inline bool held() {
+    return (GetAsyncKeyState(VK_SPACE)&0x8000) ||
+        (((GetAsyncKeyState('Z')|GetAsyncKeyState('R'))&0x8000) &&
+         !((GetAsyncKeyState(VK_CONTROL)|GetAsyncKeyState(VK_MENU)|GetAsyncKeyState(VK_LWIN)|GetAsyncKeyState(VK_RWIN))&0x8000));
 }
 
 inline bool pointer(int button,bool image,bool scrollbar,bool navigating) {

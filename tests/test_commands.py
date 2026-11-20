@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from backend.commands import COMMANDS, REGISTRY, QUICK_ACTIONS, CAPS_ACTIONS, SHAPE_TOOLS, command_contracts, validate_command
 from backend.main import Application
@@ -7,6 +7,28 @@ from backend.photoshop_bridge import PhotoshopBridge
 
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_caps_settings_merge_only_exposed_fields_for_current_menu(self):
+        app = Mock()
+        app.desktop.menu_epoch = 17
+        app.desktop.visible = True
+        app.preferences.data = {"right_click_hide": False, "shortcuts": {"toggle": "capslock", "hide": "esc"}}
+        app.dispatch = AsyncMock()
+        args = {"menu_epoch": 17, "params": {"right_click_hide": True}}
+        await Application.dispatch(app, "menu.settings.save", args)
+        app.dispatch.assert_awaited_once_with("settings.save", {"settings": {
+            "right_click_hide": True, "shortcuts": {"toggle": "capslock", "hide": "esc"}}})
+        app.dispatch.reset_mock()
+        await Application.dispatch(app, "menu.settings.save", {**args, "params": {"shortcuts": {"toggle": "tab"}}})
+        app.dispatch.assert_awaited_once_with("settings.save", {"settings": {
+            "right_click_hide": False, "shortcuts": {"toggle": "tab", "hide": "esc"}}})
+        with self.assertRaises(ValueError):
+            await Application.dispatch(app, "menu.settings.save", {**args, "params": {"open_control_on_start": True}})
+        with self.assertRaises(ValueError):
+            await Application.dispatch(app, "menu.settings.save", {**args, "params": {"update_url": ""}})
+        with self.assertRaises(RuntimeError):
+            await Application.dispatch(app, "menu.settings.save", {**args, "menu_epoch": 16})
+        app.dispatch.assert_awaited_once()
+
     def test_contracts_cover_every_existing_command(self):
         self.assertEqual(set(REGISTRY), set(COMMANDS)|{'document.recent'})
         self.assertEqual(len(REGISTRY), len(COMMANDS)+1)
