@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -268,7 +269,11 @@ class UxpTransport:
                                         **({'engine':'backend-preflight','not_started':True} if json.loads(native_value).get('execution_exit')=={'engine':'backend-preflight','not_started':True,'exited':True} else {'engine':'standalone-extendscript'})})
                                     finally:
                                         if preview is not None:getattr(preview,'execution_finished',preview.execution_check)()
-                            except Exception:native_error_at=time.monotonic()
+                                else:
+                                    native_error_at=time.monotonic()
+                            except Exception as exc:
+                                logging.warning('Legacy Photoshop call or exit receipt failed for %s: %s',identity,type(exc).__name__)
+                                native_error_at=time.monotonic()
                             continue  # Read the original UXP terminal BEFORE checking host state.
                     if native_error_at is not None and time.monotonic()-native_error_at>5:
                         raise UxpResultUnknown('旧版原生预览调用结果待核对；不重发')
@@ -329,6 +334,19 @@ class UxpBridge(PhotoshopBridge):
             self.busy=True
             if self.transport.pending.value:self._active_task_id=self.transport.pending.value['task_id']
 
+    def can_resume_reconciliation(self):
+        pending = self.transport.pending
+        worker = getattr(self, '_operation_future', None)
+        if (not pending.value or pending.error or self.tasks.persistence_error or
+                getattr(self, '_uxp_worker_active', False) or worker and not worker.done()):
+            return False
+        try:
+            task = self.tasks.get(pending.value['task_id'])
+            return (task['state'] == 'result-unknown' and task.get('channel') == 'uxp-local-files' and
+                    json.loads(pending.path.read_text('utf-8')) == pending.value)
+        except (KeyError, OSError, ValueError):
+            return False
+
     async def reconcile_result(self):
         """Read original receipt only; never publish a request or query PS state."""
         async with self._reconcile_lock:
@@ -338,6 +356,8 @@ class UxpBridge(PhotoshopBridge):
             task_id=pending.value['task_id']
             try:task=self.tasks.get(task_id)
             except ValueError:return {**pending.snapshot(),'message':'原任务历史记录缺失，保留待核对记录并阻止修改'}
+            if task.get('channel') != 'uxp-local-files':
+                return {**pending.snapshot(),'message':'待核对记录与原任务通道不符，已保留记录并暂停修改'}
             if task['state'] in ('succeeded','failed'):
                 # An older modal boundary could strip the rollback-unknown flag
                 # and incorrectly classify this receipt as a known failure.

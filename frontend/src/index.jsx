@@ -35,6 +35,7 @@ function App() {
   const [uxpPreview,setUxpPreview]=createSignal(null);
   const [photoshopExe,setPhotoshopExe]=createSignal('');
   const [updateRestart,setUpdateRestart]=createSignal(false);
+  const [restartingPid,setRestartingPid]=createSignal(null);
   const appUpdate=()=>state().application_update || {};
   const updateBusy=()=>['checking','downloading','installing'].includes(appUpdate().phase);
   createEffect(()=>{document.documentElement.lang=state().language || 'zh-CN';document.title='151500px-menu — '+t('后台管理');});
@@ -42,6 +43,10 @@ function App() {
   const receivedDiagnostic=value=>({...value,received_at:performance.now()});
   function accept(data) {
     setState({...data,diagnostics:receivedDiagnostic(data.diagnostics)});
+    if(restartingPid() && data.service?.pid && data.service.pid!==restartingPid()){
+      setRestartingPid(null);
+      setNotice({ok:true,message:t('后台已重新连接')});
+    }
     if (!dirty()) setForm(structuredClone(data.settings));
   }
   const client = new Client(`ws://${location.host}/websocket`, status => {
@@ -66,6 +71,11 @@ function App() {
   }
   const disabled = ()=>working() || connection()!=='connected';
   const perform = (action,args={})=>call(action,args).catch(()=>{});
+  async function restartService(){
+    setRestartingPid(state().service?.pid);
+    try{await call('service.restart');}
+    catch{setRestartingPid(null);}
+  }
   async function installApplication(){
     try{await call('application.update.install');setUpdateRestart(true);}
     catch{}
@@ -180,7 +190,8 @@ function App() {
   function Overview(){return <div class="panel-scroll">
     <section class="connection-card">
     <div class="section-heading"><div class="connection-title"><h2>{t("Photoshop 连接")}</h2><span classList={{'status-pill':true,good:state().photoshop.connected && state().photoshop.uxp_ready && !state().photoshop.busy,warn:state().photoshop.busy}}>{!state().photoshop.connected?t("未连接"):state().photoshop.busy?t("操作进行中"):state().photoshop.uxp_ready?t("已就绪"):t("等待插件加载")}</span></div>
-    <div class="buttons"><Show when={!state().photoshop.connected || state().photoshop_start?.active}><button class="primary" disabled={managedBusy()} onClick={()=>perform('photoshop.start')}>{state().photoshop_start?.active?t("正在启动…"):t("启动 Photoshop")}</button></Show><button disabled={disabled()} onClick={()=>perform('status',{refresh:true})}>{t("刷新连接状态")}</button></div></div>
+    <div class="buttons"><Show when={!state().photoshop.connected || state().photoshop_start?.active}><button class="primary" disabled={managedBusy()} onClick={()=>perform('photoshop.start')}>{state().photoshop_start?.active?t("正在启动…"):t("启动 Photoshop")}</button></Show><button disabled={disabled()} onClick={()=>perform('status',{refresh:true})}>{t("刷新连接状态")}</button><button disabled={disabled() || dirty() || restartingPid()} onClick={restartService}>{t(restartingPid()?'后台正在重启':'重启后台')}</button></div></div>
+    <Show when={state().photoshop.uxp_recovery?.active && state().tasks?.items?.some(task=>task.id===state().photoshop.uxp_recovery.task_id && task.state==='result-unknown')}><p role="status">{t('正在等待 Photoshop 确认原任务。重启后会继续核对，期间暂停新的修改。')}</p></Show>
     <Show when={state().photoshop.connected} fallback={<p>{t(state().photoshop.message) || t("检查中…")}</p>}>
       <div class="document-line"><strong class="document-name" title={state().photoshop.document}>{state().photoshop.document || t("Photoshop 首页")}</strong><span class="caption">{t("唤出菜单")} <kbd>{state().settings.shortcuts?.toggle || 'CapsLock'}</kbd></span></div>
     </Show>

@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import logging.handlers
 from urllib.parse import urlparse
@@ -216,6 +217,7 @@ class Application(web.Application):
         self.version_health=VersionHealth(self.runtime)
         self.updating = False
         self.closing = False
+        self.restart_requested = False
         self.headless = self.no_desktop = False
         super().__init__([
             (r"/websocket", WSHandler), (r"/api/health", HealthHandler),
@@ -282,14 +284,14 @@ class Application(web.Application):
         if stability and (stability.report.get('original_restore_pending') or stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown')):
             raise RuntimeError('颜色验收的原稿恢复或正常退出仍待核对；未接受新的PS操作')
 
-    def require_update_idle(self, operation='安装应用更新'):
+    def require_update_idle(self, operation='安装应用更新', *, resume_recovery=False):
         stability=getattr(self,'stability',None)
         if stability and (stability.report.get('original_restore_pending') or stability.report.get('normal_quit',{}).get('phase') in ('submitted','unknown')):
             raise RuntimeError(f'请先核对原稿恢复或正常退出，再{operation}')
         pending=getattr(getattr(self.bridge,'transport',None),'pending',None)
-        if (self.updating or self.operation_lock.locked() or self.bridge.busy or
-            getattr(self.bridge,'_queue',[]) or self.photoshop_launcher.active or
-            pending and (pending.value or pending.error)):
+        if (self.updating or self.operation_lock.locked() or getattr(self.bridge,'_queue',[]) or
+            self.photoshop_launcher.active or
+            (self.bridge.busy or pending and (pending.value or pending.error)) and not resume_recovery):
             raise RuntimeError(f'请先完成当前操作或核对未知结果，再{operation}')
         if self.desktop and self.desktop.visible:raise RuntimeError(f'请先收起操作菜单，再{operation}')
 
@@ -736,6 +738,19 @@ class Application(web.Application):
                 self.bridge.replace_scripts(scripts)
             await self.broadcast({"type": "status", "data": await self.dispatch("status", {})})
             return {"message": "脚本包已切换并生效", "plugin": result}
+        if action == "service.restart":
+            editor = getattr(self, 'gradient_editor', None)
+            if editor and (editor.hwnd or editor.preview or editor.task and not editor.task.done()):
+                raise RuntimeError('请先退出渐变编辑并等待预览结束，再重启后台')
+            if self.stability.active or self.stability.report.get('native_request', {}).get('phase') in ('submitted','unknown'):
+                raise RuntimeError('请先完成稳定性测试或核对原生请求，再重启后台')
+            if self.application_updates.worker and not self.application_updates.worker.done():
+                raise RuntimeError('请先等待应用更新检查或下载完成')
+            resume = isinstance(self.bridge, UxpBridge) and self.bridge.can_resume_reconciliation()
+            self.require_update_idle('重启后台', resume_recovery=resume)
+            self.restart_requested = self.closing = True
+            asyncio.get_running_loop().call_later(.2, self.stop_event.set)
+            return {'message': '后台正在重启，原任务将继续核对' if resume else '后台正在重启'}
         if action == "service.quit":
             if self.operation_lock.locked() or self.bridge.busy:raise RuntimeError("请先关闭图层样式窗口或等待操作结束，再退出后台")
             # Let the response reach the browser before closing sockets.
@@ -777,7 +792,7 @@ async def reuse(port, headless):
     print(f"已复用运行中的 151500px-menu v{running_version}：http://127.0.0.1:{port}")
 
 
-async def run(port=15151, headless=False, no_desktop=False, runtime=None):
+async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_control=False):
     if not (ROOT / "frontend/dist/index.html").is_file():
         raise RuntimeError("缺少前端构建，请在 frontend 中运行 npm install 和 npm run build")
     app = Application(port, runtime=runtime)
@@ -894,7 +909,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
             if app.tray.error:
                 logging.error("Tray: %s", app.tray.error)
             uxp_install=await asyncio.to_thread(app.uxp.status)
-            if not headless and (app.preferences.data["open_control_on_start"] or
+            if open_control or not headless and (app.preferences.data["open_control_on_start"] or
                                  isinstance(app.bridge,UxpBridge) and (not uxp_install['installed'] or uxp_install['error'])):
                 await app.dispatch("control.open", {})
         await app.sync_uxp_auto(force=True)
@@ -905,6 +920,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: loop.call_soon_threadsafe(app.stop_event.set))
         await app.stop_event.wait()
+        reopen_control = bool(app.control.process and app.control.process.poll() is None)
     finally:
         app.closing=True
         await app.diagnostics.close()
@@ -925,6 +941,8 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None):
         await asyncio.to_thread(app.control.close)
         await app.photoshop_launcher.close()
         await app.bridge.close()
+    if app.restart_requested:
+        return {'open_control': reopen_control}
 
 
 def input_service_helper(argv):
@@ -943,6 +961,7 @@ def cli():
     parser = argparse.ArgumentParser(description="151500px-menu 本地应用")
     parser.add_argument("--port", type=int, default=15151)
     parser.add_argument("--headless", action="store_true", help="启动后台且不自动打开管理窗口")
+    parser.add_argument("--open-control", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-desktop", action="store_true", help="禁用窗口、快捷键和托盘")
     parser.add_argument("--data-dir", type=Path, help="自定义设置、插件和日志存储目录")
     args = parser.parse_args()
@@ -953,7 +972,18 @@ def cli():
     handler = logging.handlers.RotatingFileHandler(runtime / "service.log", maxBytes=1024*1024, backupCount=3, encoding="utf-8")
     logging.basicConfig(handlers=[handler], level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
-        asyncio.run(run(args.port, args.headless, args.no_desktop, runtime))
+        restart = asyncio.run(run(args.port, args.headless, args.no_desktop, runtime, args.open_control))
+        if restart:
+            command = [sys.executable]
+            if not getattr(sys, 'frozen', False):
+                command.append(str(ROOT / 'main.py'))
+            command.extend(['--port', str(args.port), '--data-dir', str(runtime)])
+            if args.headless:command.append('--headless')
+            if args.no_desktop:command.append('--no-desktop')
+            if restart['open_control']:command.append('--open-control')
+            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             env={**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT':'1'},
+                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except KeyboardInterrupt:
         pass
     except Exception as exc:

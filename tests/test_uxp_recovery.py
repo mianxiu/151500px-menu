@@ -103,6 +103,23 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         (self.folder/'probe-last.json').write_text('{')
         self.assertFalse(pending.snapshot()['session_current'])
 
+    async def test_restart_requires_durable_unknown_and_no_live_worker(self):
+        await self.unknown()
+        pending = self.bridge.transport.pending
+        original = pending.path.read_bytes()
+        self.assertTrue(self.bridge.can_resume_reconciliation())
+        self.bridge._uxp_worker_active = True
+        self.assertFalse(self.bridge.can_resume_reconciliation())
+        self.bridge._uxp_worker_active = False
+        worker = asyncio.get_running_loop().create_future()
+        self.bridge._operation_future = worker
+        self.assertFalse(self.bridge.can_resume_reconciliation())
+        worker.set_result(None)
+        self.assertTrue(self.bridge.can_resume_reconciliation())
+        self.assertEqual(pending.path.read_bytes(), original)
+        pending.path.write_bytes(b'{}')
+        self.assertFalse(self.bridge.can_resume_reconciliation())
+
     def receipt(self, **changes):
         pending = self.bridge.transport.pending.value
         data = {key:pending[key] for key in ('id','session','operation')}
