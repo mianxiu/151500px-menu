@@ -2,7 +2,7 @@
 const {app} = require('photoshop');
 const uxp = require('uxp');
 const token = require('./probe-config.js');
-const probeVersion = '0.3.111';
+const probeVersion = '0.3.112';
 const session = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
 // Independent read-only mailbox; never enters modal execution or blocks commands.
 const inputTool=(()=>{

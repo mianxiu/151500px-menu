@@ -3,7 +3,8 @@ const source=fs.readFileSync('uxp/offline-probe/labels.js','utf8').slice(fs.read
 function fixture(){
  const state={zoom:1,x:200,y:100,edge:false,extras:true,writes:0,fail:false,badMenu:false,failToggle:false,captures:0,modal:false};
  const target={session:'s',document_id:9,active_layer_id:11,layer_ids:[11]};const doc={width:900,height:650,activeLayers:[{id:11,visible:true,parent:null,boundsNoEffects:{left:400,top:200,right:500,bottom:250}}]};
- const ps={app:{activeDocument:doc,currentTool:{id:'moveTool'}},core:{executeAsModal:async fn=>{assert.equal(state.modal,false);state.modal=true;try{return await fn({isCancelled:false});}finally{state.modal=false;}},performMenuCommand:async({commandID})=>{state.writes++;if(state.failToggle)return false;if(commandID===1&&!state.extras)state.extras=true;else state[commandID===1?'edge':'extras']=!state[commandID===1?'edge':'extras'];return true;}},action:{batchPlay:async commands=>commands.map(c=>{
+ const ps={app:{activeDocument:doc,currentTool:{id:'moveTool'}},core:{redrawDocument:async()=>{},executeAsModal:async fn=>{assert.equal(state.modal,false);state.modal=true;try{return await fn({isCancelled:false,hostControl:state.history});}finally{state.modal=false;}},performMenuCommand:async({commandID})=>{state.writes++;if(state.failToggle)return false;if(commandID===1&&!state.extras)state.extras=true;else state[commandID===1?'edge':'extras']=!state[commandID===1?'edge':'extras'];return true;}},action:{batchPlay:async commands=>commands.map(c=>{
+  if(c._obj==='show'||c._obj==='hide'){state.members.find(l=>l.id===c._target[0]._id).visible=c._obj==='show';return {};}
   if(c._obj==='uiInfo')return {result:{commandID:c.commandID,checked:state[c.commandID===1?'edge':'extras']}};
   if(c._obj==='get')switch(c._target[0]._property){
    case 'menuBarInfo':return {menuBarInfo:{submenu:[{name:'Layer Edges',command:1,checked:false},{name:state.badMenu?'Unknown':'Extras',command:2,checked:false}]}};
@@ -52,5 +53,35 @@ function fixture(){
  f=fixture();let read=0;await f.tool.frame(f.request(),{read:async()=>++read===1?{id:'f',session:'s',token:'t',seq:1,phase:'preview',lease_until_ms:0}:null});assert.equal(f.state.writes,0);
  f=fixture();await f.tool.frame(f.request(),{read:async()=>({id:'f',session:'s',token:'t',seq:1,phase:'commit',lease_until_ms:Date.now()+4000}),applied:async()=>{f.state.extras=false;}});assert.equal(f.state.extras,false,'preserve a manual Extras off when F did not enable it');
  f=fixture();await assert.rejects(f.tool.frame(f.request(),{read:async()=>({id:'foreign',session:'s',token:'t',seq:1,phase:'commit',lease_until_ms:Date.now()+4000})}),/mailbox/);assert.equal(f.state.writes,0);
- console.log('Layer frame: native bounds, union, zoom cap, idempotent extras, target/hidden/empty/expiry guards and view rollback passed');
+ for(const failure of ['','read','restore']){
+  const f=fixture(),child=f.doc.activeLayers[0];
+  const group={id:20,visible:false,layers:[child,{id:21,visible:true}]};
+  const kept={id:30,visible:true,layers:[{id:31,visible:false}]};
+  child.parent=group;child.visible=false;
+  f.doc.layers=[group,kept,{id:40,visible:true},{id:41,visible:false}];
+  f.doc.activeLayers.push(kept);f.target.layer_ids.push(kept.id);kept.boundsNoEffects=child.boundsNoEffects;
+  const members=f.state.members=[...f.doc.layers,...group.layers,...kept.layers];
+  const before=members.map(l=>l.visible);let shown=false,restores=0;
+  f.state.history={suspendHistory:async()=>17,resumeHistory:async(id,commit)=>{
+   assert.equal(id,17);assert.equal(commit,false);restores++;
+   if(failure==='restore')throw Error('restore failed');
+   members.forEach((l,i)=>{l.visible=before[i];});
+  }};
+  const run=f.tool.frame({...f.request(),frame_solo:true},{
+   applied:async()=>{shown=true;assert.equal(f.state.modal,true);
+    assert.deepEqual(members.map(l=>l.visible),[true,true,false,false,true,false,false]);},
+   read:async()=>{if(shown && failure==='read')throw Error('mailbox failed');
+    return {id:'f',session:'s',token:'t',seq:1,phase:shown?'commit':'preview',lease_until_ms:Date.now()+4000};}
+  });
+  if(failure)await assert.rejects(run,e=>failure==='restore'?e.resultUnknown===true:e.message==='mailbox failed');
+  else assert.equal((await run).view_restored,true);
+  assert.equal(shown,true);assert.equal(restores,1);assert.equal(f.state.zoom,1);
+  if(failure!=='restore')assert.deepEqual(members.map(l=>l.visible),before);
+ }
+ f=fixture();
+ const tap=await f.tool.frame({...f.request(),frame_solo:true},{read:async()=>({
+  id:'f',session:'s',token:'t',seq:2,phase:'commit',lease_until_ms:Date.now()+4000
+ })});
+ assert.equal(tap.cancelled,true);assert.equal(f.state.writes,0);
+ console.log('Layer frame and Shift+F visibility, nested groups, release and rollback passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

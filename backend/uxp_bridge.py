@@ -163,6 +163,7 @@ class UxpTransport:
                 if payload.get('command')=='layer.thumbnail':
                     raise RuntimeError('非静默缩略图已停用，未提交操作')
                 if payload.get('command')=='layer.frame' and version(heartbeat.get('probe_version'))<(0,3,99):raise RuntimeError('F聚焦需要正常重启PS加载UXP0.3.99')
+                if payload.get('frame_solo') and version(heartbeat.get('probe_version'))<(0,3,112):raise RuntimeError('Shift+F 临时独显需要加载 UXP 0.3.112 或更高版本')
                 if payload.get('command') in SHAPE_TOOLS and version(heartbeat.get('probe_version'))<(0,3,107):
                     raise RuntimeError('形状工具需要更新并重启PS加载UXP0.3.107')
                 if payload.get('command')=='layer.focus' and (version(heartbeat.get('probe_version'))<(0,3,57) or payload.get('target',{}).get('session')!=heartbeat.get('session')):
@@ -579,7 +580,8 @@ class UxpBridge(PhotoshopBridge):
         def write(action):
             self.transport.task_id=self._active_task_id;self._uxp_worker_active=True
             try:
-                response=self.transport.call('set_label',command='layer.frame',target=self._captured_target,frame_preview=True,preview=preview)
+                response=self.transport.call('set_label',command='layer.frame',target=self._captured_target,frame_preview=True,preview=preview,
+                                             **({'frame_solo':True} if preview.solo else {}))
                 value=validate(response.get('layer_context'),self._captured_app)
                 self.layer_context=value if fresh(value) else unavailable()
                 return json.dumps(response['result'])

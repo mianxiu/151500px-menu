@@ -481,7 +481,7 @@ class Desktop:
                         with self.frame_grant_lock:
                             self.frame_grants[event.get('frame_id')]=dict(event.get('input_guard') or {})
                             while len(self.frame_grants)>8:self.frame_grants.pop(next(iter(self.frame_grants)))
-                    args={key:event[key] for key in ('action','cursor','input_guard','frame_id') if key in event}
+                    args={key:event[key] for key in ('action','cursor','input_guard','frame_id','frame_solo') if key in event}
                     self.notify(args if len(args)>1 else event['action'])
                 elif event.get('type') == 'trigger.trace':
                     from collections import deque

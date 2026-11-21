@@ -323,6 +323,17 @@ int main(int argc,char** argv) {
             const auto id=framePressId;
             check(frameKeyboard(HC_ACTION,'F',0x40000001)==1 && framePressId==id,"F repeat submitted twice");
             check(frameKeyboard(HC_ACTION,'F',0xc0000001)==1 && !frameKeyOwned,"F up not drained");
+            BYTE originalKeys[256]{},shiftKeys[256]{};
+            check(GetKeyboardState(originalKeys)!=0,"keyboard state unavailable");
+            std::copy(originalKeys,originalKeys+256,shiftKeys);
+            shiftKeys[VK_SHIFT]=shiftKeys[VK_LSHIFT]=0x80;
+            check(SetKeyboardState(shiftKeys)!=0,"fixture Shift unavailable");
+            check(!frameKeyboard(HC_ACTION,'F',1),"Shift+F taken with an older host");
+            SetPropW(host,frameSoloProp,reinterpret_cast<HANDLE>(1));
+            check(frameKeyboard(HC_ACTION,'F',1) && frameKeyOwned,"Shift+F not owned");
+            check(frameKeyboard(HC_ACTION,'F',0xc0000001) && !frameKeyOwned,"Shift+F not released");
+            SetFocus(edit);check(!frameKeyboard(HC_ACTION,'F',1),"Shift+F taken in edit");
+            check(SetKeyboardState(originalKeys)!=0,"fixture keyboard restore failed");
             SetFocus(edit);check(!frameNonInput() && !frameKeyboard(HC_ACTION,'F',1),"F input was swallowed");SetFocus(policyCanvas);
             compositionActive=true;check(!frameNonInput(),"composition eligible for F");compositionActive=false;
             WNDCLASSW paletteClass{};paletteClass.lpfnWndProc=DefWindowProcW;paletteClass.hInstance=module;paletteClass.lpszClassName=L"OWL.Palette";RegisterClassW(&paletteClass);

@@ -592,7 +592,7 @@ class Application(web.Application):
             if name=='layer.frame' and 'frame_id' in args:
                 from .layer_frame import FramePreview
                 if type(args['frame_id']) is not int or args['frame_id']<=0:raise ValueError('无效的F手势')
-                frame_preview=self._frame_preview=FramePreview(args['frame_id'])
+                frame_preview=self._frame_preview=FramePreview(args['frame_id'],solo=args.get('frame_solo') is True)
                 frame_publisher=asyncio.create_task(frame_preview.pump(self.desktop,frame_stopped))
             try:
                 if gradient:
@@ -818,7 +818,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_c
         try:
             event_args = {}
             if isinstance(action, dict):
-                event_args = {key:action[key] for key in ('menu_epoch','cursor','params','after_action','return_to_menu','input_guard','frame_id') if key in action}
+                event_args = {key:action[key] for key in ('menu_epoch','cursor','params','after_action','return_to_menu','input_guard','frame_id','frame_solo') if key in action}
                 action = action['action']
                 if 'menu_epoch' in event_args and (not app.desktop or event_args['menu_epoch'] != app.desktop.menu_epoch):
                     return

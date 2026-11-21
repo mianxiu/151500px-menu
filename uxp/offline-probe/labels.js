@@ -2841,6 +2841,8 @@ function createLayerView(ps,session,capture) {
     return {matrix,viewport,document:dimensions,layer:bounds.every(Number.isFinite)?bounds:null,tool};
   }
   async function frame(request,io) {
+    const solo=request.frame_solo===true;
+    if(solo && !io)throw Error('临时独显需要按键释放通道');
     let finishPreview=null,rollback=null;
     const prepared=await ps.core.executeAsModal(async context=>{
       const expected=request.target;
@@ -2860,7 +2862,7 @@ function createLayerView(ps,session,capture) {
         const packet=await io.read(),now=Date.now();
         if(packet){
           if(packet.id!==request.id||packet.session!==request.session||packet.token!==request.token||!Number.isSafeInteger(packet.seq)||packet.seq<seq||!Number.isFinite(packet.lease_until_ms)||packet.lease_until_ms>now+5000||!['preview','commit','cancel'].includes(packet.phase))throw Error('Invalid F gesture mailbox');
-          seq=packet.seq;lease=packet.lease_until_ms;phase=packet.phase;
+          seq=packet.seq;lease=packet.lease_until_ms;phase=solo && packet.phase==='commit'?'cancel':packet.phase;
         }
         if(context.isCancelled||now>lease)phase='cancel';
       }
@@ -2868,70 +2870,116 @@ function createLayerView(ps,session,capture) {
       if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
       const doc=ps.app.activeDocument,layers=Array.from(doc.activeLayers);
       if(!layers.length||layers.length>128||layers.map(l=>l.id).sort((a,b)=>a-b).join(',')!==expected.layer_ids.join(','))throw Error('聚焦最多支持128个选中图层');
-      const boxes=[];
-      for(const layer of layers) {
-        if(typeof layer.visible!=='boolean')throw Error('图层可见性无法确认');
-        for(let parent=layer;parent&&parent!==doc;parent=parent.parent)if(parent.visible===false)throw Error('不能显示隐藏的目标图层边界');
-        const b=layer.boundsNoEffects,rect=['left','top','right','bottom'].map(k=>number(b?.[k]));
-        if(!rect.every(Number.isFinite))throw Error('图层边界无法确认');
-        if(rect[2]>rect[0]&&rect[3]>rect[1])boxes.push(rect);
-      }
-      if(!boxes.length)throw Error('所选图层没有可聚焦的内容边界');
-      const bounds=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];
-      const saved=await inspect();let changed=false;
-      async function display(edge,extras) {
-        let state=await menus();
-        async function toggle(key) {
-          await documentGuard();
-          if(!await ps.core.performMenuCommand({commandID:state[key].command}))throw Error('PS原生边界显示命令不可用');
-          state=await menus();
+      if(solo){
+        const selected=new Set(expected.layer_ids),ancestors=new Set(),changes=[];
+        for(const layer of layers){
+          for(let parent=layer.parent;parent && parent!==doc && parent.typename!=='Document';parent=parent.parent)
+            ancestors.add(parent.id);
         }
-        // With Extras off, the edge command only turns Extras on, leaving its own flag unchanged.
-        if(state.edge.checked!==edge){
-          if(!state.extras.checked)await toggle('extras');
-          await toggle('edge');
+        function collect(siblings,inSelectedGroup){
+          for(const layer of siblings){
+            const chosen=selected.has(layer.id),ancestor=ancestors.has(layer.id);
+            if(!chosen && !ancestor && inSelectedGroup)continue;
+            const visible=layer.visible,show=chosen || ancestor;
+            if(typeof visible!=='boolean')throw Error('图层可见性无法确认');
+            if(visible!==show)changes.push({layer,visible,show});
+            if(ancestor)collect(layer.layers,inSelectedGroup || chosen);
+          }
         }
-        if(state.extras.checked!==extras)await toggle('extras');
-        if(state.edge.checked!==edge||state.extras.checked!==extras)throw Error('原生边界显示恢复未确认');
-      }
-      async function restoreView() {
-        await documentGuard();
-        await batch([zoomCommand(saved.view.zoom),{_obj:'set',_target:property('center')._target,to:{_obj:'center',horizontal:{_unit:'distanceUnit',_value:saved.view.x},vertical:{_unit:'distanceUnit',_value:saved.view.y}},_options:{dialogOptions:'silent'}}]);
-        const restored=await view();
-        if(Math.abs(restored.zoom-saved.view.zoom)>1e-6||Math.abs(restored.x-saved.view.x)>1||Math.abs(restored.y-saved.view.y)>1)throw Error('View restore mismatch');
-      }
-      try {
-        await guard();changed=true;
-        await batch([{_obj:'select',_target:[{_ref:'menuItemClass',_enum:'menuItemType',_value:'fitLayersOnScreen'}],_options:{dialogOptions:'silent'}}]);
-        const fitted=await view(),zoom=Math.max(.0001,Math.min(4,fitted.zoom));
-        if(zoom!==fitted.zoom){await guard();await batch([zoomCommand(zoom)]);}
-        await display(true,true);await guard();const after=await inspect();
-        if(Math.abs(after.view.zoom-zoom)>1e-6||!after.menus.edge.checked||!after.menus.extras.checked||Math.abs(after.view.x/zoom-fitted.x/fitted.zoom)>1||Math.abs(after.view.y/zoom-fitted.y/fitted.zoom)>1)throw Error('聚焦视图或原生边界读回不一致');
-        rollback=()=>ps.core.executeAsModal(async()=>{await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);},{commandName:'恢复聚焦视图',timeOut:0});
-        finishPreview=async()=>{
-        const shown=Date.now();
-        if(io)await io.applied({seq,view:after.view,native_layer_edges:true});
-        do {
+        collect(doc.layers,false);
+        await guard();await input();
+        if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
+        const history=changes.length?await context.hostControl.suspendHistory({documentID:doc.id,name:'临时独显所选图层'}):null;
+        if(changes.length && history==null)throw Error('无法建立图层可见性恢复点');
+        try{
           await input();
-          const current=await documentGuard();
-          if(current.active_layer_id!==expected.active_layer_id||current.layer_ids.join(',')!==expected.layer_ids.join(','))phase='cancel';
-          if(phase==='cancel'||phase==='commit'&&Date.now()-shown>=500)break;
-          await new Promise(resolve=>setTimeout(resolve,40));
-        } while(true);
-        await ps.core.executeAsModal(async()=>{
-        if(phase==='cancel')await restoreView();
-        // F is a temporary highlight, including when upgrading from persistent 319 edges.
-        await display(false,(await menus()).extras.checked && saved.menus.extras.checked);
-        },{commandName:'结束临时聚焦',timeOut:0});
-        return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:false,view_restored:phase==='cancel',cancelled:phase==='cancel'};
-        };return null;
-      } catch(error) {
-        if(changed)try {await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);}
-        catch(_){error.resultUnknown=true;}
-        throw error;
+          if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
+          if(changes.length){
+            await batch(changes.map(({layer,show})=>({_obj:show?'show':'hide',_target:[{_ref:'layer',_id:layer.id}],_options:{dialogOptions:'silent'}})));
+            if(changes.some(({layer,show})=>layer.visible!==show))throw Error('临时独显状态未确认');
+          }
+          return await focus();
+        }finally{
+          if(history!==null)try{
+            await context.hostControl.resumeHistory(history,false);
+            await documentGuard();
+            if(changes.some(({layer,visible})=>layer.visible!==visible))throw Error('图层可见性恢复未确认');
+            await ps.core.redrawDocument({documentID:doc.id});
+          }catch(error){error.resultUnknown=true;throw error;}
+        }
+      }
+      return focus();
+
+      async function focus(){
+        const boxes=[];
+        for(const layer of layers) {
+          if(typeof layer.visible!=='boolean')throw Error('图层可见性无法确认');
+          for(let parent=layer;parent&&parent!==doc;parent=parent.parent)if(parent.visible===false)throw Error('不能显示隐藏的目标图层边界');
+          const b=layer.boundsNoEffects,rect=['left','top','right','bottom'].map(k=>number(b?.[k]));
+          if(!rect.every(Number.isFinite))throw Error('图层边界无法确认');
+          if(rect[2]>rect[0]&&rect[3]>rect[1])boxes.push(rect);
+        }
+        if(!boxes.length)throw Error('所选图层没有可聚焦的内容边界');
+        const bounds=[Math.min(...boxes.map(b=>b[0])),Math.min(...boxes.map(b=>b[1])),Math.max(...boxes.map(b=>b[2])),Math.max(...boxes.map(b=>b[3]))];
+        const saved=await inspect();let changed=false;
+        async function display(edge,extras) {
+          let state=await menus();
+          async function toggle(key) {
+            await documentGuard();
+            if(!await ps.core.performMenuCommand({commandID:state[key].command}))throw Error('PS原生边界显示命令不可用');
+            state=await menus();
+          }
+          // With Extras off, the edge command only turns Extras on, leaving its own flag unchanged.
+          if(state.edge.checked!==edge){
+            if(!state.extras.checked)await toggle('extras');
+            await toggle('edge');
+          }
+          if(state.extras.checked!==extras)await toggle('extras');
+          if(state.edge.checked!==edge||state.extras.checked!==extras)throw Error('原生边界显示恢复未确认');
+        }
+        async function restoreView() {
+          await documentGuard();
+          await batch([zoomCommand(saved.view.zoom),{_obj:'set',_target:property('center')._target,to:{_obj:'center',horizontal:{_unit:'distanceUnit',_value:saved.view.x},vertical:{_unit:'distanceUnit',_value:saved.view.y}},_options:{dialogOptions:'silent'}}]);
+          const restored=await view();
+          if(Math.abs(restored.zoom-saved.view.zoom)>1e-6||Math.abs(restored.x-saved.view.x)>1||Math.abs(restored.y-saved.view.y)>1)throw Error('View restore mismatch');
+        }
+        try {
+          await guard();changed=true;
+          await batch([{_obj:'select',_target:[{_ref:'menuItemClass',_enum:'menuItemType',_value:'fitLayersOnScreen'}],_options:{dialogOptions:'silent'}}]);
+          const fitted=await view(),zoom=Math.max(.0001,Math.min(4,fitted.zoom));
+          if(zoom!==fitted.zoom){await guard();await batch([zoomCommand(zoom)]);}
+          await display(true,true);await guard();const after=await inspect();
+          if(Math.abs(after.view.zoom-zoom)>1e-6||!after.menus.edge.checked||!after.menus.extras.checked||Math.abs(after.view.x/zoom-fitted.x/fitted.zoom)>1||Math.abs(after.view.y/zoom-fitted.y/fitted.zoom)>1)throw Error('聚焦视图或原生边界读回不一致');
+          rollback=()=>ps.core.executeAsModal(async()=>{await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);},{commandName:'恢复聚焦视图',timeOut:0});
+          finishPreview=async()=>{
+            const shown=Date.now();
+            if(solo)await ps.core.redrawDocument({documentID:doc.id});
+            if(io)await io.applied({seq,view:after.view,native_layer_edges:true});
+            do {
+              await input();
+              const current=await documentGuard();
+              if(current.active_layer_id!==expected.active_layer_id||current.layer_ids.join(',')!==expected.layer_ids.join(','))phase='cancel';
+              if(phase==='cancel'||phase==='commit'&&Date.now()-shown>=500)break;
+              await new Promise(resolve=>setTimeout(resolve,40));
+            } while(true);
+            const finishView=async()=>{
+              if(phase==='cancel')await restoreView();
+              // F is a temporary highlight, including when upgrading from persistent 319 edges.
+              await display(false,(await menus()).extras.checked && saved.menus.extras.checked);
+            };
+            if(solo)await finishView();
+            else await ps.core.executeAsModal(finishView,{commandName:'结束临时聚焦',timeOut:0});
+            return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:false,view_restored:phase==='cancel',cancelled:phase==='cancel'};
+          };
+          return solo?await finishPreview():null;
+        } catch(error) {
+          if(changed)try {await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);}
+          catch(_){error.resultUnknown=true;}
+          throw error;
+        }
       }
     },{commandName:'聚焦所选图层',timeOut:0});
-    if(!finishPreview)return prepared;
+    if(solo || !finishPreview)return prepared;
     // Native layer edges paint after the modal exits; holding F keeps this same request open.
     try{return await finishPreview();}
     catch(error){try{await rollback();}catch(_){error.resultUnknown=true;}throw error;}
