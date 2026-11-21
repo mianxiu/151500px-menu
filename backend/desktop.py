@@ -12,6 +12,7 @@ import time
 import secrets
 import json
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from .window_icons import WindowIcons
 from .settings import DEFAULTS, chord, ALIASES, MODIFIERS
@@ -211,6 +212,9 @@ class Desktop:
         self.stop = threading.Event()
         self.icons = None
         self.process = None
+        self.pattern_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='pattern-previews')
+        self.pattern_future = None
+        self.pattern_host_version = ''
         self.token = secrets.token_hex(24)
         self.message = "桌面功能未启动"
         self.native = None
@@ -548,6 +552,11 @@ class Desktop:
                         **({'return_to_menu':event['return_to_menu']} if 'return_to_menu' in event else {})})
                 elif event.get('type') == 'selection':
                     logging.info('Menu release decision: %s', event)
+                elif event.get('type') == 'pattern.thumbnails':
+                    if self.pattern_future:
+                        self.pattern_future.cancel()
+                    if not self.stop.is_set():
+                        self.pattern_future = self.pattern_pool.submit(self._pattern_thumbnails, process, event, self.pattern_host_version)
         except Exception:
             logging.exception('Dear ImGui menu event stream failed')
         finally:
@@ -555,10 +564,22 @@ class Desktop:
                 self.hwnd, self.visible = None, False
                 self.menu_ready.clear()
 
+    def _pattern_thumbnails(self, process, event, version):
+        from .pattern_thumbnails import thumbnails
+        epoch, names = event.get('epoch'), event.get('names')
+        if (self.process is not process or epoch != self.menu_epoch or not isinstance(names, list)
+                or len(names) > 128 or any(not isinstance(n, str) or len(n) > 128 for n in names)):
+            return
+        tiles = thumbnails(version, names)
+        if self.process is process and epoch == self.menu_epoch and version == self.pattern_host_version and not self.stop.is_set():
+            self._send_menu_event({'type':'pattern.thumbnails', 'epoch':epoch, 'request':event.get('request'), 'tiles':tiles})
+
     def event(self, event):
         if event.get('type') not in ('status', 'operation', 'notice', 'popup.prepare', 'document', 'diagnostic.progress','mask.preview','preview.progress','preview.menu.confirmed','menu.tools.opened','menu.tools.result','menu.tools.preview.result'):
             return
         preview=getattr(self,'mask_preview',None)
+        if event.get('type') == 'status':
+            self.pattern_host_version = event['data']['photoshop'].get('photoshop_version', '')
         if preview and event.get('type')=='preview.progress' and event.get('epoch')==preview.epoch:
             # A newly opened busy menu observes the same original transaction.
             event={**event,'epoch':self.menu_epoch}
@@ -1412,6 +1433,7 @@ class Desktop:
 
     def close(self):
         self.stop.set()
+        self.pattern_pool.shutdown(wait=False, cancel_futures=True)
         self.layer_wake.set()
         self.window_wake.set()
         for guard in (self.input_language,self.input_focus):

@@ -768,6 +768,8 @@ static bool createDevice(HWND hwnd) {
 }
 static void releaseDevice() {
     menuShadow::release();
+    simpleGradientPreview::release();
+    patternThumbnails::clear();
     releaseTarget();
     if (frameLatency) {CloseHandle(frameLatency);frameLatency=nullptr;}
     frameGranted=false;
@@ -879,6 +881,11 @@ static std::string shortcut(const std::string& raw) {
 }
 static void accept(const Json& event) {
     std::string type=event.value("type","");
+    if(type=="pattern.thumbnails"){
+        if(menuEpoch==event.value("epoch",LPARAM(-1)) && patternThumbnails::request==event.value("request",-1))
+            patternThumbnails::load(event.at("tiles"));
+        return;
+    }
     if(type=="menu.settings.result"){
         if(globalSettings.pending && menuEpoch==event.value("epoch",LPARAM(-1))){
             globalSettings.pending=false;globalSettings.saved=event.value("ok",false);
@@ -990,9 +997,13 @@ static void accept(const Json& event) {
                 }
                 gradientLoadingEpoch=0;
                 if(!EqualRect(&current,&next)){
-                    gradientFramePresented=false;setOpacity(0.f);
-                    if(!updateGradientDockRegion(true) || !SetWindowPos(window,HWND_TOP,next.left,next.top,
-                        next.right-next.left,next.bottom-next.top,SWP_NOACTIVATE|(entering?0:SWP_NOZORDER))){
+                    const bool resize=current.right-current.left!=next.right-next.left || current.bottom-current.top!=next.bottom-next.top;
+                    if(resize){
+                        gradientFramePresented=false;setOpacity(0.f);
+                        if(!updateGradientDockRegion(true)){failGradientOverlay("画布叠加窗口无法显示");return;}
+                    }
+                    if(!SetWindowPos(window,HWND_TOP,next.left,next.top,next.right-next.left,next.bottom-next.top,
+                        SWP_NOACTIVATE|(entering?0:SWP_NOZORDER)|(resize?0:SWP_NOSIZE))){
                         failGradientOverlay("画布叠加窗口无法显示");return;
                     }
                 }
@@ -3700,6 +3711,11 @@ int main() {
                                side.left-track.right!=MulDiv(int(menuPanelGap),dpi,96) || side.bottom!=track.bottom)
                                 throw std::runtime_error("Gradient dock lost its width limits or bottom alignment");
                         }
+                        for(LONG bottom:{120L,2350L}){
+                            const auto dock=GradientPanel::dockBounds({3100,bottom-900,4050,bottom},192,work);
+                            if(dock.right>work.right || dock.top<work.top || dock.bottom>work.bottom)
+                                throw std::runtime_error("Gradient dock escaped the visible work area");
+                        }
                         if(!GradientNavigation::editorClass(L"PhotoshopMenuImGui") ||
                            !GradientNavigation::editorClass(L"PhotoshopGradientImGui") ||
                            !GradientNavigation::editorClass(L"PhotoshopGradientHandles") || GradientNavigation::editorClass(L"OtherApp"))
@@ -4580,6 +4596,17 @@ int main() {
                 if(!shapePanelOpen || shapeHoverMode!=2 || shapeEditor.draft!=switchDraft)
                     throw std::runtime_error("Pattern click must show the chooser before changing the paint");
                 {
+                    const std::string tile(patternThumbnails::side*patternThumbnails::side*6,'8');
+                    const Json result={{"type","pattern.thumbnails"},{"epoch",menuEpoch},{"request",patternThumbnails::request},
+                        {"tiles",{{"Grass",tile},{"Tree",tile},{"Bad","zz"}}}};
+                    Json stale=result;stale["epoch"]=menuEpoch-1;accept(stale);
+                    if(patternThumbnails::texture)throw std::runtime_error("Stale pattern preview accepted");
+                    accept(result);
+                    if(!patternThumbnails::texture || patternThumbnails::indices.size()!=2)
+                        throw std::runtime_error("Pattern preview atlas did not load the two valid thumbnails");
+                    patternThumbnails::clear();
+                }
+                {
                     ShapeColorEditor editor;
                     editor.draft=switchDraft;editor.original=switchDraft;editor.gradientEditor=true;editor.mode(1);
                     auto& gradient=editor.gradients[0];
@@ -4587,6 +4614,20 @@ int main() {
                     const Json rgb=Json::array({18,42,90});editor.setRgb(rgb);
                     for(const auto& stop:editor.current().at("stops"))
                         if(stop.at("rgb")!=rgb)throw std::runtime_error("Simple gradient quick color missed a selected stop");
+                    gradient.embeddedPaint=&editor.current();
+                    gradient.refreshBar=false;
+                    using namespace simpleGradientPreview;
+                    if(!sample(gradient,320,48) || sample(gradient,320,48))
+                        throw std::runtime_error("Unchanged gradient preview rebuilt");
+                    const auto opaque=pixels;
+                    gradient.track(0)[0]["opacity"]=0;
+                    if(!sample(gradient,320,48) || pixels==opaque)
+                        throw std::runtime_error("Classic preview missed an opacity edit");
+                    const auto linear=pixels;
+                    gradient.paint()["options"]["style"]="radial";
+                    if(!sample(gradient,320,48) || pixels==linear || !sample(gradient,240,48))
+                        throw std::runtime_error("Classic preview missed a style or size change");
+                    simpleGradientPreview::release();
                 }
                 pointer((arrow.left+arrow.right)*.5f,cy);
                 if(mask.right){pointer(mask.left+10*scale,mask.top+5*scale);if(!shapePanelOpen)throw std::runtime_error("Moving to mask collapsed editor");}

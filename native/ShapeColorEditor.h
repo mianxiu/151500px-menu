@@ -1,14 +1,55 @@
 #include "ScreenSample.h"
+#include <charconv>
 // Frame-coalesced paint and mask updates share one rollbackable transaction.
 static constexpr const char* shapePaintKinds[]={"solid","gradient","pattern"};
 static constexpr const char* shapePaintLabels[]={"纯色","渐变","图案"};
+namespace patternThumbnails {
+static constexpr int side=24;
+static int request=0;
+static ID3D11ShaderResourceView* texture=nullptr;
+static std::map<std::string,int> indices;
+static void clear(){
+    if(texture){texture->Release();texture=nullptr;}
+    indices.clear();
+}
+static void load(const Json& tiles){
+    clear();
+    if(!tiles.is_object() || tiles.empty() || tiles.size()>128)return;
+    std::vector<unsigned char> pixels;
+    for(auto it=tiles.begin();it!=tiles.end();++it){
+        if(!it.value().is_string())continue;
+        const auto& hex=it.value().get_ref<const std::string&>();
+        if(hex.size()!=side*side*6)continue;
+        const auto start=pixels.size();
+        for(size_t i=0;i<hex.size();i+=2){
+            unsigned char byte=0;
+            const char* end=hex.data()+i+2;
+            const auto result=std::from_chars(end-2,end,byte,16);
+            if(result.ec!=std::errc{} || result.ptr!=end){pixels.resize(start);break;}
+            pixels.push_back(byte);
+            if(i%6==4)pixels.push_back(255);
+        }
+        if(pixels.size()>start)indices.emplace(it.key(),int(start/(side*side*4)));
+    }
+    if(indices.empty())return;
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width=side;desc.Height=side*UINT(indices.size());desc.MipLevels=desc.ArraySize=1;
+    desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{pixels.data(),side*4,0};
+    ID3D11Texture2D* atlas=nullptr;
+    if(SUCCEEDED(device->CreateTexture2D(&desc,&data,&atlas))){
+        device->CreateShaderResourceView(atlas,nullptr,&texture);atlas->Release();
+    }
+    if(!texture)indices.clear();
+}
+}
 struct ShapeColorEditor {
     bool available=false,dirty=false,vector=true,livePreview=false,batchMask=false,gradientEditor=false;
     std::string nativeModel;
     int batchCount=0;Json maskValues,maskMixed;
     int channel=0,stop=0;
     std::array<GradientPanel,2> gradients;
-    std::array<std::array<ImU32,129>,2> previewColors{};
     Json original,draft,patterns,lastPreview;
     std::array<Json,2> modes;
     std::array<Json,2> lastStops;
@@ -540,13 +581,21 @@ static void drawShapeModeSwitch(const RECT& row) {
     ImGui::Dummy({0,0});
     ImGui::EndChild();ImGui::PopFont();ImGui::SetCursorScreenPos(saved);
 }
-static void drawSimpleGradientPreview(GradientPanel& model,float width){
-    if(!model.hasRgbPicker())return;
-    const auto at=ImGui::GetCursorScreenPos();
-    const float height=2*menuControlHeight*scale;
-    ImGui::Dummy({width,height});
-    auto* draw=ImGui::GetWindowDrawList();
-    ImGui::RenderColorRectWithAlphaCheckerboard(draw,at,{at.x+width,at.y+height},0,menuPanelGap*scale,{0,0});
+namespace simpleGradientPreview {
+static constexpr int columns=64,rows=20;
+static std::array<ImU32,columns*rows> pixels;
+static Json lastPaint;
+static ImVec2 lastSize;
+static ID3D11Texture2D* texture=nullptr;
+static ID3D11ShaderResourceView* view=nullptr;
+
+static void release(){
+    if(view){view->Release();view=nullptr;}
+    if(texture){texture->Release();texture=nullptr;}
+    lastPaint=nullptr;
+}
+static bool sample(GradientPanel& model,float width,float height){
+    if(lastSize.x==width && lastSize.y==height && lastPaint==model.paint())return false;
     const auto& o=model.paint().at("options");
     const std::string type=o.at("style");
     const bool radial=type=="radial",angular=type=="angle",diamond=type=="diamond",reflected=type=="reflected";
@@ -554,11 +603,10 @@ static void drawSimpleGradientPreview(GradientPanel& model,float width){
     const double dx=std::cos(angle),dy=-std::sin(angle);
     const double cx=width*(.5+o.value("offset_x",0.)/100),cy=height*(.5+o.value("offset_y",0.)/100);
     const double radius=std::max(1.,(radial || diamond?height:width*std::abs(dx)+height*std::abs(dy))*.5*o.at("scale").get<double>()/100);
-    auto& colors=shapeEditor.previewColors[shapeEditor.channel];
-    if(model.refreshBar)for(int i=0;i<int(colors.size());++i)
+    std::array<ImU32,129> colors;
+    for(int i=0;i<int(colors.size());++i)
         colors[i]=GradientPanel::rampColor(model.track(1),model.track(0),float(i)*GradientPanel::end/(colors.size()-1));
     const bool reverse=o.at("reverse");
-    constexpr int columns=64,rows=20;
     for(int y=0;y<rows;++y)for(int x=0;x<columns;++x){
         const double px=(x+.5)*width/columns-cx,py=(y+.5)*height/rows-cy;
         const double along=px*dx+py*dy,across=-px*dy+py*dx;
@@ -567,9 +615,38 @@ static void drawSimpleGradientPreview(GradientPanel& model,float width){
         else if(angular)t=std::fmod(std::atan2(-across,along)/(2*GradientCanvasPanel::Axis::pi)+1,1.);
         else if(reflected)t=std::abs(along)/radius;
         else if(diamond)t=(std::abs(along)+std::abs(across))/radius;
-        const auto color=colors[std::lround(std::clamp(reverse?1-t:t,0.,1.)*(colors.size()-1))];
-        draw->AddRectFilled({at.x+width*x/columns,at.y+height*y/rows},{at.x+width*(x+1)/columns,at.y+height*(y+1)/rows},color);
+        pixels[y*columns+x]=colors[std::lround(std::clamp(reverse?1-t:t,0.,1.)*(colors.size()-1))];
     }
+    lastPaint=model.paint();lastSize={width,height};
+    return true;
+}
+static void upload(){
+    if(view){
+        context->UpdateSubresource(texture,0,nullptr,pixels.data(),columns*sizeof(ImU32),0);
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width=columns;desc.Height=rows;desc.ArraySize=desc.MipLevels=1;desc.SampleDesc.Count=1;
+    desc.Format=IM_COL32_R_SHIFT==0?DXGI_FORMAT_R8G8B8A8_UNORM:DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data{pixels.data(),columns*sizeof(ImU32),0};
+    if(SUCCEEDED(device->CreateTexture2D(&desc,&data,&texture)) &&
+       FAILED(device->CreateShaderResourceView(texture,nullptr,&view))){texture->Release();texture=nullptr;}
+}
+}
+static void drawSimpleGradientPreview(GradientPanel& model,float width){
+    if(!model.hasRgbPicker())return;
+    using namespace simpleGradientPreview;
+    const auto at=ImGui::GetCursorScreenPos();
+    const float height=2*menuControlHeight*scale;
+    ImGui::Dummy({width,height});
+    if(!ImGui::IsItemVisible())return;
+    auto* draw=ImGui::GetWindowDrawList();
+    ImGui::RenderColorRectWithAlphaCheckerboard(draw,at,{at.x+width,at.y+height},0,menuPanelGap*scale,{0,0});
+    if(sample(model,width,height))upload();
+    if(view)draw->AddImage((ImTextureID)(intptr_t)view,at,{at.x+width,at.y+height});
+    else for(int y=0;y<rows;++y)for(int x=0;x<columns;++x)
+        draw->AddRectFilled({at.x+width*x/columns,at.y+height*y/rows},{at.x+width*(x+1)/columns,at.y+height*(y+1)/rows},pixels[y*columns+x]);
 }
 static void drawSimpleGradient(float width,float cell){
     auto& g=shapeEditor.gradients[shapeEditor.channel];
@@ -707,11 +784,33 @@ static void drawShapeEditor(const RECT& anchor) {
     } else if(paintKind=="pattern" || needsType){
         std::string name=needsType?"":p.value("name","");ImGui::SetNextItemWidth(inner);
         if(ImGui::BeginCombo("##pattern",name.empty()?"选择图案":name.c_str())){
+            if(ImGui::IsWindowAppearing()){
+                patternThumbnails::clear();
+                std::cout<<Json{{"type","pattern.thumbnails"},{"epoch",menuEpoch},{"request",++patternThumbnails::request},
+                    {"names",shapeEditor.patterns}}.dump()<<std::endl;
+            }
+            const float side=menuControlHeight*scale;
+            int index=0;
             for(const auto& item:shapeEditor.patterns){const std::string value=item;
-                if(ImGui::Selectable(value.c_str(),value==name)){
+                ImGui::PushID(index++);
+                const auto at=ImGui::GetCursorScreenPos();
+                if(ImGui::Selectable("##pattern-choice",value==name,0,{0,side})){
                     if(needsType)shapeEditor.mode(2);
                     p["name"]=value;p["enabled"]=true;shapeEditor.changed();
-                }}
+                }
+                if(ImGui::IsItemVisible()){
+                    const auto thumb=patternThumbnails::indices.find(value);
+                    auto* draw=ImGui::GetWindowDrawList();
+                    if(thumb!=patternThumbnails::indices.end()){
+                        const float count=float(patternThumbnails::indices.size());
+                        const float inset=.5f/patternThumbnails::side;
+                        draw->AddImage((ImTextureID)(intptr_t)patternThumbnails::texture,at,{at.x+side,at.y+side},
+                            {inset,(thumb->second+inset)/count},{1-inset,(thumb->second+1-inset)/count});
+                    }
+                    draw->AddText({at.x+side+gap,at.y+(side-ImGui::GetFontSize())*.5f},tint(ImGuiCol_Text),value.c_str());
+                }
+                ImGui::PopID();
+            }
             ImGui::EndCombo();
         }
         if(shapeEditor.patterns.empty())ImGui::TextWrapped("没有已加载的图案预设");

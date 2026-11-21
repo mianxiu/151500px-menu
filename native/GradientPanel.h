@@ -44,7 +44,8 @@ struct GradientPanel {
         const LONG width=std::clamp<LONG>(available,MulDiv(minWidth,dpi,96),MulDiv(maxWidth,dpi,96))+side;
         const LONG height=MulDiv(std::max(overlayHeight,pickerHeight),dpi,96);
         const LONG left=std::clamp(clip.left+(clip.right-clip.left-(width-side))/2,work.left,std::max(work.left,work.right-width));
-        return {left,clip.bottom-gap-height,left+width,clip.bottom-gap};
+        const LONG top=std::clamp(clip.bottom-gap-height,work.top,std::max(work.top,work.bottom-height));
+        return {left,top,left+width,top+height};
     }
     static RECT dockTimeline(RECT frame,UINT dpi){
         return {frame.left,frame.bottom-MulDiv(overlayHeight,dpi,96),
