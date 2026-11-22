@@ -275,6 +275,442 @@ static constexpr FigmaPathCommand styledPath46_0[] = {
     {'M', 0.55000000f, 8.45000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
     {'L', 8.45000000f, 0.55000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
 };
+static constexpr FigmaPathCommand styledPath48_0[] = {
+    {'M', 1.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath49_0[] = {
+    {'M', 3.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath49_1[] = {
+    {'M', 1.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath50_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath50_1[] = {
+    {'M', 1.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath50_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath50_3[] = {
+    {'M', 1.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath51_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath51_1[] = {
+    {'M', 2.50000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.50000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath51_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath51_3[] = {
+    {'M', 2.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath52_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath52_1[] = {
+    {'M', 4.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath52_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath52_3[] = {
+    {'M', 3.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath53_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath53_1[] = {
+    {'M', 1.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath53_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath53_3[] = {
+    {'M', 1.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath54_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath54_1[] = {
+    {'M', 1.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath54_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath54_3[] = {
+    {'M', 2.50000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.50000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath55_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath55_1[] = {
+    {'M', 1.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath55_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath55_3[] = {
+    {'M', 4.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath56_0[] = {
+    {'M', 1.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 1.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath56_1[] = {
+    {'M', 1.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath56_2[] = {
+    {'M', 1.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath56_3[] = {
+    {'M', 1.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath57_0[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath57_1[] = {
+    {'M', 4.50000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.50000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath57_2[] = {
+    {'M', 3.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath58_0[] = {
+    {'M', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.50000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'C', 8.50000000f, 8.00000000f, 8.00000000f, 4.50000000f, 5.50000000f, 4.50000000f},
+    {'L', 2.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath58_1[] = {
+    {'M', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'C', 7.50000000f, 1.00000000f, 7.50000000f, 4.50000000f, 5.00000000f, 4.50000000f},
+};
+static constexpr FigmaPathCommand styledPath59_0[] = {
+    {'M', 1.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath59_1[] = {
+    {'M', 2.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath59_2[] = {
+    {'M', 5.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 9.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath59_3[] = {
+    {'M', 6.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath60_0[] = {
+    {'M', 4.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath60_1[] = {
+    {'M', 4.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath60_2[] = {
+    {'M', 2.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath60_3[] = {
+    {'M', 1.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath60_4[] = {
+    {'M', 1.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath61_0[] = {
+    {'M', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath61_1[] = {
+    {'M', 7.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath61_2[] = {
+    {'M', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath61_3[] = {
+    {'M', 2.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath61_4[] = {
+    {'M', 7.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath62_0[] = {
+    {'M', 1.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath62_1[] = {
+    {'M', 4.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath62_2[] = {
+    {'M', 3.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath62_3[] = {
+    {'M', 4.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath62_4[] = {
+    {'M', 5.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath63_0[] = {
+    {'M', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath63_1[] = {
+    {'M', 4.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath63_2[] = {
+    {'M', 2.50000000f, 2.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.50000000f, 2.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath64_0[] = {
+    {'M', 2.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath64_1[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath64_2[] = {
+    {'M', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath65_0[] = {
+    {'M', 3.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath65_1[] = {
+    {'M', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath65_2[] = {
+    {'M', 2.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath66_0[] = {
+    {'M', 4.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath66_1[] = {
+    {'M', 4.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath66_2[] = {
+    {'M', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath66_3[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath67_0[] = {
+    {'M', 4.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath67_1[] = {
+    {'M', 4.00000000f, 4.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 4.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath67_2[] = {
+    {'M', 2.00000000f, 4.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath67_3[] = {
+    {'M', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath68_0[] = {
+    {'M', 4.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath68_1[] = {
+    {'M', 4.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath68_2[] = {
+    {'M', 4.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath68_3[] = {
+    {'M', 1.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath68_4[] = {
+    {'M', 2.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath69_0[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath69_1[] = {
+    {'M', 1.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath69_2[] = {
+    {'M', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath69_3[] = {
+    {'M', 8.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath69_4[] = {
+    {'M', 7.00000000f, 3.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 4.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath70_0[] = {
+    {'M', 4.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath70_1[] = {
+    {'M', 1.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath70_2[] = {
+    {'M', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath70_3[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath70_4[] = {
+    {'M', 2.00000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 3.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 2.00000000f, 3.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath71_0[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath71_1[] = {
+    {'M', 2.50000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.50000000f, 5.50000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath72_0[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath72_1[] = {
+    {'M', 5.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath72_2[] = {
+    {'M', 6.50000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.50000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath73_0[] = {
+    {'M', 1.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 5.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath73_1[] = {
+    {'M', 6.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 2.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath73_2[] = {
+    {'M', 1.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 5.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath73_3[] = {
+    {'M', 1.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 7.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath74_0[] = {
+    {'M', 2.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 4.50000000f, 1.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 7.00000000f, 6.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath74_1[] = {
+    {'M', 3.00000000f, 4.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 6.00000000f, 4.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
+static constexpr FigmaPathCommand styledPath74_2[] = {
+    {'M', 1.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+    {'L', 8.00000000f, 8.00000000f, 0.00000000f, 0.00000000f, 0.00000000f, 0.00000000f},
+};
 
 static void styledPath(ImDrawList* draw,const FigmaPathCommand* path,int count,ImVec2 at,float unit,ImU32 ink,float stroke) {
     auto point=[&](float x,float y){return ImVec2{at.x+x*unit,at.y+y*unit};};
@@ -550,6 +986,159 @@ static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,Im
         draw->AddRectFilled(p(0.00000000f,6.00000000f),p(9.00000000f,7.00000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(5.00000000f,4.50000000f),p(8.00000000f,8.50000000f),color(0.67431195f),0.00000000f*unit);
         draw->AddRect(p(5.50000000f,5.00000000f),p(7.50000000f,8.00000000f),ink,0,0,1.00000000f*unit);
+        break;
+    case 48:
+        styledPath(draw,styledPath48_0,sizeof(styledPath48_0)/sizeof(*styledPath48_0),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 49:
+        styledPath(draw,styledPath49_0,sizeof(styledPath49_0)/sizeof(*styledPath49_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath49_1,sizeof(styledPath49_1)/sizeof(*styledPath49_1),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 50:
+        styledPath(draw,styledPath50_0,sizeof(styledPath50_0)/sizeof(*styledPath50_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath50_1,sizeof(styledPath50_1)/sizeof(*styledPath50_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath50_2,sizeof(styledPath50_2)/sizeof(*styledPath50_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath50_3,sizeof(styledPath50_3)/sizeof(*styledPath50_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 51:
+        styledPath(draw,styledPath51_0,sizeof(styledPath51_0)/sizeof(*styledPath51_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath51_1,sizeof(styledPath51_1)/sizeof(*styledPath51_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath51_2,sizeof(styledPath51_2)/sizeof(*styledPath51_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath51_3,sizeof(styledPath51_3)/sizeof(*styledPath51_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 52:
+        styledPath(draw,styledPath52_0,sizeof(styledPath52_0)/sizeof(*styledPath52_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath52_1,sizeof(styledPath52_1)/sizeof(*styledPath52_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath52_2,sizeof(styledPath52_2)/sizeof(*styledPath52_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath52_3,sizeof(styledPath52_3)/sizeof(*styledPath52_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 53:
+        styledPath(draw,styledPath53_0,sizeof(styledPath53_0)/sizeof(*styledPath53_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath53_1,sizeof(styledPath53_1)/sizeof(*styledPath53_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath53_2,sizeof(styledPath53_2)/sizeof(*styledPath53_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath53_3,sizeof(styledPath53_3)/sizeof(*styledPath53_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 54:
+        styledPath(draw,styledPath54_0,sizeof(styledPath54_0)/sizeof(*styledPath54_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath54_1,sizeof(styledPath54_1)/sizeof(*styledPath54_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath54_2,sizeof(styledPath54_2)/sizeof(*styledPath54_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath54_3,sizeof(styledPath54_3)/sizeof(*styledPath54_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 55:
+        styledPath(draw,styledPath55_0,sizeof(styledPath55_0)/sizeof(*styledPath55_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath55_1,sizeof(styledPath55_1)/sizeof(*styledPath55_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath55_2,sizeof(styledPath55_2)/sizeof(*styledPath55_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath55_3,sizeof(styledPath55_3)/sizeof(*styledPath55_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 56:
+        styledPath(draw,styledPath56_0,sizeof(styledPath56_0)/sizeof(*styledPath56_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath56_1,sizeof(styledPath56_1)/sizeof(*styledPath56_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath56_2,sizeof(styledPath56_2)/sizeof(*styledPath56_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath56_3,sizeof(styledPath56_3)/sizeof(*styledPath56_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 57:
+        styledPath(draw,styledPath57_0,sizeof(styledPath57_0)/sizeof(*styledPath57_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath57_1,sizeof(styledPath57_1)/sizeof(*styledPath57_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath57_2,sizeof(styledPath57_2)/sizeof(*styledPath57_2),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 58:
+        styledPath(draw,styledPath58_0,sizeof(styledPath58_0)/sizeof(*styledPath58_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath58_1,sizeof(styledPath58_1)/sizeof(*styledPath58_1),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 59:
+        styledPath(draw,styledPath59_0,sizeof(styledPath59_0)/sizeof(*styledPath59_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath59_1,sizeof(styledPath59_1)/sizeof(*styledPath59_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath59_2,sizeof(styledPath59_2)/sizeof(*styledPath59_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath59_3,sizeof(styledPath59_3)/sizeof(*styledPath59_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 60:
+        styledPath(draw,styledPath60_0,sizeof(styledPath60_0)/sizeof(*styledPath60_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath60_1,sizeof(styledPath60_1)/sizeof(*styledPath60_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath60_2,sizeof(styledPath60_2)/sizeof(*styledPath60_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath60_3,sizeof(styledPath60_3)/sizeof(*styledPath60_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath60_4,sizeof(styledPath60_4)/sizeof(*styledPath60_4),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 61:
+        styledPath(draw,styledPath61_0,sizeof(styledPath61_0)/sizeof(*styledPath61_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath61_1,sizeof(styledPath61_1)/sizeof(*styledPath61_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath61_2,sizeof(styledPath61_2)/sizeof(*styledPath61_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath61_3,sizeof(styledPath61_3)/sizeof(*styledPath61_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath61_4,sizeof(styledPath61_4)/sizeof(*styledPath61_4),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 62:
+        styledPath(draw,styledPath62_0,sizeof(styledPath62_0)/sizeof(*styledPath62_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath62_1,sizeof(styledPath62_1)/sizeof(*styledPath62_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath62_2,sizeof(styledPath62_2)/sizeof(*styledPath62_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath62_3,sizeof(styledPath62_3)/sizeof(*styledPath62_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath62_4,sizeof(styledPath62_4)/sizeof(*styledPath62_4),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 63:
+        styledPath(draw,styledPath63_0,sizeof(styledPath63_0)/sizeof(*styledPath63_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath63_1,sizeof(styledPath63_1)/sizeof(*styledPath63_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath63_2,sizeof(styledPath63_2)/sizeof(*styledPath63_2),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 64:
+        styledPath(draw,styledPath64_0,sizeof(styledPath64_0)/sizeof(*styledPath64_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath64_1,sizeof(styledPath64_1)/sizeof(*styledPath64_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath64_2,sizeof(styledPath64_2)/sizeof(*styledPath64_2),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 65:
+        styledPath(draw,styledPath65_0,sizeof(styledPath65_0)/sizeof(*styledPath65_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath65_1,sizeof(styledPath65_1)/sizeof(*styledPath65_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath65_2,sizeof(styledPath65_2)/sizeof(*styledPath65_2),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 66:
+        styledPath(draw,styledPath66_0,sizeof(styledPath66_0)/sizeof(*styledPath66_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath66_1,sizeof(styledPath66_1)/sizeof(*styledPath66_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath66_2,sizeof(styledPath66_2)/sizeof(*styledPath66_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath66_3,sizeof(styledPath66_3)/sizeof(*styledPath66_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 67:
+        styledPath(draw,styledPath67_0,sizeof(styledPath67_0)/sizeof(*styledPath67_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath67_1,sizeof(styledPath67_1)/sizeof(*styledPath67_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath67_2,sizeof(styledPath67_2)/sizeof(*styledPath67_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath67_3,sizeof(styledPath67_3)/sizeof(*styledPath67_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 68:
+        styledPath(draw,styledPath68_0,sizeof(styledPath68_0)/sizeof(*styledPath68_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath68_1,sizeof(styledPath68_1)/sizeof(*styledPath68_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath68_2,sizeof(styledPath68_2)/sizeof(*styledPath68_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath68_3,sizeof(styledPath68_3)/sizeof(*styledPath68_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath68_4,sizeof(styledPath68_4)/sizeof(*styledPath68_4),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 69:
+        styledPath(draw,styledPath69_0,sizeof(styledPath69_0)/sizeof(*styledPath69_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath69_1,sizeof(styledPath69_1)/sizeof(*styledPath69_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath69_2,sizeof(styledPath69_2)/sizeof(*styledPath69_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath69_3,sizeof(styledPath69_3)/sizeof(*styledPath69_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath69_4,sizeof(styledPath69_4)/sizeof(*styledPath69_4),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 70:
+        styledPath(draw,styledPath70_0,sizeof(styledPath70_0)/sizeof(*styledPath70_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath70_1,sizeof(styledPath70_1)/sizeof(*styledPath70_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath70_2,sizeof(styledPath70_2)/sizeof(*styledPath70_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath70_3,sizeof(styledPath70_3)/sizeof(*styledPath70_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath70_4,sizeof(styledPath70_4)/sizeof(*styledPath70_4),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 71:
+        styledPath(draw,styledPath71_0,sizeof(styledPath71_0)/sizeof(*styledPath71_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath71_1,sizeof(styledPath71_1)/sizeof(*styledPath71_1),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 72:
+        styledPath(draw,styledPath72_0,sizeof(styledPath72_0)/sizeof(*styledPath72_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath72_1,sizeof(styledPath72_1)/sizeof(*styledPath72_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath72_2,sizeof(styledPath72_2)/sizeof(*styledPath72_2),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 73:
+        styledPath(draw,styledPath73_0,sizeof(styledPath73_0)/sizeof(*styledPath73_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath73_1,sizeof(styledPath73_1)/sizeof(*styledPath73_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath73_2,sizeof(styledPath73_2)/sizeof(*styledPath73_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath73_3,sizeof(styledPath73_3)/sizeof(*styledPath73_3),at,unit,color(0.00000000f),1.00000000f);
+        break;
+    case 74:
+        styledPath(draw,styledPath74_0,sizeof(styledPath74_0)/sizeof(*styledPath74_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath74_1,sizeof(styledPath74_1)/sizeof(*styledPath74_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath74_2,sizeof(styledPath74_2)/sizeof(*styledPath74_2),at,unit,color(0.00000000f),1.00000000f);
         break;
     }
 }

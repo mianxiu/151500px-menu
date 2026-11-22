@@ -20,7 +20,7 @@ class FramePreview:
     def finish(self, restore=False):
         with self.lock:
             if self.phase == 'preview':
-                self.phase = 'cancel' if restore or self.solo else 'commit'
+                self.phase = 'cancel' if restore else 'commit'
                 self.seq += 1
 
     def bind(self, folder, request):

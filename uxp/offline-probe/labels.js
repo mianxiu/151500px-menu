@@ -3,7 +3,7 @@ module.exports = function createLabels(ps, session, options={}) {
   const nativeSelection=options.nativeSelection===true;
   const extendedColors=extendedLabelColors(options.hostVersion);
   const layerSearch=createLayerSearch(ps,session,captureSelection);
-  const textTools=createTextTools(ps,session,captureSelection,creationTree);
+  const textTools=createTextTools(ps,session,captureSelection,creationTree,options);
   const layerView=createLayerView(ps,session,captureSelection);
   // A bounded work-planning hint only. Every result still reads and validates
   // current identity/count/locks; this never supplies target capabilities.
@@ -359,7 +359,7 @@ module.exports = function createLabels(ps, session, options={}) {
     return inherited;
   }
   async function setLabel(request,previewIO=null) {
-    if(request.command==='text.replace')return textTools.replace(request);
+    if(request.command==='text.replace'||request.command==='text.proof')return textTools.replace(request);
     if(request.command==='text.split')return textTools.split(request);
     if(request.command==='layer.focus')return layerSearch.focus(request);
     if(request.command==='layer.frame')return layerView.frame(request,previewIO);
@@ -817,7 +817,7 @@ module.exports = function createLabels(ps, session, options={}) {
     return {samples,equivalent:Object.values(samples).every(sample=>signature(sample.value)===signature(samples.dom.value)),
       constant_contract:{layer_kinds:Object.fromEntries(Object.entries(ps.constants.LayerKind))}};
   }
-  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,inspectLayerView:layerView.inspect,inspectGradientView:layerView.gradient,readText:textTools.read,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
+  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,isolationID:layerView.isolationID,inspectLayerView:layerView.inspect,inspectGradientView:layerView.gradient,readText:textTools.read,readTextFonts:textTools.fonts,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
     if(!nativeSelection)return shapePaint.observe(...args);
     // Only explicit optional editor reads enter a short read-only modal scope.
     // Idle selection polling uses batchPlay and never occupies modal execution.
@@ -2328,8 +2328,25 @@ function createLayerSearch(ps,session,capture) {
   }
   return {search,focus,preview};
 }
-function createTextTools(ps,session,capture,readTree) {
+function createTextTools(ps,session,capture,readTree,options={}) {
   let snapshot=null,serial=0;
+  const indents=['startIndent','endIndent','firstLineIndent'];
+  const paragraphDistances=['spaceBefore','spaceAfter',...indents];
+  const paragraphFields=[...paragraphDistances,'align','hyphenate'];
+  const scales=['horizontalScale','verticalScale'];
+  const switches=['syntheticBold','syntheticItalic','ligature','noBreak','hyphenate','contextualLigatures','stylisticAlternates',
+    'swash','titling','ornaments','fractions','ordinals'];
+  const enums={
+    align:['left','center','right','justifyLeft','justifyCenter','justifyRight','justifyAll'],
+    autoKern:['metricsKern','opticalKern'],
+    fontCaps:['normal','allCaps','smallCaps'],
+    baseline:['normal','superScript','subScript'],
+    underline:['underlineOff','underlineOnLeftInVertical','underlineOnRightInVertical'],
+    strikethrough:['strikethroughOff','xHeightStrikethroughOn'],
+    figureStyle:['normal','proportionalLining','tabularLining','proportionalOldStyle','tabularOldStyle']
+  };
+  const hyphenationDefaults={hyphenateLimit:0,hyphenateCapitalized:true,hyphenationZone:36,
+    hyphenatePreLength:2,hyphenatePostLength:2,hyphenateWordSize:6};
   const clone=value=>JSON.parse(JSON.stringify(value));
   const stable=value=>JSON.stringify(value,(key,item)=>item&&!Array.isArray(item)&&typeof item==='object'?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
   const same=(a,b)=>stable(a)===stable(b);
@@ -2342,18 +2359,32 @@ function createTextTools(ps,session,capture,readTree) {
     return rows;
   }
   const ref=target=>[{_ref:'layer',_id:target.active_layer_id},{_ref:'document',_id:target.document_id}];
-  async function descriptor(target,objects=false) {
+  const historyRequest=()=>({_obj:'get',_target:[{_ref:'historyState',_enum:'ordinal',_value:'targetEnum'}],_options:{dialogOptions:'silent'}});
+  async function descriptor(target,objects=false,stamp=null) {
     if(target?.session!==session||target.layer_ids.length!==1)throw Error('请单选一个文字图层');
-    const [row,metadata]=await batch([{_obj:'multiGet',_target:{_ref:ref(target)},extendedReference:[['layerID','name','layerKind','layerLocking','textKey']],options:{failOnMissingProperty:false,failOnMissingElement:false},_options:{dialogOptions:'silent'}},
-      {_obj:'get',_target:[{_ref:'property',_property:'XMPMetadataAsUTF8'},...ref(target)],_options:{dialogOptions:'silent'}}]);
+    const read=[{_obj:'multiGet',_target:{_ref:ref(target)},extendedReference:[['layerID','name','layerKind','layerLocking','textKey']],options:{failOnMissingProperty:false,failOnMissingElement:false},_options:{dialogOptions:'silent'}},
+      {_obj:'get',_target:[{_ref:'property',_property:'XMPMetadataAsUTF8'},...ref(target)],_options:{dialogOptions:'silent'}}];
+    const rows=await batch(stamp?[historyRequest(),...read,historyRequest()]:read);
+    const [row,metadata]=stamp?rows.slice(1,3):rows;
+    if(stamp){
+      if(!Number.isSafeInteger(rows[0].ID)||rows[0].ID!==rows[3].ID)throw Error('读取期间画布已改变，请重新读取');
+      stamp.history=rows[0].ID;
+    }
     if(metadata.XMPMetadataAsUTF8!==undefined&&typeof metadata.XMPMetadataAsUTF8!=='string')throw Error('图层元数据读取结果无效');
     row.XMPMetadataAsUTF8=metadata.XMPMetadataAsUTF8||'';
     if(row.layerID!==target.active_layer_id||![3,...(objects?[5]:[])].includes(row.layerKind))throw Error('请单选一个文字图层或本工具的文字对象');
     if(row.layerLocking&&Object.entries(row.layerLocking).some(([key,value])=>key!=='_obj'&&value===true))throw Error('请先解锁文字图层');
-    if(row.layerKind===5){if(row.XMPMetadataAsUTF8.length>2097152)throw Error('文字对象源超出上限');const [more]=await batch([{_obj:'get',_target:[{_ref:'property',_property:'smartObjectMore'},...ref(target)],_options:{dialogOptions:'silent'}}]);row.smartObjectMore=more.smartObjectMore;if(!sameTarget(await capture(),target))throw Error('文字对象目标已改变');return clone(row);}
+    if(row.layerKind===5){
+      if(row.XMPMetadataAsUTF8.length>2097152)throw Error('文字对象源超出上限');
+      const query={_obj:'get',_target:[{_ref:'property',_property:'smartObjectMore'},...ref(target)],_options:{dialogOptions:'silent'}};
+      const [more,check]=await batch(stamp?[query,historyRequest()]:[query]);
+      row.smartObjectMore=more.smartObjectMore;
+      if(stamp&&check.ID!==stamp.history||!sameTarget(await capture(),target))throw Error('文字对象目标已改变');
+      return clone(row);
+    }
     if(!row.textKey||typeof row.textKey.textKey!=='string')throw Error('请单选一个文字图层');
     if(row.textKey.textKey.length>20000||JSON.stringify(row.textKey).length>524288)throw Error('文本或样式超出本次处理上限');
-    if(row.textKey.kerningRange?.length)throw Error('含手动字距的文本暂不支持替换');
+    kernings(row.textKey);
     if(!sameTarget(await capture(),target))throw Error('文字目标已改变，请重新读取');
     const result=clone(row);
     for(const key of ['textStyleRange','paragraphStyleRange'])result.textKey[key]=styleRuns(result.textKey,key);
@@ -2375,13 +2406,97 @@ function createTextTools(ps,session,capture,readTree) {
     if(end<raw.textKey.length)throw Error('文本样式范围不完整');
     return normalized;
   }
-  function plan(raw,params) {
+  function applyTypography(text,style,resolution) {
+    if(!style||typeof style!=='object'||Array.isArray(style)||!Object.keys(style).length)throw Error('排版参数无效');
+    const {range,...fields}=style;
+    if(!Object.keys(fields).length)throw Error('缺少排版字段');
+    if(range!==undefined){
+      const value=text.textKey;
+      if(!Array.isArray(range)||range.length!==2||!range.every(Number.isInteger)||range[0]<0||range[0]>=range[1]||range[1]>value.length+1||
+          range.some(offset=>offset<value.length&&/[\uDC00-\uDFFF]/.test(value[offset])))throw Error('排版选区已改变');
+      if(Object.keys(fields).some(key=>!paragraphFields.includes(key))){
+        text.textStyleRange=text.textStyleRange.flatMap(row=>{
+          const stops=[row.from,...range.filter(i=>i>row.from&&i<row.to),row.to];
+          return stops.slice(1).map((to,i)=>({...row,from:stops[i],to,textStyle:{...row.textStyle}}));
+        });
+      }
+    }
+    for(const [key,value] of Object.entries(fields)) {
+      const paragraph=paragraphFields.includes(key),scale=scales.includes(key);
+      const auto=key==='leading'&&value==='auto';
+      if(key==='fontPostScriptName'){
+        if(typeof value!=='string'||!value.length||value.length>200||/[\x00-\x1f]/.test(value))throw Error('字体名称无效');
+      }else if(key==='tracking'){
+        if(!Number.isInteger(value)||Math.abs(value)>1000)throw Error('字距超出范围');
+      }else if(Object.prototype.hasOwnProperty.call(enums,key)){
+        if(!enums[key].includes(value))throw Error('字符或段落样式无效');
+      }else if(switches.includes(key)){
+        if(typeof value!=='boolean')throw Error('排版开关无效');
+      }else if(key==='color'){
+        if(!Array.isArray(value)||value.length!==3||!value.every(v=>Number.isInteger(v)&&v>=0&&v<=255)||
+            ps.app.activeDocument.mode!==ps.constants.DocumentMode.RGB||
+            ps.app.activeDocument.bitsPerChannel!==ps.constants.BitsPerChannelType.EIGHT||
+            ps.app.activeDocument.colorProfileName!=='sRGB IEC61966-2.1')throw Error('文字取色需要 sRGB 8 位文档');
+      }else if(scale){
+        if(!Number.isFinite(value)||value<1||value>1000)throw Error('字符缩放超出范围');
+      }else if(!auto&&((!paragraph&&!['size','leading','baselineShift'].includes(key))||!Number.isFinite(value)
+                ||value<(['firstLineIndent','baselineShift'].includes(key)?-1296:0)||value>1296||(['size','leading'].includes(key)&&!value)))throw Error('排版数值无效');
+      const field=paragraph?'paragraphStyle':'textStyle';
+      for(const row of text[field+'Range']) {
+        if(range&&(row.from>=range[1]||row.to<=range[0]))continue;
+        const target=row[field];
+        if(key==='fontPostScriptName'||key==='tracking'||switches.includes(key))target[key]=value;
+        else if(Object.prototype.hasOwnProperty.call(enums,key))target[key]={_enum:key==='align'?'alignmentType':key,_value:value};
+        else if(key==='color'){
+          // The text engine stores normalized RGB channels as single-precision values.
+          const [red,grain,blue]=value.map(channel=>Math.fround(channel/255)*255);
+          target.color={_obj:'RGBColor',red,grain,blue};
+        }
+        // Photoshop stores the fraction at single precision, then reports percent.
+        else if(scale)target[key]=Math.fround(value/100)*100;
+        else if(auto){target.autoLeading=true;delete target.leading;delete target.impliedLeading;}
+        else{
+          const unit=target[key]?._unit==='pointsUnit'?'pointsUnit':'pixelsUnit';
+          // Photoshop stores these distances as single-precision values.
+          target[key]={_unit:unit,_value:Math.fround(unit==='pixelsUnit'?value*resolution/72:value)};
+          if(key==='leading')target.autoLeading=false;
+          delete target[key==='size'?'impliedFontSize':'implied'+key[0].toUpperCase()+key.slice(1)];
+        }
+      }
+    }
+  }
+  function plan(raw,params,resolution) {
     if(params&&Object.prototype.hasOwnProperty.call(params,'value')) {
       const value=params.value,origins=params.origins;
       if(typeof value!=='string'||!value.length||value.length>20000||/[\n\0]/.test(value)||!Number.isInteger(params.count)||params.count<0||params.count>40001||
           !Array.isArray(origins)||origins.length!==value.length+1||origins.some((origin,index)=>!Number.isInteger(origin)||origin<0||origin>raw.textKey.length||index>0&&origin<origins[index-1]))throw Error('文字预览计划无效');
       for(const char of value)if(char.length===1&&char.charCodeAt(0)>=0xd800&&char.charCodeAt(0)<=0xdfff)throw Error('文字包含不完整的Unicode字符');
-      return {value:mappedText(raw,value,origins),count:params.count,origins};
+      if(params.typography&&indents.some(key=>Object.prototype.hasOwnProperty.call(params.typography,key))){
+        if(!canIndent(raw))throw Error('段落缩进需要水平段落文字');
+        if(params.list_layout&&['startIndent','firstLineIndent'].some(key=>Object.prototype.hasOwnProperty.call(params.typography,key)))throw Error('列表的左缩进和首行缩进由列表层级控制');
+      }
+      if(params.typography?.align&&(raw.orientation?._value!=='horizontal'||params.list_layout))throw Error('段落对齐需要普通水平文字');
+      if((params.typography?.align?.startsWith('justify')||params.typography?.hyphenate!==undefined)&&(!canIndent(raw)||params.list_layout))
+        throw Error('两端对齐和断字需要水平段落文字');
+      const mapped=mappedText(raw,value,origins);
+      if(params.typography)applyTypography(mapped,params.typography,resolution??ps.app.activeDocument.resolution);
+      if(params.kerning!==undefined){
+        if(!canKern(raw)||params.list_layout||!Array.isArray(params.kerning)||!params.kerning.length||params.kerning.length>256)
+          throw Error('手动字偶微调需要支持的水平文字');
+        const pairs=kernings(mapped);
+        let last=0;
+        for(const entry of params.kerning){
+          if(!Array.isArray(entry)||entry.length!==2||!Number.isInteger(entry[0])||entry[0]<=last||
+              entry[1]!==null&&(!Number.isInteger(entry[1])||Math.abs(entry[1])>1000))throw Error('字偶草稿无效');
+          const [end,amount]=entry,start=pairStart(value,end);
+          if(start<0)throw Error('请把光标放在同一段的两个字符之间');
+          if(amount===null)pairs.delete(start);else pairs.set(start,{_obj:'kerningRange',from:start,to:end,kerning:amount});
+          last=end;
+        }
+        mapped.kerningRange=Array.from(pairs.values()).sort((a,b)=>a.from-b.from);
+      }
+      if(mapped.kerningRange)applyKerningModes(mapped,params.typography?.autoKern);
+      return {value:mapped,count:params.typography||params.kerning?Math.max(1,params.count):params.count,origins};
     }
     if(!params||typeof params.find!=='string'||!params.find||params.find.length>200||typeof params.replacement!=='string'||params.replacement.length>500)throw Error('查找内容不能为空，查找／替换内容超出上限');
     const find=params.find.replace(/\r\n|\n/g,'\r'),replacement=params.replacement.replace(/\r\n|\n/g,'\r');
@@ -2396,7 +2511,54 @@ function createTextTools(ps,session,capture,readTree) {
     append(cursor,text.length);origins.push(cursor<text.length?text.length:(lastHit>=0?lastHit:text.length));
     const value=parts.join('');
     if(!value.length||value.length>20000)throw Error('替换后的文本为空或超过20000字符');
-    return {value:mappedText(raw,value,origins),count,origins};
+    const mapped=mappedText(raw,value,origins);
+    if(mapped.kerningRange)applyKerningModes(mapped);
+    return {value:mapped,count,origins};
+  }
+  const lowSurrogate=code=>code>=0xdc00&&code<=0xdfff;
+  function pairStart(text,end){
+    if(end<=0||end>=text.length||lowSurrogate(text.charCodeAt(end))||text[end]==='\r'||text[end-1]==='\r')return -1;
+    return end-(lowSurrogate(text.charCodeAt(end-1))?2:1);
+  }
+  function kernings(raw){
+    const rows=raw.kerningRange??[],pairs=new Map(),text=raw.textKey;
+    if(!Array.isArray(rows)||rows.length>20000)throw Error('字偶样式范围无效');
+    let previous=0;
+    for(const row of rows){
+      if(row?._obj!=='kerningRange'||!Number.isInteger(row.from)||!Number.isInteger(row.to)||
+          !Number.isInteger(row.kerning)||row.from<previous||row.to<=row.from||row.to>text.length)
+        throw Error('字偶样式范围无效');
+      for(let at=row.from;at<row.to;){
+        const next=at+(text.codePointAt(at)>65535?2:1);
+        if(next>row.to||lowSurrogate(text.charCodeAt(at)))throw Error('字偶超出字符边界');
+        pairs.set(at,{_obj:'kerningRange',from:at,to:next,kerning:row.kerning});
+        at=next;
+      }
+      previous=row.to;
+    }
+    return pairs;
+  }
+  function applyKerningModes(text,automatic='metricsKern'){
+    const pairs=kernings(text);
+    const isManual=new Uint8Array(text.textKey.length+1);
+    for(const {from,to} of pairs.values()){
+      // Photoshop marks the preceding character's mode as part of a manual pair.
+      const start=from>0&&text.textKey[from-1]!=='\r'?from-(lowSurrogate(text.textKey.charCodeAt(from-1))?2:1):from;
+      isManual.fill(1,start,to);
+    }
+    const mapped=[];
+    for(const row of text.textStyleRange){
+      let from=row.from;
+      for(let to=row.from+1;to<=row.to;to++){
+        if(to<row.to&&isManual[to]===isManual[from])continue;
+        const style={...row.textStyle};
+        if(isManual[from])style.autoKern={_enum:'autoKern',_value:'manual'};
+        else if(styleSignature(style)?.autoKern?._value==='manual')style.autoKern={_enum:'autoKern',_value:automatic};
+        mapped.push({...row,from,to,textStyle:style});from=to;
+      }
+    }
+    if(mapped.length>1024)throw Error('字偶与字符样式范围超过上限');
+    text.textStyleRange=mapped;
   }
   function mappedText(raw,value,origins) {
     const result={_obj:'textLayer',textKey:value};
@@ -2424,6 +2586,18 @@ function createTextTools(ps,session,capture,readTree) {
       }
       result[key]=mapped;
     }
+    if(raw.kerningRange?.length){
+      const pairs=kernings(raw);
+      result.kerningRange=[];
+      for(let end=1;end<value.length;end++){
+        const start=pairStart(value,end);
+        if(start<0)continue;
+        const row=pairs.get(origins[start]),oldEnd=origins[end];
+        if(row?.to===oldEnd&&value.slice(start,end)===raw.textKey.slice(row.from,row.to)&&
+            value.codePointAt(end)===raw.textKey.codePointAt(oldEnd))
+          result.kerningRange.push({...row,from:start,to:end});
+      }
+    }
     return result;
   }
   function styleSignature(style) {
@@ -2437,6 +2611,7 @@ function createTextTools(ps,session,capture,readTree) {
     return value._unit==='pixelsUnit'?value._value:value._unit==='pointsUnit'&&Number.isFinite(resolution)&&resolution>0?value._value*resolution/72:NaN;
   }
   function stylesMatch(actual,wanted,resolution,original,origins,listFormatting=false) {
+    if(!same(Array.from(kernings(actual).values()),Array.from(kernings(wanted).values())))return false;
     for(const [key,field] of [['textStyleRange','textStyle'],['paragraphStyleRange','paragraphStyle']]) {
       const a=styleRuns(actual,key),b=styleRuns(wanted,key);let ai=0,bi=0;
       const signatures=ranges=>ranges.map(row=>{
@@ -2444,9 +2619,24 @@ function createTextTools(ps,session,capture,readTree) {
         if(baseline?._unit==='pointsUnit'&&resolution===undefined)resolution=ps.app.activeDocument.resolution;
         const offset=baseline===undefined||baseline===0?0:pixels(baseline,resolution);
         if(field==='textStyle'&&Number.isFinite(offset))delete style.baselineShift;
-        if(field==='paragraphStyle')for(const key of ['startIndent','firstLineIndent'])if(style[key]!==undefined){if(resolution===undefined)resolution=ps.app.activeDocument.resolution;style[key]=style[key]===0?0:pixels(style[key],resolution);}
-        const fontless={...style};for(const key of ['fontPostScriptName','fontScript','fontTechnology'])delete fontless[key];
-        return {style:stable(style),fontless:stable(fontless),font:style.fontPostScriptName,
+        if(field==='textStyle'&&style.autoLeading===true)delete style.leading;
+        if(field==='paragraphStyle'&&style.hyphenate===true)
+          for(const [key,value] of Object.entries(hyphenationDefaults))if(style[key]===undefined)style[key]=value;
+        if(field==='paragraphStyle')for(const key of paragraphDistances)if(style[key]!==undefined){if(resolution===undefined)resolution=ps.app.activeDocument.resolution;style[key]=style[key]===0?0:Math.fround(pixels(style[key],resolution));}
+        if(field==='textStyle'&&style.color?._obj==='RGBColor'){
+          const {red,grain,blue}=style.color;
+          if([red,grain,blue].every(Number.isFinite))
+            style.color={...style.color,red:Math.fround(red/255),grain:Math.fround(grain/255),blue:Math.fround(blue/255)};
+        }
+        // Photoshop derives these tags from the installed face on write. Match the face by its PostScript name.
+        if(field==='textStyle'&&typeof style.fontPostScriptName==='string'){
+          delete style.fontScript;
+          delete style.fontTechnology;
+        }
+        const {fontPostScriptName,...fontless}=style;
+        const {autoKern,...kernless}=style;
+        return {style:stable(style),fontless:stable(fontless),font:fontPostScriptName,
+          kernless:stable(kernless),kerning:autoKern?._value,
           available:row[field].fontAvailable===true||row[field].baseParentStyle?.fontAvailable===true,offset};
       });
       const signaturesA=signatures(a),signaturesB=signatures(b);
@@ -2459,10 +2649,14 @@ function createTextTools(ps,session,capture,readTree) {
         // PS chooses a fallback for a new glyph absent from the requested font.
         const forcedSymbol=listFormatting?.marker_font==='SegoeUISymbol'&&right.font==='SegoeUISymbol';
         const fallback=field==='textStyle'&&!forcedSymbol&&inserted&&left.available&&typeof left.font==='string'&&left.font!==right.font&&left.fontless===right.fontless;
+        // Photoshop stores Metrics at some paragraph ends, where there is no glyph pair.
+        const pos=wanted.textKey;
+        const noPair=field==='textStyle' && (offset>=pos.length-1 || pos[offset]==='\r' || pos[offset+1]==='\r');
+        const terminalKern=noPair&&left.kerning==='metricsKern'&&right.kerning==='opticalKern'&&left.kernless===right.kernless;
         const paragraphDefaults=field==='paragraphStyle'&&listFormatting&&Object.entries(JSON.parse(right.style)).every(([key,value])=>{
-          const actual=JSON.parse(left.style)[key];return ['startIndent','firstLineIndent'].includes(key)&&Number.isFinite(actual)&&Number.isFinite(value)?Math.abs(actual-value)<.001:same(actual,value);
+          const actual=JSON.parse(left.style)[key];return indents.includes(key)&&Number.isFinite(actual)&&Number.isFinite(value)?Math.abs(actual-value)<.001:same(actual,value);
         });
-        if(left.style!==right.style&&!fallback&&!paragraphDefaults || Number.isFinite(left.offset)&&Number.isFinite(right.offset)&&Math.abs(left.offset-right.offset)>.0001)return false;
+        if(left.style!==right.style&&!fallback&&!terminalKern&&!paragraphDefaults || Number.isFinite(left.offset)&&Number.isFinite(right.offset)&&Math.abs(left.offset-right.offset)>.0001)return false;
       }
     }
     return true;
@@ -2472,6 +2666,8 @@ function createTextTools(ps,session,capture,readTree) {
     const uniform=ranges.every(range=>same(range.paragraphStyle,ranges[0].paragraphStyle));
     return value=>{
       const to={...value};
+      // The host applies adjacent pair ranges from right to left.
+      if(to.kerningRange)to.kerningRange=[...to.kerningRange].reverse();
       // Rewriting identical inherited paragraphs materializes PS defaults and changes their representation.
       if(uniform&&value.paragraphStyleRange?.every(range=>same(styleSignature(range.paragraphStyle),styleSignature(ranges[0].paragraphStyle))))delete to.paragraphStyleRange;
       return batch([{_obj:'set',_target:[{_ref:'textLayer',_enum:'ordinal',_value:'targetEnum'}],to,_options:{dialogOptions:'silent'}}]);
@@ -2556,13 +2752,78 @@ function createTextTools(ps,session,capture,readTree) {
       if(probe!==null)await batch([{_obj:'delete',_target:[{_ref:'layer',_id:probe}],_options:{dialogOptions:'silent'}},{_obj:'select',_target:[{_ref:'layer',_id:target.active_layer_id}],makeVisible:false,_options:{dialogOptions:'silent'}}]);
     }
   }
-  async function read() {
+  function canProof(doc){
+    return String(options.hostVersion)==='24.0.1' && typeof options.saveProof==='function' &&
+      doc.mode===ps.constants.DocumentMode.RGB && doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT &&
+      doc.colorProfileName==='sRGB IEC61966-2.1' && doc.width<=8192 && doc.height<=8192 && doc.width*doc.height<=16777216;
+  }
+  function canIndent(raw){
+    const shape=raw.textShape?.[0];
+    return raw.orientation?._value==='horizontal' && raw.textShape?.length===1 &&
+      shape?.char?._value==='box' && (shape.columnCount??1)===1 && (shape.rowCount??1)===1 &&
+      raw.warp?.warpStyle?._value==='warpNone';
+  }
+  function canKern(raw){
+    return raw.orientation?._value==='horizontal'&&raw.textShape?.length===1&&
+      ['paint','box'].includes(raw.textShape[0].char?._value)&&raw.warp?.warpStyle?._value==='warpNone';
+  }
+  function proofVisibility(layers,parent=0){
+    return Array.from(layers,layer=>[[layer.id,parent,layer.visible],
+      ...(layer.kind===ps.constants.LayerKind.GROUP?proofVisibility(layer.layers,layer.id):[])]).flat();
+  }
+  async function historyID(){
+    const [state]=await batch([historyRequest()]);
+    if(!Number.isSafeInteger(state.ID))throw Error('无法核对排版历史');
+    return state.ID;
+  }
+  async function proofStamp(doc,isolated=false){
+    return {history:await historyID(),saved:doc.saved,count:doc.historyStates.length,documents:Array.from(ps.app.documents,d=>d.id),
+      size:[doc.width,doc.height,doc.resolution],
+      ...(isolated?{visibility:proofVisibility(doc.layers)}:{})};
+  }
+  let fontCatalog=null;
+  async function availableFonts(){
+    if(fontCatalog)return fontCatalog;
+    const rows=new Map();
+    const add=(family,style,id)=>{
+      if(typeof id==='string' && id.length>0 && id.length<=200 && !/[\x00-\x1f]/.test(id) &&
+          typeof family==='string' && family.length>0 && family.length<=160 && typeof style==='string' && style.length<=110 &&
+          !rows.has(id))rows.set(id,[family,style,id]);
+    };
+    try {
+      const [result]=await batch([{_obj:'get',_target:[{_ref:'property',_property:'fontList'},
+        {_ref:'application',_enum:'ordinal',_value:'targetEnum'}],_options:{dialogOptions:'silent'}}]);
+      const {fontFamilyName,familyName,fontStyleName,fontPostScriptName}=result.fontList||{};
+      const families=fontFamilyName??familyName;
+      if([families,fontStyleName,fontPostScriptName].every(Array.isArray)&&families.length===fontStyleName.length&&families.length===fontPostScriptName.length)
+        for(let i=0;i<Math.min(families.length,4096);++i)add(families[i],fontStyleName[i],fontPostScriptName[i]);
+    }catch(_){}
+    if(!rows.size)try {
+      const fonts=ps.app.fonts,count=Math.min(fonts.length,4096);
+      for(let i=0;i<count;++i){
+        if(i>0 && i%24===0)await new Promise(resolve=>setTimeout(resolve,0));
+        const font=fonts[i];add(font?.family,font?.style,font?.postScriptName);
+      }
+    }catch(_){}
+    if(!rows.size)return [];
+    fontCatalog=Array.from(rows.values()).sort((a,b)=>a[0].localeCompare(b[0])||a[1].localeCompare(b[1]));
+    return fontCatalog;
+  }
+  async function read(fast=false) {
     snapshot=null;
-    const target=await capture(),row=await descriptor(target,true);
+    const target=await capture(),stamp=fast?{}:null,row=await descriptor(target,true,stamp);
     const revision=session+':text:'+String(++serial);
     snapshot={target,row,revision,time:Date.now()};
-    if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8};
-    return {target,revision,text:row.textKey.textKey,name:row.name,list_xmp:row.XMPMetadataAsUTF8,list_paragraphs:paragraphLayout(row.textKey)};
+    const doc=ps.app.activeDocument,supportsProof=canProof(doc);
+    const capabilities={advanced_typography:true,opentype_supported:true,kerning_supported:row.layerKind===5||canKern(row.textKey),text_rgb:doc.mode===ps.constants.DocumentMode.RGB &&
+      doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT && doc.colorProfileName==='sRGB IEC61966-2.1',
+      ...(fast?{canvas_history:stamp.history,fonts_available:true,...(fontCatalog?{fonts:fontCatalog}:{})}:
+        {fonts:(await availableFonts()).map(([family,style,id])=>[[family,style].filter(Boolean).join(' '),id])})};
+    const objectProof=supportsProof?{object_proof:true,isolated_proof:true,proof_size:[doc.width,doc.height],proof_resolution:doc.resolution}: {};
+    if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8,typography_supported:true,style_scope_supported:true,extended_typography:true,...capabilities,...objectProof};
+    return {target,revision,proof_available:supportsProof,proof_encoding:'png',...capabilities,...objectProof,
+      text:row.textKey.textKey,name:row.name,list_xmp:row.XMPMetadataAsUTF8,list_paragraphs:paragraphLayout(row.textKey),
+      typography_supported:true,style_scope_supported:true,extended_typography:true,paragraph_alignment_supported:row.textKey.orientation?._value==='horizontal',paragraph_indents_supported:canIndent(row.textKey),resolution:ps.app.activeDocument.resolution,style_source:{textStyleRange:row.textKey.textStyleRange,paragraphStyleRange:row.textKey.paragraphStyleRange,kerningRange:row.textKey.kerningRange||[]}};
   }
   async function finishEditing(request,saved) {
     const tool=await ps.core.getActiveTool(),kind=tool?.classID??tool?.classId;
@@ -2583,17 +2844,33 @@ function createTextTools(ps,session,capture,readTree) {
   async function prepareObject(request,params){
     const saved=snapshot;
     if(!saved||params?.revision!==saved.revision||!sameTarget(saved.target,request.target)||Date.now()-saved.time>1800000)throw Error('文字对象读取已过期');
-    await finishEditing(request,saved);
+    let proofBefore=null;
+    const doc=ps.app.activeDocument;
+    if(request.object_proof===true){
+      if(!canProof(doc)||(await ps.core.getActiveTool())?.isModal!==false)throw Error('当前 Photoshop 或文档尚不能静默预览矢量对象');
+      proofBefore=await proofStamp(doc,request.proof_isolated===true);
+    }else await finishEditing(request,saved);
     const row=await descriptor(request.target,true);if(!same(row,saved.row))throw Error('文字或对象已改变，请重新读取');
     const existing=row.layerKind===5,raw=existing?params.object_source?.layer?.text:row.textKey;
+    if(params.cells){
+      const cells=params.cells;
+      if(!Array.isArray(cells)||!cells.length||cells.length>12||!Array.isArray(cells[0])||!cells[0].length||cells[0].length>8||
+         cells.some(r=>!Array.isArray(r)||r.length!==cells[0].length||r.some(c=>typeof c!=='string'||Array.from(c).length>128||/[\x00-\x1f]/.test(c))))throw Error('表格单元格无效');
+      if(doc.mode!==ps.constants.DocumentMode.RGB||doc.bitsPerChannel!==ps.constants.BitsPerChannelType.EIGHT)throw Error('表格需要 RGB 8 位文档');
+      if(existing&&(!params.object_source||!/^[0-9a-f]{64}$/.test(params.object_render)))throw Error('对象源身份不完整');
+      const updating=existing&&params.object_source.schema===3;
+      const canvas=updating?params.object_source.canvas:{width:Math.min(doc.width,Math.max(1,Math.round(cells[0].length*110*doc.resolution/72))),height:Math.min(doc.height,Math.max(1,Math.round(cells.length*32*doc.resolution/72))),resolution:doc.resolution,mode:'RGB',depth:8,profile:doc.colorProfileName};
+      return {kind:updating?'smart-object':'new-table',row,proofBefore,before_xmp:row.XMPMetadataAsUTF8,...(existing?{before_render:params.object_render,transform:row.smartObjectMore?.transform}:{before_text:row.textKey}),source:{schema:3,canvas,table:cells}};
+    }
     if(!raw||existing&&(!params.object_source||!/^[0-9a-f]{64}$/.test(params.object_render)))throw Error('文字对象源或显示校验缺失');
-    const wanted=plan(raw,params).value,doc=ps.app.activeDocument;
+    if(existing&&params.typography&&params.object_source.schema!==1)throw Error('此历史文字对象暂不支持排版修改');
+    const wanted=plan(raw,params,existing?params.object_source.canvas.resolution:undefined).value;
     const canvas=existing?params.object_source.canvas:{width:doc.width,height:doc.height,resolution:doc.resolution,mode:doc.mode===ps.constants.DocumentMode.RGB?'RGB':'unsupported',depth:doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT?8:0,profile:doc.colorProfileName};
     if(canvas.mode!=='RGB'||canvas.depth!==8)throw Error('矢量文字对象目前仅支持RGB8源');
     const legacy=existing&&params.object_source.schema===2;
     const originalXmp=existing?params.object_source.layer.xmp:row.XMPMetadataAsUTF8;
     if(!legacy&&Object.prototype.hasOwnProperty.call(params,'list_xmp')&&params.list_xmp!==originalXmp)throw Error('请先写回普通文字列表，再生成矢量文字对象；本次未修改');
-    return {kind:existing?'smart-object':'text',row,before_xmp:row.XMPMetadataAsUTF8,...(!existing?{before_text:row.textKey}:{transform:row.smartObjectMore?.transform,before_render:params.object_render}),
+    return {kind:existing?'smart-object':'text',row,proofBefore,before_xmp:row.XMPMetadataAsUTF8,...(!existing?{before_text:row.textKey}:{transform:row.smartObjectMore?.transform,before_render:params.object_render}),
       source:{...(legacy?{schema:2,renderer:'list-v1'}:{schema:1}),canvas,layer:{name:row.name,text:{...raw,...wanted},xmp:Object.prototype.hasOwnProperty.call(params,'list_xmp')?params.list_xmp:originalXmp}}};
   }
   async function finishObject(request,prepared,native,expected){
@@ -2601,6 +2878,16 @@ function createTextTools(ps,session,capture,readTree) {
       let unknown=native.result_unknown===true;
       if(!unknown)try{unknown=!same(await descriptor(request.target,true),prepared.row);}catch(_){unknown=true;}
       const error=Error(native.error||'文字对象执行失败');error.resultUnknown=unknown;throw error;
+    }
+    if(request.object_proof===true){
+      const f=native.result,scale=request.proof_scale??1,before=prepared.proofBefore;
+      if(f?.verified!==true||f.restored!==true||f.frame_id!==request.id||f.document_id!==request.target.document_id||
+         f.layer_id!==request.target.active_layer_id||f.history!==before?.history||f.scale!==scale||
+         (f.isolated??false)!==(request.proof_isolated===true)||
+         f.width!==before.size[0]*scale||f.height!==before.size[1]*scale||
+         !same(await descriptor(request.target,true),prepared.row)||!same(await proofStamp(ps.app.activeDocument,request.proof_isolated===true),before))
+        throw Error('矢量草稿恢复结果待核对');
+      return f;
     }
     const target=await capture();
     if(target.document_id!==request.target.document_id||target.layer_ids.length!==1||target.active_layer_id!==native.result?.layer_id){const e=Error('文字对象目标结果待核对');e.resultUnknown=true;throw e;}
@@ -2614,14 +2901,24 @@ function createTextTools(ps,session,capture,readTree) {
     const wanted=plan(saved.row.textKey,params);
     const tagging=Object.prototype.hasOwnProperty.call(params,'list_xmp');
     if(tagging&&(typeof params.list_xmp!=='string'||params.list_xmp.length>131072||params.list_xmp.includes('\0')))throw Error('列表标记数据无效');
-    if(wanted.value.textKey===saved.row.textKey.textKey&&!params.list_layout&&(!tagging||params.list_xmp===(saved.row.XMPMetadataAsUTF8||'')))return {verified:true,count:0};
-    await finishEditing(request,saved);
+    const proof=request.command==='text.proof',scale=request.proof_scale??1,isolated=proof&&request.proof_isolated===true;
+    if(proof&&!canProof(ps.app.activeDocument))throw Error('当前文档或宿主未验证草稿预览');
+    if(!Number.isInteger(scale)||scale<1||scale>8||scale!==1&&(!proof||!Number.isSafeInteger(request.proof_history)))
+      throw Error('高清草稿预览缺少有效原尺寸草稿');
+    if(!proof && request.proof_history===undefined && wanted.value.textKey===saved.row.textKey.textKey&&!params.typography&&!params.kerning&&!params.list_layout&&(!tagging||params.list_xmp===(saved.row.XMPMetadataAsUTF8||'')))return {verified:true,count:0};
+    if(proof || request.proof_history!==undefined){
+      if((await ps.core.getActiveTool())?.isModal!==false)throw Error('请先完成当前 Photoshop 工具编辑');
+    }else await finishEditing(request,saved);
     let uncertain=false;
     try {return await ps.core.executeAsModal(async context=>{
       if(context.isCancelled||Date.now()>request.expires_at_ms)throw Error('文本操作已取消');
+      const doc=ps.app.activeDocument;
+      const stamp=proof || request.proof_history!==undefined?await proofStamp(doc,isolated):null;
+      if(request.proof_history!==undefined && request.proof_history!==stamp.history)throw Error('画布自预览后已改变，请重新预览');
       const before=await descriptor(request.target);
       if(!same(before,saved.row))throw Error('文字内容或样式已改变，请重新读取');
       const history=await context.hostControl.suspendHistory({documentID:request.target.document_id,name:'处理文字'});
+      let ending=false;
       try {
         if(context.isCancelled||Date.now()>request.expires_at_ms)throw Error('文本操作已取消');
         // PS24.0 rejects a document-qualified textLayer identifier. The modal
@@ -2630,23 +2927,64 @@ function createTextTools(ps,session,capture,readTree) {
         await textWriter(before.textKey)(wanted.value);
         if(tagging&&params.list_xmp!==(before.XMPMetadataAsUTF8||''))await batch([{_obj:'set',_target:[{_ref:'property',_property:'XMPMetadataAsUTF8'},...ref(request.target)],to:{_obj:'layer',XMPMetadataAsUTF8:params.list_xmp},_options:{dialogOptions:'silent'}}]);
         const after=await descriptor(request.target);
-        if(after.textKey.textKey!==wanted.value.textKey||!stylesMatch(after.textKey,wanted.value,undefined,before.textKey,wanted.origins,params.list_layout)||!same(layout(after.textKey),layout(before.textKey)))throw Error('文本或样式读回不一致');
+        if(after.textKey.textKey!==wanted.value.textKey||!stylesMatch(after.textKey,wanted.value,undefined,params.typography?.fontPostScriptName?undefined:before.textKey,wanted.origins,params.list_layout)||!same(layout(after.textKey),layout(before.textKey)))throw Error('文本或样式读回不一致');
         if((after.XMPMetadataAsUTF8||'')!==(tagging?params.list_xmp:(before.XMPMetadataAsUTF8||'')))throw Error('列表标记读回不一致');
+        if(proof){
+          if(context.isCancelled || !sameTarget(await capture(),request.target))throw Error('草稿预览目标已改变');
+          const [width,height,resolution]=stamp.size;
+          if(scale>1){
+            if(![width,height].every(v=>v*scale<=8192)||width*height*scale*scale>16777216)
+              throw Error('高清草稿超出像素上限');
+            await doc.resizeImage(width*scale,height*scale,resolution*scale,ps.constants.ResampleMethod.BICUBIC);
+            if(doc.width!==width*scale||doc.height!==height*scale||Math.abs(doc.resolution-resolution*scale)>.001||
+                context.isCancelled||!sameTarget(await capture(),request.target))throw Error('高清草稿尺寸或目标未确认');
+            if((await descriptor(request.target)).textKey.textKey!==after.textKey.textKey)throw Error('高清草稿文字改变');
+          }
+          const hidden=[];
+          if(isolated){
+            const tree=stamp.visibility;
+            let active=request.target.active_layer_id;
+            while(active){
+              const row=tree.find(([id])=>id===active);
+              if(!row)throw Error('无法定位草稿背景图层');
+              hidden.push(...tree.filter(([id,parent,visible])=>parent===row[1]&&id!==active&&visible).map(([id])=>id));
+              active=row[1];
+            }
+          }
+          const visibility=(action,ids)=>batch(ids.map(id=>({_obj:action,_target:[{_ref:'layer',_id:id}],_options:{dialogOptions:'silent'}})));
+          try {
+            if(hidden.length){
+              await visibility('hide',hidden);
+              const remaining=proofVisibility(doc.layers);
+              if(remaining.some(([id,,visible])=>visible&&hidden.includes(id)))throw Error('无法隐藏草稿背景图层');
+            }
+            await options.saveProof(request,doc);
+          }finally{
+            if(hidden.length)await visibility('show',hidden);
+          }
+          ending=true;
+          await context.hostControl.resumeHistory(history,false);
+          if(!sameTarget(await capture(),request.target)||!same(await descriptor(request.target),before)||!same(await proofStamp(doc,isolated),stamp))throw Error('草稿预览后的原文档状态待核对');
+          return {verified:true,restored:true,frame_id:request.id,document_id:doc.id,layer_id:request.target.active_layer_id,
+            history:stamp.history,width:width*scale,height:height*scale,scale,...(isolated?{isolated:true}:{})};
+        }
         await context.hostControl.resumeHistory(history,true);snapshot=null;
         return {verified:true,count:wanted.count};
       } catch(error) {
         try {
+          if(ending)throw error;
           await context.hostControl.resumeHistory(history,false);
-          if(!same(await descriptor(request.target),before))throw Error('Text restore mismatch');
+          if(!same(await descriptor(request.target),before)||proof&&!same(await proofStamp(doc,isolated),stamp))throw Error('Text restore mismatch');
         } catch(_) {uncertain=true;}
         throw error;
       }
-    },{commandName:'处理文字',timeOut:0});}
+    },{commandName:'处理文字',timeOut:0,interactive:proof});}
     catch(error){if(uncertain){const unknown=Error('文字恢复结果待核对');unknown.resultUnknown=true;throw unknown;}throw error;}
   }
   async function split(request) {
     const saved=snapshot,params=request.text,ends=params?.breaks;let raw=saved?.row.textKey;
     if(!saved||params?.revision!==saved.revision||!sameTarget(saved.target,request.target)||Date.now()-saved.time>(Object.prototype.hasOwnProperty.call(params || {},'value')?1800000:60000))throw Error('文本预览已过期，请重新读取');
+    if(raw.kerningRange?.length)throw Error('含有手动字偶的文字暂不支持拆分');
     const prepared=params&&Object.prototype.hasOwnProperty.call(params,'value')?plan(raw,params).value:null;
     if(prepared)raw={...raw,...prepared};
     if(prepared&&!['original','lines'].includes(params.layout))throw Error('文字拆分布局无效');
@@ -2780,15 +3118,20 @@ function createTextTools(ps,session,capture,readTree) {
     },{commandName:'拆分文字图层',timeOut:0});}
     catch(error){if(uncertain){const unknown=Error('文字拆分恢复结果待核对');unknown.resultUnknown=true;throw unknown;}throw error;}
   }
-  return {read,replace,split,prepareObject,finishObject};
+  return {read,replace,split,prepareObject,finishObject,fonts:availableFonts};
 }
 
 function createLayerView(ps,session,capture) {
+  const isolations=new Map();
   const property=name=>({_obj:'get',_target:[{_ref:'property',_property:name},{_ref:'document',_enum:'ordinal',_value:'targetEnum'}],_options:{dialogOptions:'silent'}});
   const number=v=>typeof v==='number'?v:v?._value;
-  async function batch(commands) {
-    const result=await ps.action.batchPlay(commands,{});
-    if(!Array.isArray(result)||result.length!==commands.length||result.some(r=>!r||r._obj==='error'))throw Error('PS聚焦视图命令被拒绝');
+  async function batch(commands,options={}) {
+    const result=await ps.action.batchPlay(commands,options);
+    if(!Array.isArray(result)||result.length!==commands.length)throw Error('PS聚焦视图返回的命令数不匹配');
+    for(let i=0;i<result.length;i++)if(!result[i]||result[i]._obj==='error'){
+      const r=result[i],cmd=commands[i];
+      throw Error(`Photoshop ${cmd._obj}[${i+1}] ${cmd._target?.[0]?._value || cmd._target?.[0]?._property || ''} (${r?.result ?? '?'}) ${r?.message || '未返回结果'}`);
+    }
     return result;
   }
   async function menus() {
@@ -2840,10 +3183,16 @@ function createLayerView(ps,session,capture) {
     await guard();
     return {matrix,viewport,document:dimensions,layer:bounds.every(Number.isFinite)?bounds:null,tool};
   }
+  async function visibility(changes) {
+    if(!changes.length)return;
+    await batch(changes.map(({layer,show})=>({_obj:show?'show':'hide',_target:[{_ref:'layer',_id:layer.id}],_options:{dialogOptions:'silent'}})),{immediateRedraw:true});
+    if(changes.some(({layer,show})=>layer.visible!==show))throw Error('图层可见性读回不一致');
+  }
   async function frame(request,io) {
-    const solo=request.frame_solo===true;
-    if(solo && !io)throw Error('临时独显需要按键释放通道');
-    let finishPreview=null,rollback=null;
+    const exitID=request.exit_isolation;
+    const solo=request.frame_solo===true || !!exitID;
+    if(solo && !exitID && !io)throw Error('临时独显需要按键释放通道');
+    let finishPreview=null,rollback=null,restoreVisibility=null;
     const prepared=await ps.core.executeAsModal(async context=>{
       const expected=request.target;
       async function documentGuard() {
@@ -2862,7 +3211,7 @@ function createLayerView(ps,session,capture) {
         const packet=await io.read(),now=Date.now();
         if(packet){
           if(packet.id!==request.id||packet.session!==request.session||packet.token!==request.token||!Number.isSafeInteger(packet.seq)||packet.seq<seq||!Number.isFinite(packet.lease_until_ms)||packet.lease_until_ms>now+5000||!['preview','commit','cancel'].includes(packet.phase))throw Error('Invalid F gesture mailbox');
-          seq=packet.seq;lease=packet.lease_until_ms;phase=solo && packet.phase==='commit'?'cancel':packet.phase;
+          seq=packet.seq;lease=packet.lease_until_ms;phase=packet.phase;
         }
         if(context.isCancelled||now>lease)phase='cancel';
       }
@@ -2872,12 +3221,26 @@ function createLayerView(ps,session,capture) {
       if(!layers.length||layers.length>128||layers.map(l=>l.id).sort((a,b)=>a-b).join(',')!==expected.layer_ids.join(','))throw Error('聚焦最多支持128个选中图层');
       if(solo){
         const selected=new Set(expected.layer_ids),ancestors=new Set(),changes=[];
+        // A tap toggles editable isolation. Only a hold opens a temporary preview.
+        const until=Date.now()+250;
+        while(phase==='preview' && Date.now()<until){
+          await new Promise(resolve=>setTimeout(resolve,20));await input();
+        }
+        if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
+        const toggle=phase==='commit',record=toggle && isolations.get(doc.id),saved=record?.visibility;
+        if(exitID && record?.id!==exitID)throw Error('图层隔离已结束或已切换文档');
         for(const layer of layers){
           for(let parent=layer.parent;parent && parent!==doc && parent.typename!=='Document';parent=parent.parent)
             ancestors.add(parent.id);
         }
         function collect(siblings,inSelectedGroup){
           for(const layer of siblings){
+            if(saved){
+              if(saved.has(layer.id) && layer.visible!==saved.get(layer.id))
+                changes.push({layer,visible:layer.visible,show:saved.get(layer.id)});
+              if(layer.layers?.length)collect(layer.layers,false);
+              continue;
+            }
             const chosen=selected.has(layer.id),ancestor=ancestors.has(layer.id);
             if(!chosen && !ancestor && inSelectedGroup)continue;
             const visible=layer.visible,show=chosen || ancestor;
@@ -2889,24 +3252,57 @@ function createLayerView(ps,session,capture) {
         collect(doc.layers,false);
         await guard();await input();
         if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
-        const history=changes.length?await context.hostControl.suspendHistory({documentID:doc.id,name:'临时独显所选图层'}):null;
+        const previous=!toggle && changes.length?doc.activeHistoryState:null;
+        const history=changes.length?await context.hostControl.suspendHistory({documentID:doc.id,name:toggle?(saved?'退出图层隔离':'进入图层隔离'):'临时独显所选图层'}):null;
         if(changes.length && history==null)throw Error('无法建立图层可见性恢复点');
+        let committed=false;
         try{
           await input();
           if(phase==='cancel')return {verified:true,cancelled:true,view_restored:true};
-          if(changes.length){
-            await batch(changes.map(({layer,show})=>({_obj:show?'show':'hide',_target:[{_ref:'layer',_id:layer.id}],_options:{dialogOptions:'silent'}})));
-            if(changes.some(({layer,show})=>layer.visible!==show))throw Error('临时独显状态未确认');
+          await visibility(changes);
+          if(toggle){
+            committed=true;
+            return {verified:true,isolated:!saved,visibility_changes:changes.length};
           }
-          return await focus();
+          await focus();
+          committed=true;
         }finally{
           if(history!==null)try{
-            await context.hostControl.resumeHistory(history,false);
+            await context.hostControl.resumeHistory(history,committed);
             await documentGuard();
-            if(changes.some(({layer,visible})=>layer.visible!==visible))throw Error('图层可见性恢复未确认');
-            await ps.core.redrawDocument({documentID:doc.id});
+            if(changes.some(({layer,visible,show})=>layer.visible!==(committed?show:visible)))throw Error('图层可见性恢复未确认');
           }catch(error){error.resultUnknown=true;throw error;}
+          if(committed && toggle){
+            if(saved)isolations.delete(doc.id);
+            else isolations.set(doc.id,{id:request.id,visibility:new Map(changes.map(({layer,visible})=>[layer.id,visible]))});
+          }else if(committed && history!==null){
+            const shown=doc.activeHistoryState.id;
+            const originals=new Map(changes.map(({layer,visible})=>[layer.id,visible]));
+            restoreVisibility=()=>ps.core.executeAsModal(async()=>{
+              const choice=await documentGuard();
+              // Rewind only our own history step. Keep edits made while the canvas was interactive.
+              if(doc.activeHistoryState.id===shown && previous.id!==shown){
+                doc.activeHistoryState=previous;
+                if(doc.activeHistoryState.id!==previous.id)throw Error('临时独显历史恢复未确认');
+              }
+              // Photoshop can exclude visibility and selection from history.
+              const restore=[];
+              function visit(layers){for(const layer of layers){
+                if(originals.has(layer.id) && layer.visible!==originals.get(layer.id))restore.push({layer,show:originals.get(layer.id)});
+                if(layer.layers?.length)visit(layer.layers);
+              }}
+              visit(doc.layers);await visibility(restore);
+              const matches=target=>target.active_layer_id===choice.active_layer_id && target.layer_ids.join(',')===choice.layer_ids.join(',');
+              if(!matches(await documentGuard())){
+                const ids=choice.layer_ids.filter(id=>id!==choice.active_layer_id).concat(choice.active_layer_id);
+                await batch(ids.map((id,i)=>({_obj:'select',_target:[{_ref:'layer',_id:id}],makeVisible:false,
+                  ...(i?{selectionModifier:{_enum:'selectionModifierType',_value:'addToSelection'}}:{})})));
+                if(!matches(await documentGuard()))throw Error('临时独显选择恢复未确认');
+              }
+            },{commandName:'恢复临时图层显隐',timeOut:0});
+          }
         }
+        return;
       }
       return focus();
 
@@ -2953,7 +3349,6 @@ function createLayerView(ps,session,capture) {
           rollback=()=>ps.core.executeAsModal(async()=>{await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);},{commandName:'恢复聚焦视图',timeOut:0});
           finishPreview=async()=>{
             const shown=Date.now();
-            if(solo)await ps.core.redrawDocument({documentID:doc.id});
             if(io)await io.applied({seq,view:after.view,native_layer_edges:true});
             do {
               await input();
@@ -2967,11 +3362,10 @@ function createLayerView(ps,session,capture) {
               // F is a temporary highlight, including when upgrading from persistent 319 edges.
               await display(false,(await menus()).extras.checked && saved.menus.extras.checked);
             };
-            if(solo)await finishView();
-            else await ps.core.executeAsModal(finishView,{commandName:'结束临时聚焦',timeOut:0});
+            await ps.core.executeAsModal(finishView,{commandName:'结束临时聚焦',timeOut:0});
             return {verified:true,bounds,zoom_percent:after.view.zoom*100,selection_count:layers.length,native_layer_edges:false,view_restored:phase==='cancel',cancelled:phase==='cancel'};
           };
-          return solo?await finishPreview():null;
+          return null;
         } catch(error) {
           if(changed)try {await restoreView();await display(saved.menus.edge.checked,(await menus()).extras.checked && saved.menus.extras.checked);}
           catch(_){error.resultUnknown=true;}
@@ -2979,10 +3373,11 @@ function createLayerView(ps,session,capture) {
         }
       }
     },{commandName:'聚焦所选图层',timeOut:0});
-    if(solo || !finishPreview)return prepared;
+    if(!finishPreview)return prepared;
     // Native layer edges paint after the modal exits; holding F keeps this same request open.
     try{return await finishPreview();}
     catch(error){try{await rollback();}catch(_){error.resultUnknown=true;}throw error;}
+    finally{if(restoreVisibility)try{await restoreVisibility();}catch(error){error.resultUnknown=true;throw error;}}
   }
-  return {inspect,frame,gradient};
+  return {inspect,frame,gradient,isolationID:documentID=>isolations.get(documentID)?.id};
 }

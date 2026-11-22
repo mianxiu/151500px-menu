@@ -2,7 +2,7 @@
 const {app} = require('photoshop');
 const uxp = require('uxp');
 const token = require('./probe-config.js');
-const probeVersion = '0.3.112';
+const probeVersion = '0.3.134';
 const session = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
 // Independent read-only mailbox; never enters modal execution or blocks commands.
 const inputTool=(()=>{
@@ -42,7 +42,7 @@ const inputTool=(()=>{
 // InputContext can restore the canvas HIMC synchronously. Only a changed state
 // is written; this is a read-only local file and never enters modal execution.
 let inputToolStateSequence=0,inputToolStateWriting=false,inputToolStatePending=null,lastInputToolStateKey='';
-let inputToolObservationSequence=0,lastInputToolObservation=0;
+let inputToolObservationSequence=0,lastInputToolObservation=0,lastInputToolWrite=0;
 async function publishInputToolState(tool,observedAt=Date.now(),observation=++inputToolObservationSequence) {
   if(!heartbeatFolder)return;
   let value=tool;
@@ -55,7 +55,7 @@ async function publishInputToolState(tool,observedAt=Date.now(),observation=++in
   if(observation<lastInputToolObservation)return;
   lastInputToolObservation=observation;
   const key=classID+'|'+value.isModal;
-  if(key===lastInputToolStateKey && !inputToolStatePending)return;
+  if(key===lastInputToolStateKey && !inputToolStatePending && observedAt-lastInputToolWrite<1500)return;
   inputToolStatePending={schema:1,session,token,sequence:++inputToolStateSequence,tool:classID,
     isModal:value.isModal,created_at_ms:observedAt};
   if(inputToolStateWriting)return;
@@ -65,6 +65,7 @@ async function publishInputToolState(tool,observedAt=Date.now(),observation=++in
       const written=inputToolStatePending;
       await record(heartbeatFolder,'input-tool-state.json',written);
       lastInputToolStateKey=written.tool+'|'+written.isModal;
+      lastInputToolWrite=written.created_at_ms;
       if(inputToolStatePending===written)inputToolStatePending=null;
     }
   } catch(error) {
@@ -95,7 +96,9 @@ async function inputToolEvent(event,descriptor) {
 const legacyPreview=/^24\.0(?:\.\d+)*$/.test(String(uxp.host?.version || ''));
 const nativeSelection=/^24\.2(?:\.\d+)*$/.test(String(uxp.host?.version || ''));
 const hostVersion=uxp.host.version;
-const labels = require('./labels.js')(require('photoshop'), session, {legacyPreview,nativeSelection,hostVersion});
+// Add a host only after its silent PNG, rollback and pixel-equivalence checks pass.
+const verifiedDraftHosts=new Set(['24.0.1']);
+const labels = require('./labels.js')(require('photoshop'), session, {legacyPreview,nativeSelection,hostVersion,saveProof:verifiedDraftHosts.has(hostVersion)?saveProof:undefined});
 const seen = new Set();
 let sequence = 0;
 let running = false;
@@ -300,7 +303,7 @@ async function finishResponse(folder,response) {
     const name=completedReceipts.shift();
     // Only IDs whose terminal result was persisted by this session enter this
     // list. Never sweep an old directory or delete an unknown request's proof.
-    for(const file of [name,name.replace('result-','mask-preview-'),name.replace('result-','mask-preview-status-'),name.replace('result-','preview-progress-'),name.replace('result-','execution-'),name.replace('result-','legacy-prepared-'),name.replace('result-','legacy-result-'),name.replace('result-','legacy-exited-'),name.replace('result-','text-object-page-').replace('.json','.html'),name.replace('result-','text-object-layout-'),name.replace('result-','text-object-input-'),name.replace('result-','text-object-expected-'),name.replace('result-','text-object-final-'),name.replace('result-','text-object-render-').replace('.json','.pdf'),name.replace('result-','text-object-before-').replace('.json','.pdf'),name.replace('result-','text-object-').replace('.json','.pdf')])
+    for(const file of [name,name.replace('result-','text-proof-').replace('.json','.png'),name.replace('result-','mask-preview-'),name.replace('result-','mask-preview-status-'),name.replace('result-','preview-progress-'),name.replace('result-','execution-'),name.replace('result-','legacy-prepared-'),name.replace('result-','legacy-result-'),name.replace('result-','legacy-exited-'),name.replace('result-','text-object-page-').replace('.json','.html'),name.replace('result-','text-object-layout-'),name.replace('result-','text-object-input-'),name.replace('result-','text-object-expected-'),name.replace('result-','text-object-final-'),name.replace('result-','text-object-render-').replace('.json','.pdf'),name.replace('result-','text-object-before-').replace('.json','.pdf'),name.replace('result-','text-object-').replace('.json','.pdf')])
       try {await (await folder.getEntry(file)).delete();}catch(_){}
   }
 }
@@ -325,6 +328,7 @@ async function updateLayerContext(folder,now,force=false,prepared=null,checkpoin
   // Vector properties and the pattern catalog are only needed for an opened
   // layer menu. Do not continuously reread them while Photoshop is idle.
   const shape={available:false};
+  value={...value,isolation_id:labels.isolationID(value.document_id)};
   const signature=JSON.stringify([value,shape]);
   const snapshot={...value,shape_editor:shape,schema:1,plugin_time_ms:Date.now()};
   if(force || signature!==contextSignature || now-contextWriteAt>=1000) {
@@ -345,6 +349,15 @@ async function metadata() {
 function optional(read) {
   try { const value = read(); return value == null ? 'unavailable' : String(value); }
   catch (_) { return 'unavailable'; }
+}
+async function saveProof(request,doc) {
+  const fs=uxp.storage.localFileSystem,folder=await fs.getDataFolder();
+  const entry=await folder.createFile('text-proof-'+request.id+'.png',{overwrite:false});
+  try{
+    const {constants}=require('photoshop');
+    await doc.saveAs.png(entry,{method:constants.PNGMethod.QUICK,compression:1,interlaced:false},true);
+  }catch(e){await entry.delete();throw e;}
+  setTimeout(async()=>{try{await entry.delete();}catch(_){}},60000);
 }
 async function record(folder, name, value) {
   const file = await folder.createFile(name, {overwrite: true});
@@ -538,10 +551,19 @@ async function probe(reason) {
         await record(folder,'result-'+request.id+'.json',{...response,phase:'accepted'});
         request={...request,target:captured};
       }
+      if(request.external_text===true){
+        if(request.operation!=='set_label'||!['text.replace','text.proof'].includes(request.command))throw Error('无效的排版草稿请求');
+        const raw=await(await folder.getEntry('text-object-input-'+request.id+'.json')).read();
+        if(raw.length>2097152)throw Error('文字参数过大');
+        const input=JSON.parse(raw);
+        if(!['id','session','operation','token'].every(k=>input[k]===request[k])||input.params.revision!==request.text.revision)throw Error('排版草稿身份无效');
+        request={...request,text:input.params};
+      }
       if(request.operation==='inspect'&&request.layer_view_inspect===true)response.layer_view=await labels.inspectLayerView();
       else if(request.operation==='inspect'&&request.gradient_view_target!==undefined)
         response.gradient_view=await labels.inspectGradientView(request.gradient_view_target);
-      else if(request.operation==='inspect'&&request.text_inspect===true)response.text=await labels.readText();
+      else if(request.operation==='inspect'&&request.text_fonts===true)response.fonts=await labels.readTextFonts();
+      else if(request.operation==='inspect'&&request.text_inspect===true)response.text=await labels.readText(request.text_fast===true);
       else if (request.operation === 'inspect') {
         response.target = labels.documentTarget();
         response.document_count = response.target.document_ids.length;
@@ -579,7 +601,7 @@ async function probe(reason) {
               if(textObject){
                 try{
                   let expected={};
-                  if(native.phase==='completed'){
+                  if(native.phase==='completed' && request.object_proof!==true){
                     const raw=await(await folder.getEntry('text-object-final-'+request.id+'.json')).read();if(raw.length>4194304)throw Error('文字对象核对数据超出上限');expected=JSON.parse(raw);
                     if(!['id','session','operation','token'].every(k=>expected[k]===request[k]))throw Error('文字对象核对身份无效');
                   }
@@ -617,7 +639,7 @@ async function probe(reason) {
     } catch (error) { response.phase = 'failed'; response.error = String(error); response.result_unknown=!!error.resultUnknown; }
     // This executes after the awaited modal function (including its finally)
     // returned or rejected. Content rollback can still be unknown independently.
-    if(request.operation==='set_label' && ['shape.preview','layer.frame'].includes(request.command))
+    if(request.operation==='set_label' && ['shape.preview','layer.frame','text.proof'].includes(request.command))
       response.execution_exit={schema:1,engine:'uxp-modal',exited:true};
     response.completed_at_ms = Date.now();
     timings.operation_ms=Date.now()-operationStarted;

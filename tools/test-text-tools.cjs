@@ -6,8 +6,17 @@ const original={layerID:11,name:'mixed',layerKind:3,layerLocking:{protectAll:fal
  paragraphStyleRange:[{_obj:'paragraphStyleRange',from:0,to:5,paragraphStyle:{align:'left'}},{_obj:'paragraphStyleRange',from:5,to:9,paragraphStyle:{align:'center'}}],
  antiAlias:{_value:'antiAliasCrisp'},textClickPoint:{x:1,y:2},orientation:'horizontal',textShape:[{char:{_value:'paint'},transform:{xx:1,yy:1}}],warp:{style:'none'},kerningRange:[]}};
 let row=clone(original),target={session:'s',document_id:1,active_layer_id:11,layer_ids:[11]},before,history=0,commits=0,writes=0,failWrite=false,wrongStyle=false,rollbackFail=false,materializeParagraphs=false,wrongXmp=false,fallbackGlyph=false;
+let sceneHistory=72, savedProof=null, proofSaveError=false, normalizeFontTags=false;
 const ps={app:{activeDocument:{resolution:72}},core:{getActiveTool:async()=>({classID:"moveTool",isModal:false}),executeAsModal:async fn=>fn({isCancelled:false,hostControl:{suspendHistory:async()=>{history++;before=clone(row);return 'h';},resumeHistory:async(_,commit)=>{if(commit)commits++;else{if(rollbackFail)throw Error('rollback');row=before;}}}})},action:{batchPlay:async commands=>commands.map(c=>{
  assert.equal(c._options.dialogOptions,'silent');
+ if(c._obj==='get'&&c._target[0]._ref==='historyState')return {ID:sceneHistory};
+ if(c._obj==='hide'||c._obj==='show'){
+  const id=c._target[0]._id,roots=ps.app.activeDocument.layers;
+  const layer=[...roots,...roots[0].layers].find(l=>l.id===id);
+  assert.ok(layer);
+  layer.visible=c._obj==='show';
+  return {};
+ }
  if(c._obj==='multiGet')return clone(row);
  if(c._obj==='get'&&c._target[0]._property==='XMPMetadataAsUTF8')return {XMPMetadataAsUTF8:row.XMPMetadataAsUTF8||''};
  if(c._obj==='get'&&c._target[0]._property==='smartObjectMore')return {smartObjectMore:row.smartObjectMore};
@@ -16,22 +25,71 @@ const ps={app:{activeDocument:{resolution:72}},core:{getActiveTool:async()=>({cl
   assert.equal(c._target.length,1);assert.equal(c._target[0]._ref,'textLayer');assert.equal(c._target[0]._value,'targetEnum');
   writes++;if(failWrite)return {_obj:'error'};
   row.textKey={...row.textKey,antiAlias:{_value:'antiAliasSharp'},...clone(c.to)};
+  if(c.to.kerningRange)row.textKey.kerningRange.sort((a,b)=>a.from-b.from);
   if(!c.to.paragraphStyleRange)row.textKey.paragraphStyleRange=[{...clone(row.textKey.paragraphStyleRange[0]),from:0,to:row.textKey.textKey.length+1}];
   if(materializeParagraphs && c.to.paragraphStyleRange)for(const range of row.textKey.paragraphStyleRange)range.paragraphStyle={align:'left',hyphenate:false,...range.paragraphStyle};
+  if(normalizeFontTags)for(const {textStyle} of row.textKey.textStyleRange)if(textStyle.fontPostScriptName==='Sarasa-Gothic-SC-Regular'){
+   textStyle.fontScript=25;textStyle.fontTechnology=2;
+  }
   if(wrongStyle)row.textKey.textStyleRange[0].textStyle.fontPostScriptName='Wrong';
   if(fallbackGlyph){const run=row.textKey.textStyleRange[0];row.textKey.textStyleRange=[{...clone(run),to:1,textStyle:{...run.textStyle,fontPostScriptName:'AvailableFallback',fontScript:25,fontTechnology:2,fontAvailable:true}},...row.textKey.textStyleRange.map((r,i)=>i===0?{...r,from:1}:r)];}
   return {};
  }
  throw Error(c._obj);
 })}};
-const context={ps,session:'s',capture:async()=>clone(target)};
-vm.createContext(context);vm.runInContext(source.slice(source.lastIndexOf('function createTextTools('))+'\nthis.tools=createTextTools(ps,session,capture);',context);
+const context={ps,session:'s',capture:async()=>clone(target),options:{
+ hostVersion:'24.0.1',saveProof:async({id},doc)=>{
+  if(proofSaveError)throw Error('save failed');
+  savedProof={id,doc:doc.id,row:clone(row),layers:clone(doc.layers||[])};
+ }
+}};
+vm.createContext(context);vm.runInContext(source.slice(source.lastIndexOf('function createTextTools('))+'\nthis.tools=createTextTools(ps,session,capture,null,options);',context);
 const tools=context.tools;
 async function request(find,replacement){const read=await tools.read();return {target:read.target,text:{revision:read.revision,find,replacement},expires_at_ms:Date.now()+5000};}
 (async()=>{
  ps.constants={DocumentMode:{RGB:'rgb'},BitsPerChannelType:{EIGHT:8}};
  Object.assign(ps.app.activeDocument,{width:600,height:400,mode:'rgb',bitsPerChannel:8,colorProfileName:'sRGB IEC61966-2.1'});
  let preparedRequest=await request('猫','XY');
+ const cells=[['项目','数量'],['Alpha','12']];
+ const table=await tools.prepareObject(preparedRequest,{revision:preparedRequest.text.revision,cells});
+ assert.equal(table.kind,'new-table');assert.deepEqual(clone(table.source.table),cells);
+ assert.equal(table.source.canvas.width,220);assert.equal(table.source.canvas.height,64);
+ await assert.rejects(tools.prepareObject(preparedRequest,{revision:preparedRequest.text.revision,cells:[['a'],[]]}),/单元格/);
+ const styled={...preparedRequest,text:{revision:preparedRequest.text.revision,value:original.textKey.textKey,
+   origins:Array.from({length:original.textKey.textKey.length+1},(_,i)=>i),count:0,typography:{tracking:-15,size:18,leading:24,spaceAfter:6}}};
+ const styledSource=(await tools.prepareObject(styled,styled.text)).source.layer.text;
+ assert.ok(styledSource.textStyleRange.every(r=>r.textStyle.tracking===-15&&r.textStyle.size._value===18&&r.textStyle.autoLeading===false));
+ assert.deepEqual(Array.from(styledSource.textStyleRange,r=>r.textStyle.fontPostScriptName),['Alpha','Beta','Gamma']);
+ assert.ok(styledSource.paragraphStyleRange.every(r=>r.paragraphStyle.spaceAfter._value===6));
+ row.textKey.orientation={_value:'horizontal'};
+ const extended=await request('猫','XY');
+ const extendedPlan={...styled.text,revision:extended.text.revision,typography:{range:[0,2],align:'center',
+   leading:'auto',baselineShift:-2,horizontalScale:85,verticalScale:110}};
+ const extendedSource=(await tools.prepareObject(extended,extendedPlan)).source.layer.text;
+ assert.equal(extendedSource.textStyleRange[0].textStyle.autoLeading,true);
+ assert.equal(extendedSource.textStyleRange[0].textStyle.baselineShift._value,-2);
+ assert.equal(extendedSource.textStyleRange[0].textStyle.horizontalScale,Math.fround(.85)*100);
+ assert.equal(extendedSource.textStyleRange[0].textStyle.verticalScale,Math.fround(1.1)*100);
+ assert.equal(extendedSource.paragraphStyleRange[0].paragraphStyle.align._value,'center');
+ assert.equal(extendedSource.paragraphStyleRange.at(-1).paragraphStyle.align,'center');
+ row.textKey.orientation=original.textKey.orientation;
+ row.textKey.textStyleRange[0].textStyle.impliedFontSize={_unit:'pixelsUnit',_value:12};
+ ps.app.activeDocument.resolution=300;
+ const highDpi=await request('猫','XY');
+ const selected={...styled.text,revision:highDpi.text.revision,typography:{range:[2,4],tracking:35,spaceAfter:6}};
+ const selection=(await tools.prepareObject(highDpi,selected)).source.layer.text;
+ assert.deepEqual(Array.from(selection.textStyleRange,r=>[r.from,r.to,r.textStyle.tracking??null]),[[0,2,null],[2,4,35],[4,5,null],[5,9,null]]);
+ assert.ok(selection.paragraphStyleRange[0].paragraphStyle.spaceAfter);
+ assert.equal(selection.paragraphStyleRange[1].paragraphStyle.spaceAfter,undefined);
+ await assert.rejects(tools.prepareObject(highDpi,{...selected,typography:{range:[3,4],tracking:35}}),/选区/);
+ const highDpiSource=(await tools.prepareObject(highDpi,{...styled.text,revision:highDpi.text.revision})).source.layer.text;
+ assert.equal(highDpiSource.textStyleRange[0].textStyle.impliedFontSize,undefined);
+ assert.deepEqual(clone(highDpiSource.textStyleRange[0].textStyle.leading),{_unit:'pixelsUnit',_value:100});
+ assert.equal(highDpiSource.paragraphStyleRange[0].paragraphStyle.spaceAfter._value,25);
+ delete row.textKey.textStyleRange[0].textStyle.impliedFontSize;
+ ps.app.activeDocument.resolution=72;
+ preparedRequest=await request('猫','XY');
+ await assert.rejects(tools.prepareObject(preparedRequest,{...styled.text,revision:preparedRequest.text.revision,typography:{tracking:1001}}),/字距/);
  const nativeSource=await tools.prepareObject(preparedRequest,preparedRequest.text);
  assert.equal(nativeSource.source.schema,1);assert.equal(nativeSource.source.renderer,undefined);
  assert.equal(nativeSource.source.layer.text.textKey,'AXY😀\rBCXY');
@@ -71,10 +129,20 @@ async function request(find,replacement){const read=await tools.read();return {t
  row=clone(original);req=await request('猫','x');wrongStyle=true;await assert.rejects(tools.replace(req),/读回不一致/);assert.deepEqual(row,original);wrongStyle=false;
  req=await request('猫','x');failWrite=true;rollbackFail=true;await assert.rejects(tools.replace(req),error=>error.resultUnknown===true);failWrite=false;rollbackFail=false;
  row=clone(original);row.textKey.textStyleRange[0].textStyle.fontAvailable=false;await assert.rejects(tools.read(),/缺失字体/);
- row=clone(original);row.textKey.kerningRange=[{from:0,to:1}];await assert.rejects(tools.read(),/手动字距/);
+ row=clone(original);row.textKey.kerningRange=[{from:0,to:1}];await assert.rejects(tools.read(),/字偶样式范围/);
  row=clone(original);row.textKey.textStyleRange[1].from=3;await assert.rejects(tools.read(),/样式范围/);
  row=clone(original);req=await request('猫','x');req.expires_at_ms=0;await assert.rejects(tools.replace(req),/已取消/);
  row=clone(original);let read=await tools.read();
+ normalizeFontTags=true;
+ const fontChange={target:read.target,expires_at_ms:Date.now()+5000,text:{revision:read.revision,
+   value:row.textKey.textKey,origins:Array.from({length:row.textKey.textKey.length+1},(_,i)=>i),count:0,
+   typography:{fontPostScriptName:'Sarasa-Gothic-SC-Regular',range:[1,2]}}};
+ await tools.replace(fontChange);
+ assert.deepEqual(row.textKey.textStyleRange.slice(0,2).map(r=>[r.from,r.to,r.textStyle.fontPostScriptName,r.textStyle.size]),
+   [[0,1,'Alpha',12],[1,2,'Sarasa-Gothic-SC-Regular',12]]);
+ row=clone(original);read=await tools.read();fontChange.text.revision=read.revision;wrongStyle=true;
+ await assert.rejects(tools.replace(fontChange),/读回不一致/);assert.deepEqual(row,original);
+ wrongStyle=normalizeFontTags=false;read=await tools.read();
  let mapped={target:read.target,text:{revision:read.revision,value:'X猫😀\rBC猫',origins:[0,1,2,3,4,5,6,7,8],count:1},expires_at_ms:Date.now()+5000};
  await tools.replace(mapped);assert.equal(row.textKey.textKey,'X猫😀\rBC猫');assert.equal(row.textKey.textStyleRange[1].textStyle.fontPostScriptName,'Beta');
  row=clone(original);read=await tools.read();mapped.text.revision=read.revision;mapped.text.origins=[1,0,2,3,4,5,6,7,8];const pre=writes;await assert.rejects(tools.replace(mapped),/计划无效/);assert.equal(writes,pre);
@@ -104,5 +172,94 @@ async function request(find,replacement){const read=await tools.read();return {t
  row=clone(original);req=await request('猫','x');nativeCommits=0;let toolReads=0;ps.core.getActiveTool=async()=>({classID:++toolReads===1?'typeCreateOrEditTool':'moveTool',isModal:true});await assert.rejects(tools.replace(req),/状态已改变/);assert.equal(nativeCommits,0);ps.core.getActiveTool=async()=>({classID:'typeVerticalCreateOrEditTool',isModal:true});
  row=clone(original);req=await request('猫','x');nativeCommits=0;ps.core.endModalToolState=async()=>{throw Error('unconfirmed');};
  await assert.rejects(tools.replace(req),error=>error.resultUnknown===true);assert.equal(writes,protectedWrites);
- console.log('Text tools: mixed styles, UTF-16, paragraph ranges, no-op, stale target, missing fonts, rollback and unknown passed');
+ row=clone(original);
+ Object.assign(ps.app.activeDocument,{id:1,saved:true,historyStates:[{id:sceneHistory}]});
+ ps.app.documents=[ps.app.activeDocument];
+ ps.core.getActiveTool=async()=>({classID:'moveTool',isModal:false});
+ req=await request('猫','XY');
+ const proof={...req,command:'text.proof',id:'frame'};
+ const priorCommits=commits;
+ const resultProof=await tools.replace(proof);
+ assert.equal(resultProof.restored,true);
+ assert.equal(resultProof.history,sceneHistory);
+ assert.equal(savedProof.id,'frame');
+ assert.equal(savedProof.doc,1);
+ assert.deepEqual(row,original);
+ assert.equal(commits,priorCommits);
+ ps.constants.LayerKind={GROUP:'group'};
+ ps.app.activeDocument.layers=[{id:7,visible:true,kind:'group',layers:[{id:11,visible:true},{id:19,visible:true}]},
+   {id:23,visible:true},{id:24,visible:false}];
+ const initialVisibility=clone(ps.app.activeDocument.layers);
+ const isolated={...proof,proof_isolated:true};
+ assert.equal((await tools.replace(isolated)).isolated,true);
+ assert.deepEqual(savedProof.layers.map(l=>l.visible),[true,false,false]);
+ assert.deepEqual(savedProof.layers[0].layers.map(l=>l.visible),[true,false]);
+ assert.deepEqual(ps.app.activeDocument.layers,initialVisibility);
+ assert.deepEqual(row,original);
+ proofSaveError=true;
+ await assert.rejects(tools.replace(isolated),/save failed/);
+ proofSaveError=false;
+ assert.deepEqual(row,original);
+ assert.deepEqual(ps.app.activeDocument.layers,initialVisibility);
+ sceneHistory++;
+ await assert.rejects(tools.replace({...req,proof_history:resultProof.history}),/画布自预览后已改变/);
+ assert.equal(commits,priorCommits);
+ sceneHistory--;
+ await tools.replace({...req,proof_history:resultProof.history});
+ assert.deepEqual(row,savedProof.row);
+ assert.equal(commits,priorCommits+1);
+ row=clone(original);
+ row.textKey.textShape[0].char._value='box';
+ row.textKey.orientation={_value:'horizontal'};
+ row.textKey.warp={warpStyle:{_value:'warpNone'}};
+ const indentOriginal=clone(row);
+ ps.app.activeDocument.resolution=300;
+ read=await tools.read();
+ assert.equal(read.paragraph_indents_supported,true);
+ const indent={target:read.target,command:'text.proof',id:'indent-frame',expires_at_ms:Date.now()+5000,
+  text:{revision:read.revision,value:row.textKey.textKey,origins:Array.from({length:9},(_,i)=>i),count:0,
+   typography:{range:[2,4],startIndent:12,endIndent:6,firstLineIndent:-3}}};
+ const vectorIndent=await tools.prepareObject(indent,indent.text);
+ assert.equal(vectorIndent.source.layer.text.paragraphStyleRange[0].paragraphStyle.firstLineIndent._value,-12.5);
+ await tools.replace(indent);
+ assert.deepEqual(row,indentOriginal);
+ const projected=savedProof.row.textKey;
+ assert.deepEqual(projected.textStyleRange,indentOriginal.textKey.textStyleRange);
+ assert.deepEqual(projected.paragraphStyleRange[0].paragraphStyle,
+  {align:'left',startIndent:{_unit:'pixelsUnit',_value:50},endIndent:{_unit:'pixelsUnit',_value:25},firstLineIndent:{_unit:'pixelsUnit',_value:-12.5}});
+ assert.deepEqual(projected.paragraphStyleRange[1],indentOriginal.textKey.paragraphStyleRange[1]);
+ await tools.replace({...indent,command:'text.replace',proof_history:sceneHistory});
+ assert.deepEqual(row,savedProof.row);
+ read=await tools.read(true);
+ assert.equal(read.canvas_history,sceneHistory);
+ assert.equal(read.fonts_available,true);
+ const advanced={...indent,text:{...indent.text,revision:read.revision,typography:{
+   range:[2,4],align:'justifyRight',hyphenate:true,autoKern:'opticalKern',
+   color:[38,121,209],fontCaps:'smallCaps',ligature:true,underline:'underlineOnLeftInVertical'
+ }}};
+ const sourcePlan=(await tools.prepareObject(advanced,advanced.text)).source.layer.text;
+ assert.equal(sourcePlan.textStyleRange.find(run=>run.from===2).textStyle.autoKern._value,'opticalKern');
+ assert.equal(sourcePlan.paragraphStyleRange[0].paragraphStyle.align._value,'justifyRight');
+ assert.equal(sourcePlan.paragraphStyleRange[0].paragraphStyle.hyphenate,true);
+ const afterIndent=clone(row);
+ await tools.replace(advanced);
+ assert.deepEqual(row,afterIndent);
+ assert.deepEqual(savedProof.row.textKey.textStyleRange,clone(sourcePlan.textStyleRange));
+ assert.deepEqual(savedProof.row.textKey.paragraphStyleRange[1],afterIndent.textKey.paragraphStyleRange[1]);
+ read=await tools.read(true);
+ const kern={...indent,command:'text.replace',text:{...indent.text,revision:read.revision,
+   typography:{contextualLigatures:true,figureStyle:'tabularOldStyle',fractions:true},kerning:[[1,0],[2,-85]]}};
+ await tools.replace(kern);
+ assert.deepEqual(row.textKey.kerningRange.map(span=>[span.from,span.to,span.kerning]),[[0,1,0],[1,2,-85]]);
+ assert.equal(row.textKey.textStyleRange[0].textStyle.autoKern._value,'manual');
+ read=await tools.read(true);
+ assert.equal(read.kerning_supported,true);
+ const originalWithKerns=clone(row);
+ const shifted={...kern,command:'text.proof',text:{revision:read.revision,value:'X'+row.textKey.textKey,
+   origins:[0,0,1,2,3,4,5,6,7,8],count:1,kerning:[[2,null]]}};
+ await tools.replace(shifted);
+ assert.deepEqual(row,originalWithKerns);
+ assert.deepEqual(savedProof.row.textKey.kerningRange.map(span=>[span.from,span.to,span.kerning]),[[2,3,-85]]);
+ assert.equal(savedProof.row.textKey.textStyleRange[0].textStyle.autoKern._value,'metricsKern');
+ console.log('Text tools: mixed styles, UTF-16, rollback, and shared draft proof and write passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

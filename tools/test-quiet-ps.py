@@ -157,6 +157,7 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--inspect', action='store_true')
     mode.add_argument('--place', action='store_true')
+    mode.add_argument('--place-right', action='store_true')
     mode.add_argument('--run', action='store_true')
     mode.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
@@ -184,9 +185,10 @@ def main():
             assert lease.record['final_affinity']==lease.original_affinity
             assert lease.record['final_priority']==lease.original_priority
         print('Resource normal, exception and watchdog restoration passed')
-    elif args.place:
-        idle()
-        print(json.dumps(place(inventory(), folder/'placement.json')))
+    elif args.place or args.place_right:
+        if args.place:
+            idle()
+        print(json.dumps(place(inventory(), folder/'placement.json', rightmost=args.place_right)))
     else:
         asyncio.run(run(folder))
 

@@ -10,12 +10,24 @@ MAX_SOURCE=524288
 MAX_XMP=2097152
 
 
+def table_cells(rows):
+    if not isinstance(rows,list) or not 1<=len(rows)<=12 or not isinstance(rows[0],list) or not 1<=len(rows[0])<=8:
+        raise ValueError('表格支持 1–12 行、1–8 列')
+    for row in rows:
+        if not isinstance(row,list) or len(row)!=len(rows[0]):raise ValueError('表格各行列数必须相同')
+        for cell in row:
+            if not isinstance(cell,str) or len(cell)>128 or any(ord(c)<32 or 0xd800<=ord(c)<=0xdfff for c in cell):
+                raise ValueError('单元格支持最多 128 个单行字符')
+    return rows
+
+
 def source(value):
     if (not isinstance(value,dict) or type(value.get('schema')) is not int or
             not (value['schema']==1 and set(value)=={'schema','canvas','layer'} or
-                 value['schema']==2 and set(value)=={'schema','canvas','layer','renderer'} and value['renderer']=='list-v1')):
+                 value['schema']==2 and set(value)=={'schema','canvas','layer','renderer'} and value['renderer']=='list-v1' or
+                 value['schema']==3 and set(value)=={'schema','canvas','table'})):
         raise ValueError('不支持的文字对象源版本')
-    canvas,layer=value['canvas'],value['layer']
+    canvas=value['canvas']
     if not isinstance(canvas,dict) or set(canvas)!={'width','height','resolution','mode','depth','profile'}:
         raise ValueError('文字对象画布信息无效')
     for key,maximum in [('width',30000),('height',30000),('resolution',9600)]:
@@ -24,6 +36,10 @@ def source(value):
     if canvas['width']*canvas['height']>64000000 or canvas['mode'] not in ('RGB','CMYK','LAB','GRAYSCALE') or type(canvas['depth']) is not int or canvas['depth'] not in (8,16):
         raise ValueError('文字对象画布范围无效')
     if not isinstance(canvas['profile'],str) or len(canvas['profile'])>1000 or '\0' in canvas['profile']:raise ValueError('文字对象色彩配置无效')
+    if value['schema']==3:
+        table_cells(value['table'])
+        return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')
+    layer=value['layer']
     if not isinstance(layer,dict) or set(layer)!={'name','text','xmp'} or not isinstance(layer['name'],str) or len(layer['name'])>2000 or '\0' in layer['name']:
         raise ValueError('文字对象图层信息无效')
     if not isinstance(layer['xmp'],str) or len(layer['xmp'])>131072:raise ValueError('文字对象图层元数据无效')
@@ -42,6 +58,15 @@ def source(value):
                     not isinstance(row.get(field),dict)):raise ValueError('文字对象样式范围不完整')
             end=row['to']
         if end<length:raise ValueError('文字对象样式范围不完整')
+    kerns=raw.get('kerningRange',[])
+    if not isinstance(kerns,list) or len(kerns)>length:raise ValueError('文字对象字偶范围无效')
+    end=0
+    for row in kerns:
+        if (not isinstance(row,dict) or row.get('_obj')!='kerningRange' or
+                any(type(row.get(key)) is not int for key in ('from','to','kerning')) or
+                not end<=row['from']<row['to']<=length):
+            raise ValueError('文字对象字偶范围无效')
+        end=row['to']
     # Preserve unknown style fields, but never accept object prototypes, paths or executable objects.
     stack=[(value,0)];count=0
     while stack:

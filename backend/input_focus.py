@@ -19,6 +19,12 @@ class InputFocus(InputLanguage):
     def shortcut_context(self):
         with self.lock:return dict(self.current)
 
+    def read_tool(self,identity):
+        reader=getattr(self.desktop,'input_tool_state',None)
+        value=reader() if reader else None
+        if value and 0<=time.time()*1000-value['created_at_ms']<=2500:return value
+        return self.desktop.input_language_tool(identity=identity)
+
     def verify(self,request,reply):
         if (not isinstance(request,dict) or any(type(request.get(key)) is not int for key in ('verify_id','root','hwnd','input_epoch','expires_tick_ms')) or
             request['verify_id']<=0 or request['root']<=0 or request['hwnd']<=0 or request['input_epoch']<0 or type(request.get('need_ime')) is not bool):
@@ -176,12 +182,13 @@ class InputFocus(InputLanguage):
                                control_state(row,sample.get('pid'))!='input' and
                                (row.get(30003) in CONTAINERS or self.accessibility is None and self.snapshot()[3] is not None))
                     reconcile=getattr(self.desktop,'input_language_reconcile',None)
+                    if tool and 'created_at_ms' in tool and time.time()*1000-tool['created_at_ms']>2500:examined=None
                     if need_tool and key==examined and tool is None and not self.busy() and not sample.get('blocked') and reconcile and reconcile():examined=None
                     if need_tool and (key!=examined or refresh!=refreshed) and not self.busy() and not sample.get('blocked'):
                         examined=key;refreshed=refresh
                         self.report['tool_reads']+=1
                         try:
-                            tool=self.desktop.input_language_tool(identity=sample['identity'])
+                            tool=self.read_tool(sample['identity'])
                             self.report.pop('tool_error_type',None)
                         except (RuntimeError,OSError,ValueError) as error:
                             tool=None;self.report['tool_error_type']=type(error).__name__

@@ -15,6 +15,8 @@
 #include <array>
 #include <string>
 #include <string_view>
+#include <cstdlib>
+#include <map>
 #include <thread>
 #include <iostream>
 #include <memory>
@@ -46,6 +48,7 @@ static void requireText(const std::string& text);
 
 using Json=nlohmann::json;
 #include "DiagnosticHint.h"
+#include "IsolationHintPanel.h"
 #include "PreviewPendingHint.h"
 static HWND window;
 static void (*platformShowWindow)(ImGuiViewport*)=nullptr;
@@ -77,6 +80,7 @@ static int lastVisibleVertices=0;
 static bool taskBusy=false,taskFailed=false,taskHasResult=false;
 static bool maskPreviewStarted=false,shapeDraftOnly=false;
 static bool busyFeedback=false;
+static bool showingTextProof();
 // Only a Caps menu explicitly opened while a task was running requests wakeup.
 // Ordinary submitted-action feedback keeps its existing close behavior.
 static bool busyMenuWake=false;
@@ -127,7 +131,7 @@ static std::string taskStatus() {
 static void updateBusy(bool busy,bool queueReady=false,int queueCount=0) {
     if(stabilityInspection && !stabilityObserveBusy)busy=false;
     if (busy && !taskBusy) taskStarted=GetTickCount64();
-    if (busy && window && IsWindowVisible(window)) busyFeedback=true;
+    if (busy && window && IsWindowVisible(window) && !showingTextProof()) busyFeedback=true;
     if(!busy && taskBusy && taskHasResult && !taskFailed)completionStarted=GetTickCount64();
     taskBusy=busy;taskQueueCount=0;allowed=capable&&!busy;
 }
@@ -693,6 +697,7 @@ static void sendMenuTool(const char* action,const Json& params) {
 }
 #include "MenuToolsPanel.h"
 static bool menuToolsVisible(){return menuTools.active || menuTools.opening;}
+static bool showingTextProof(){return menuTools.active && menuTools.pending && menuTools.pendingAction=="text.proof";}
 static bool matches(int i,const std::string& query) {
     std::string haystack=normalized(std::string(rowLabel(i))+" "+(panelKind==4?"新建 文档 new document create":keywords[i])+" "+rowShortcut(i));
     std::istringstream words(query);std::string word;
@@ -1058,6 +1063,7 @@ static void accept(const Json& event) {
     }
     if(type=="mask.preview") {maskPreviewStarted=event.value("active",false);if(!maskPreviewStarted)previewProgress.clear();return;}
     if (type=="diagnostic.progress") {DiagnosticHint::update(event);return;}
+    if (type=="isolation.tip") {IsolationHintPanel::update(event);return;}
     if (type=="document") {
         if (event.contains("name") && event["name"].is_string()) document=event["name"].get<std::string>();
     } else if (type=="status") {
@@ -1202,7 +1208,7 @@ static void finishHold(POINT point,bool requireHighlight=false,const POINT* curr
         {"cursor",{point.x,point.y}},{"frozen_hit",frozenHit},{"current_cursor",{current.x,current.y}},
         {"current_hit",currentHit},{"highlight",renderedHit},{"chosen",chosen}}).dump()<<std::endl;
     if(shapeEyedropActive){stopShapeEyedrop();chosen=-1;}
-    if(chosen==71){pinned=true;pieReady=false;menuTools.open("split");return;}
+    if(chosen==71){pinned=true;pieReady=false;menuTools.open("typeset");return;}
     if(chosen==100){commitShapeDraft();holdFinished=true;pieReady=false;setOpacity(0.f);return;}
     holdFinished=true;pieReady=false;
     setOpacity(0.f);
@@ -2161,7 +2167,7 @@ static void drawCapsBar() {
 static void drawToolBar() {
     toolRow={};
     if(panelKind==3 || panelKind==4 || !layerAware || (layerKind!=4 && layerKind!=5) || layerCount!=1)return;
-    const char* label=layerKind==5?"文字源":"文本工具";
+    const char* label=layerKind==5?"文字源":"画布排版";
     const bool sharesShapeColumn=panelKind==1 && shapeToolsReady;
     const float h=menuControlHeight*scale,y=pieCenter.y+(layerKind==5 && !sharesShapeColumn?15.f:-15.f)*scale;
     const auto extent=menuFont(MenuTextRole::Control)->CalcTextSizeA(basicLabelSize(),FLT_MAX,0,label);
@@ -2175,7 +2181,7 @@ static void drawToolBar() {
     draw->AddText(menuFont(MenuTextRole::Control),basicLabelSize(),{x+(width-extent.x)*.5f,y+(h-extent.y)*.5f},tint(enabled?ImGuiCol_Text:ImGuiCol_TextDisabled),label);
     if(pinned && !pieAnimating && enabled && !holdFinished){
         ImGui::SetCursorScreenPos(a);
-        if(ImGui::InvisibleButton("##split-tool",{width,h}))menuTools.open("split");
+        if(ImGui::InvisibleButton("##typeset-tool",{width,h}))menuTools.open("typeset");
     }
     MenuControls::outline(draw,a,{x+width,y+h},scale);
 }
@@ -2211,8 +2217,9 @@ static void drawPie() {
     setOpacity(IsWindowVisible(window) && !holdFinished?fac:0.f);
     if(menuToolsVisible()) {
         holdRows={};labelRows={};capsRows={};quickRows={};toolRow={};pieReady=false;
-        menuTools.draw(scale,pieCenter,allowed && !taskBusy && !busyFeedback && !inputFocused && !maskPreviewStarted);
-        drawFooter({document,menuTools.status(),menuTools.error},pos.y+size.y-60*scale);
+        const bool localEditing=allowed || (capable && showingTextProof());
+        menuTools.draw(scale,pieCenter,localEditing && !busyFeedback && !inputFocused && !maskPreviewStarted);
+        if(menuTools.mode!="typeset")drawFooter({document,menuTools.status(),menuTools.error},pos.y+size.y-60*scale);
         return;
     }
     if(toolEnabled(0) && !shapePanelVisible() && !shapeEyedropActive && !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput &&
@@ -2434,7 +2441,7 @@ static void drawMenu() {
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->Pos);
     ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size);
     ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
-    const bool feedback=taskBusy || busyFeedback;
+    const bool feedback=(taskBusy && !showingTextProof()) || busyFeedback;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,holdMode || feedback?0.f:scale);
     ImGui::Begin("##menu",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|((holdMode || feedback)?ImGuiWindowFlags_NoBackground:0));
     ImGui::PopStyleVar();
@@ -4003,6 +4010,13 @@ int main() {
                         // Selection deletion and four typed code points have separate undo entries.
                         for(int i=0;i<5;++i)chord(ImGuiKey_Z);
                         if(std::string(value)!=original)throw std::runtime_error("Wrapped edit undo failed");
+                        for(int i=0;i<5;++i)chord(ImGuiKey_Y);
+                        if(std::string(value)!="修改中文")throw std::runtime_error("Wrapped edit redo failed");
+                        chord(ImGuiKey_Z);
+                        io.AddKeyEvent(ImGuiMod_Ctrl,true);io.AddKeyEvent(ImGuiMod_Shift,true);
+                        key(ImGuiKey_Z);
+                        io.AddKeyEvent(ImGuiMod_Shift,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);wrapFrame(220);
+                        if(std::string(value)!="修改中文")throw std::runtime_error("Wrapped edit Shift+Ctrl+Z redo failed");
                         clipboard="第一段 Chinese and English words that wrap naturally across the editor width.\n第二段 keeps one real newline.";
                         chord(ImGuiKey_A);chord(ImGuiKey_V);
                         if(std::string(value)!=clipboard || std::count(clipboard.begin(),clipboard.end(),'\n')!=1)
@@ -5444,6 +5458,15 @@ int main() {
                         throw std::runtime_error("Tool editor retained radial command hits");
                     const auto count=testedActions.size();finishHold({(r.left+r.right)/2,(r.top+r.bottom)/2});
                     if(testedActions.size()!=count)throw std::runtime_error("Opening split submitted a write");
+                    menuTools.reset();menuTools.active=menuTools.ready=true;menuTools.mode="typeset";
+                    menuTools.submit("text.proof",Json::object());
+                    accept(Json{{"type","operation"},{"busy",true},{"action","text.proof"}});
+                    if(!showingTextProof() || busyFeedback || !taskBusy || canExecute())
+                        throw std::runtime_error("Text proof replaced the editing window or released task protection");
+                    accept(Json{{"type","operation"},{"busy",false}});
+                    accept(Json{{"type","menu.tools.result"},{"epoch",menuEpoch},{"request",menuTools.request},{"action","text.proof"},{"ok",false},{"error","test"}});
+                    if(showingTextProof() || busyFeedback || !menuTools.active)
+                        throw std::runtime_error("Text proof completion did not retain the editor");
                     menuTools.reset();menuTools.active=menuTools.ready=true;menuTools.mode="search";
                     menuTools.changeSearch(1);
                     if(menuTools.searchDue(1.17) || !menuTools.searchDue(1.19))throw std::runtime_error("Search debounce failed");
@@ -5507,6 +5530,7 @@ int main() {
     ImGui_ImplDX11_Shutdown();ImGui_ImplWin32_Shutdown();ImGui::DestroyContext();releaseTarget();
     releaseDevice();
     DiagnosticHint::shutdown();
+    IsolationHintPanel::clear();
     PreviewPendingHint::shutdown();
     if (IsWindow(window)) DestroyWindow(window);UnregisterClassW(wc.lpszClassName,wc.hInstance);
     if (iconHandle) DestroyIcon(iconHandle);CoUninitialize();return 0;

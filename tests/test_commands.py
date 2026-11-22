@@ -33,9 +33,12 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(REGISTRY), set(COMMANDS)|{'document.recent'})
         self.assertEqual(len(REGISTRY), len(COMMANDS)+1)
         for contract in command_contracts():
-            if contract['id'] in QUICK_ACTIONS or contract['id'] in CAPS_ACTIONS or contract['id'] in SHAPE_TOOLS or contract['id'].startswith('shape.') or contract['id'] in ('layer.focus','layer.frame','text.replace','text.split','text.object'):
+            if contract['id'] in QUICK_ACTIONS or contract['id'] in CAPS_ACTIONS or contract['id'] in SHAPE_TOOLS or contract['id'].startswith('shape.') or contract['id'] in ('layer.focus','layer.frame','text.proof','text.replace','text.split','text.object'):
                 self.assertEqual(contract['channel'],'uxp-local-files')
                 self.assertIn('read-back',contract['expected_result'])
+                continue
+            if contract['id']=='view.screenMode':
+                self.assertEqual(contract['channel'],'com-win32')
                 continue
             if contract['id']=='document.recent':
                 self.assertEqual(contract['channel'],'uxp-local-files')

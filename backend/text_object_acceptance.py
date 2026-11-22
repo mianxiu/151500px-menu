@@ -73,12 +73,13 @@ async def run(test):
         test.check()
         return (await test.test_read(text_inspect=True))['text']
 
-    async def write(snapshot,draft):
+    async def write(snapshot,draft,style=None):
         model=text_object.read(snapshot['object_xmp']) if 'object_xmp' in snapshot else None
         original=model['layer']['text']['textKey'] if model else snapshot['text']
         plan=compute(original,{'revision':snapshot['revision'],'draft':draft,'operation':'edit'})
         params={k:plan[k] for k in ('value','origins','count')}
         params['revision']=snapshot['revision']
+        if style:params['typography']=style
         if model:params.update(object_source=model,object_render=text_object.render_hash(snapshot['object_xmp']))
         await asyncio.to_thread(test.app.desktop.focus_search_result)
         value=await bridge.execute_text_object(snapshot['target'],params,before_dispatch=test.before_dispatch)
@@ -108,16 +109,17 @@ async def run(test):
         owned='if(!app.documents.length||app.activeDocument.id!=='+str(fixture['document_id'])+'||app.activeDocument.name!=='+json.dumps(name)+")throw Error('Owned fixture target changed');var d=app.activeDocument;"
         snap=await read()
         if snap['target']['document_id']!=fixture['document_id']:raise RuntimeError('隔离文字目标不一致')
-        await test.step('text-object-create',lambda:write(snap,snap['text']))
+        await test.step('text-object-create',lambda:write(snap,snap['text'],{'tracking':35}))
         created=await read();model=text_object.read(created['object_xmp'])
-        if model['schema']!=1 or model['layer']['text']['textKey']!=snap['text']:raise RuntimeError('PS原生文字源不一致')
+        if model['schema']!=1 or model['layer']['text']['textKey']!=snap['text'] or any(row['textStyle'].get('tracking')!=35 for row in model['layer']['text']['textStyleRange']):raise RuntimeError('PS原生文字源或字距不一致')
         original_id=created['target']['active_layer_id'];original_xmp=created['object_xmp']
         scaled=await test.step('text-object-scale',lambda:native(test,owned+"var l=d.activeLayer.duplicate();d.activeLayer=l;l.resize(125,125,AnchorPosition.MIDDLECENTER);l.translate(UnitValue(17,'px'),UnitValue(9,'px'));return {copy_id:l.id};"))
         copied=await read()
         if copied['target']['active_layer_id']!=scaled['copy_id']:raise RuntimeError('缩放副本选择不一致')
-        await test.step('text-object-update',lambda:write(copied,snap['text'].replace('old','new')))
+        await test.step('text-object-update',lambda:write(copied,snap['text'].replace('old','new'),{'tracking':-10}))
         updated=await read();updated_id=updated['target']['active_layer_id']
-        if text_object.read(updated['object_xmp'])['layer']['text']['textKey']!=snap['text'].replace('old','new'):raise RuntimeError('更新正文不一致')
+        updated_text=text_object.read(updated['object_xmp'])['layer']['text']
+        if updated_text['textKey']!=snap['text'].replace('old','new') or any(row['textStyle'].get('tracking')!=-10 for row in updated_text['textStyleRange']):raise RuntimeError('更新正文或字距不一致')
         path=test.folder/(test.report['run_id']+'-'+str(dpi)+'.psd')
         await test.step('text-object-undo-save-close',lambda:native(test,owned+'''
             var s=stringIDToTypeID;

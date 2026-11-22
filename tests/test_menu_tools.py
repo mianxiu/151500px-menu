@@ -11,11 +11,59 @@ from unittest.mock import AsyncMock, Mock, patch
 from backend.menu_tools import MenuTools
 from backend.text_tools import TextTools
 from backend.layer_search import LayerSearch
-from backend.desktop import Desktop
+from backend.desktop import Desktop, typeset_bounds
+from backend.text_canvas import valid_text_frame
 from backend.paths import ROOT
 
 
+class CanvasGeometryTests(unittest.TestCase):
+    def test_high_dpi_window_can_move_when_the_initial_size_fills_photoshop(self):
+        rect=(1920,0,3840,1080)
+        work=(1920,0,3840,1040)
+        self.assertEqual(typeset_bounds(rect,work,2),(2040,65,1680,910))
+
+    def test_document_geometry_never_accepts_invalid_coordinates_or_colors(self):
+        frame={'box':[.25,-.1,.9,.4],'wrap':True,'em':.03,'color':[0,0,255]}
+        self.assertTrue(valid_text_frame(frame))
+        self.assertFalse(valid_text_frame({**frame,'em':float('inf')}))
+        self.assertFalse(valid_text_frame({**frame,'box':[.9,0,.25,1]}))
+        self.assertFalse(valid_text_frame({**frame,'color':[255,0,-1]}))
+
+
 class MenuToolsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_canvas_history_uses_existing_revision_and_rejects_an_edit(self):
+        self.app.runtime='test';self.app.desktop.target=1
+        self.tools.text.snapshot={'target':{},'text':'before','revision':'first','canvas_history':34}
+        call=Mock()
+        self.app.bridge=SimpleNamespace(transport=SimpleNamespace(call=call))
+        memory=Mock()
+        frame={'history':34}
+        with patch('backend.menu_tools.text_canvas.read',new=AsyncMock(return_value=(memory,frame))):
+            accepted=await self.tools.request(self.request('text.canvas',args={'revision':'first'}))
+            self.assertEqual(accepted['revision'],'first')
+            frame['history']=35
+            refused=await self.tools.request(self.request('text.canvas',request=2,args={'revision':'first'}))
+            self.assertIn('error',refused)
+        call.assert_not_called()
+        memory.close.assert_called_once()
+
+    async def test_original_canvas_rebinds_revision_only_for_unchanged_text(self):
+        target={'session':'s','document_id':1,'active_layer_id':2,'layer_ids':[2]}
+        self.tools.epoch=7
+        self.app.runtime='test';self.app.desktop.target=1
+        saved={'target':target,'text':'before','revision':'first','style_source':{}}
+        self.tools.text.snapshot=saved
+        fresh={**saved,'revision':'second'}
+        self.app.bridge=SimpleNamespace(transport=SimpleNamespace(call=Mock(return_value={'text':fresh})))
+        memory=Mock()
+        with patch('backend.menu_tools.text_canvas.read',new=AsyncMock(return_value=(memory,{}))):
+            def request(i,revision):
+                return self.tools.request({'menu_epoch':7,'params':{'request':i,'action':'text.canvas','args':{'revision':revision}}})
+            self.assertEqual((await request(1,'first'))['revision'],'second')
+            fresh['text']='external edit'
+            self.assertIn('error',await request(2,'second'))
+            memory.close.assert_called_once()
+
     def setUp(self):
         self.app=SimpleNamespace(panel_lock=asyncio.Lock(),desktop=SimpleNamespace(
             require_menu_tools=Mock(),open_menu_tools=Mock(return_value=7),event=Mock(),
@@ -36,6 +84,19 @@ class MenuToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.tools.text.write.call_args.args[0],args)
         self.assertEqual(self.app.desktop.require_menu_tools.call_count,2)
         self.app.broadcast.assert_awaited_once_with({'type':'notice','scope':'operation','ok':True,'message':'written'})
+
+    async def test_table_follows_only_the_verified_new_layer_in_the_same_document(self):
+        desktop=self.app.desktop
+        desktop.visible=True;desktop.menu_epoch=7
+        desktop.layer_context={**desktop.menu_layer_context,'layer_ids':[3],'plugin_time_ms':int(time.time()*1000)}
+        self.tools.text.table=AsyncMock(return_value={'message':'OK','result':'{"verified":true,"layer_id":3}'})
+        result=await self.tools.request(self.request('text.table'))
+        self.assertTrue(result['continue_editing'])
+        self.assertEqual(desktop.menu_layer_context['layer_ids'],[3])
+        desktop.layer_context={**desktop.layer_context,'document_id':2}
+        result=await self.tools.request(self.request('text.table',request=2))
+        self.assertFalse(result['continue_editing'])
+        self.assertEqual(desktop.menu_layer_context['document_id'],1)
 
     async def test_open_is_epoch_bound_and_never_queues(self):
         await self.tools.open({'menu_epoch':6,'params':{'mode':'split'}})
@@ -215,6 +276,7 @@ class MenuToolsDesktopTests(unittest.TestCase):
         with patch('win32api.GetCursorPos',return_value=(1100,600)),patch('win32api.GetMonitorInfo',return_value={'Work':(0,0,1920,1040)}):
             self.assertEqual(desktop.open_menu_tools('split',6),7)
         self.assertTrue(desktop.menu_tools_active);self.assertFalse(desktop.hold_active)
+        self.assertEqual(desktop.text_tool_owner,1)
         self.assertEqual(desktop.gui.SendMessage.call_args_list[0].args,(2,0x800d,1,7))
         desktop.gui.SetWindowPos.assert_called_once_with(2,0,1112,260,632,780,0x4|0x10)
         self.assertTrue(all(type(v) is int for v in desktop.gui.SetWindowPos.call_args.args[2:6]))
@@ -223,11 +285,33 @@ class MenuToolsDesktopTests(unittest.TestCase):
         desktop.gui.GetWindowRect.return_value=(-1800,100,-100,1000)
         with patch('win32api.GetCursorPos',return_value=(-1000,500)),patch('win32api.MonitorFromWindow',return_value=1),patch('win32api.GetMonitorInfo',return_value={'Work':(-1920,0,0,1040)}):
             self.assertEqual(desktop.open_menu_tools('search',7),8)
+        self.assertIsNone(desktop.text_tool_owner)
         self.assertEqual(desktop.gui.SetWindowPos.call_args.args,(2,0,-988,512,432,274,0x4|0x10))
         self.assertEqual(desktop.preview_hint_anchor,[-772,649])
         with patch('win32api.GetCursorPos',return_value=(2500,2000)),patch('win32api.GetMonitorInfo',return_value={'Work':(-1920,0,0,1040)}):
             desktop.open_menu_tools('search',8)
         self.assertEqual(desktop.gui.SetWindowPos.call_args.args,(2,0,-532,726,432,274,0x4|0x10))
+
+    def test_text_tool_passes_host_click_and_raises_above_owned_dock_without_activation(self):
+        desktop=Desktop('http://localhost',Mock());desktop.gui=Mock()
+        desktop.visible=True;desktop.target=desktop.text_tool_owner=1;desktop.hwnd=2
+        desktop._workspace_root=lambda h:{1:1,3:1,5:5}.get(h)
+        desktop.gui.GetWindowRect.return_value=(100,100,400,300)
+        desktop.gui.WindowFromPoint.return_value=3
+        desktop.gui.GetForegroundWindow.return_value=3
+        self.assertFalse(desktop.outside_click((10,10)))
+        self.assertTrue(desktop.visible)
+        desktop.notify.assert_not_called()
+        desktop._keep_text_tool_above_workspace()
+        desktop._keep_text_tool_above_workspace()
+        desktop.gui.SetWindowPos.assert_called_once_with(2,0,0,0,0,0,0x213)
+        desktop.gui.SetForegroundWindow.assert_not_called()
+        self.assertTrue(desktop._scope())
+        desktop.gui.GetForegroundWindow.return_value=5
+        self.assertFalse(desktop._scope())
+        self.assertEqual(desktop.target,1)
+        desktop._keep_text_tool_above_workspace()
+        self.assertEqual(desktop.gui.SetWindowPos.call_count,1)
 
     def test_search_results_resize_within_ps_and_closed_epoch_rejects(self):
         desktop=Desktop('http://localhost',Mock());desktop.hwnd=2;desktop.target=1;desktop.gui=Mock()

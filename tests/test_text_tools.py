@@ -2,10 +2,97 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock,AsyncMock,patch
-from backend.text_tools import TextTools,replace_parameters,split_parameters
+from backend.text_tools import TextTools,replace_parameters,split_parameters,typography
 
 
 class TextToolsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extended_styles_require_capability_and_preserve_plan(self):
+        from backend.text_plan import compute
+        tools=TextTools(SimpleNamespace());tools.available=Mock()
+        tools.snapshot={'revision':'r','text':'abc','typography_supported':True,'style_scope_supported':True,
+                        'paragraph_alignment_supported':True}
+        fields={'align':'center','baselineShift':-2.5,'horizontalScale':80,'verticalScale':120,'leading':'auto'}
+        args={'revision':'r','operation':'edit','draft':'abc','typography':{'range':[0,1],**fields}}
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            with self.assertRaisesRegex(ValueError,'更新插件'):await tools.preview(args)
+            tools.snapshot['extended_typography']=True
+            await tools.preview(args)
+            self.assertEqual(tools.plan[1]['typography'],args['typography'])
+        for invalid in ({'align':'other'},{'horizontalScale':0},{'verticalScale':1001},{'baselineShift':-1297}):
+            with self.assertRaises(ValueError):typography(invalid)
+
+    async def test_paragraph_indents_are_capability_and_list_bounded(self):
+        from backend.text_list import write
+        from backend.text_plan import compute
+        from tests.test_text_list import OPTIONS
+        tools=TextTools(SimpleNamespace());tools.available=Mock()
+        tools.snapshot={'revision':'r','text':'abc','typography_supported':True,'style_scope_supported':True}
+        args={'operation':'edit','revision':'r','draft':'abc','typography':{'range':[0,2],'startIndent':12,'endIndent':9,'firstLineIndent':'-3.5'}}
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            with self.assertRaisesRegex(ValueError,'支持段落缩进'):await tools.preview(args)
+            tools.snapshot['paragraph_indents_supported']=True
+            await tools.preview(args)
+            self.assertEqual(tools.plan[1]['typography'],{**args['typography'],'firstLineIndent':-3.5})
+            tools.snapshot['list_xmp']=write('',OPTIONS)
+            with self.assertRaisesRegex(ValueError,'列表层级'):await tools.preview(args)
+            await tools.preview({**args,'typography':{'endIndent':5}})
+            self.assertEqual(tools.plan[1]['typography'],{'endIndent':5})
+        for values in ({'startIndent':-1},{'endIndent':-1},{'firstLineIndent':-1297},{'endIndent':'nan'}):
+            with self.assertRaises(ValueError):typography(values)
+
+    def test_advanced_typography_accepts_only_supported_descriptor_values(self):
+        style={'autoKern':'opticalKern','color':[0,130,255],'align':'justifyLeft','hyphenate':False,
+               'baseline':'superScript','fontCaps':'smallCaps','underline':'underlineOnLeftInVertical'}
+        self.assertEqual(typography(style),style)
+        for invalid in ({'color':[0,256,0]},{'color':[True,0,0]},{'autoKern':'manualKern'},
+                        {'hyphenate':1},{'align':'justifyOther'}):
+            with self.assertRaises(ValueError):typography(invalid)
+
+    async def test_style_only_kerning_and_opentype_plan_keeps_the_same_origins(self):
+        tools=TextTools(SimpleNamespace());tools.available=Mock()
+        tools.snapshot={'revision':'r','text':'AV','typography_supported':True,
+                        'advanced_typography':True,'opentype_supported':True,'kerning_supported':True}
+        args={'operation':'edit','revision':'r','draft':'AV','kerning':[[1,0]],
+              'typography':{'fractions':True,'figureStyle':'tabularOldStyle'}}
+        with patch('backend.text_tools.evaluate') as worker:
+            await tools.preview(args)
+            worker.assert_not_called()
+        self.assertEqual(tools.plan[1]['origins'],[0,1,2])
+        self.assertEqual(replace_parameters(tools.plan[1])['kerning'],[[1,0]])
+        for invalid in ([[1,True]],[[0,0]],[[1,0],[1,None]],[[1,1001]]):
+            with self.assertRaises(ValueError):await tools.preview({**args,'kerning':invalid})
+
+    async def test_hovered_font_plan_cannot_be_written_or_converted(self):
+        tools=TextTools(SimpleNamespace());tools.available=Mock()
+        tools.snapshot={'revision':'r','text':'AV','typography_supported':True,'proof_available':True}
+        draft={'operation':'edit','revision':'r','draft':'AV','typography':{'fontPostScriptName':'Arial-BoldMT'}}
+        preview=await tools.preview({**draft,'font_preview':True})
+        target={'revision':'r','plan_id':preview['plan_id']}
+        with self.assertRaises(ValueError):await tools.apply(target)
+        with self.assertRaises(ValueError):await tools.vector(target)
+        selected=await tools.preview(draft)
+        self.assertNotEqual(preview['plan_id'],selected['plan_id'])
+        self.assertIsNone(tools.transient_plan)
+
+    async def test_style_plan_survives_write_validation(self):
+        from backend.text_plan import compute
+        from backend.text_tools import style_summary
+        app=SimpleNamespace(operation_lock=asyncio.Lock(),desktop=SimpleNamespace(focus_search_result=Mock()),
+            bridge=SimpleNamespace(execute_text=AsyncMock(return_value={}),busy=False,layer_context={}),broadcast=AsyncMock())
+        tools=TextTools(app);tools.available=Mock()
+        tools.snapshot={'revision':'r','text':'ab','target':{},'typography_supported':True}
+        raw={'textStyleRange':[{'textStyle':{'size':{'_unit':'pixelsUnit','_value':50},'fontPostScriptName':'Alpha'}},
+                               {'textStyle':{'size':{'_unit':'pointsUnit','_value':12},'fontPostScriptName':'Beta'}}],
+             'paragraphStyleRange':[{'paragraphStyle':{}}]}
+        summary=style_summary(raw,300)
+        self.assertEqual(summary['size'],'12');self.assertEqual(summary['fontPostScriptName'],'混合')
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            args={'operation':'edit','revision':'r','draft':'ab','typography':{'tracking':'-15'}}
+            with self.assertRaises(ValueError):await tools.preview({**args,'typography':{'size':'nan'}})
+            plan=await tools.preview(args)
+            await tools.apply({'revision':'r','plan_id':plan['plan_id']})
+        self.assertEqual(replace_parameters(app.bridge.execute_text.call_args.args[1])['typography'],{'tracking':-15})
+
     async def test_list_plan_is_private_persistent_and_derived_from_current_read(self):
         from backend.text_list import read
         from backend.text_plan import compute
@@ -107,6 +194,60 @@ class TextToolsTests(unittest.IsolatedAsyncioTestCase):
         await tools.replace(args);app.bridge.execute_text.assert_awaited_once_with(target,args,'text.replace')
         with self.assertRaises(ValueError):await tools.replace(args)
         self.assertFalse(app.operation_lock.locked());self.assertIsNone(tools.snapshot)
+
+    async def test_proof_pins_history_without_focusing_or_consuming_plan(self):
+        memory=Mock()
+        bridge=SimpleNamespace(execute_text=AsyncMock(side_effect=[{'frame':(memory,{'history':72})},
+            {'frame':(memory,{'history':72,'scale':4})},{}]),busy=False,layer_context={})
+        app=SimpleNamespace(operation_lock=asyncio.Lock(),desktop=SimpleNamespace(focus_search_result=Mock()),bridge=bridge,broadcast=AsyncMock())
+        tools=TextTools(app);tools.available=Mock();guard=AsyncMock()
+        tools.snapshot={'revision':'r','text':'one','target':{},'proof_available':True,'proof_size':[600,440]}
+        from backend.text_plan import compute
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            plan=await tools.preview({'revision':'r','draft':'two','operation':'edit'})
+        args={'revision':'r','plan_id':plan['plan_id']}
+        with self.assertRaises(ValueError):await tools.proof({**args,'plan_id':'stale'},guard)
+        with self.assertRaisesRegex(ValueError,'原尺寸预览'):await tools.proof({**args,'scale':4},guard)
+        self.assertEqual(await tools.proof(args,guard),(memory,{'history':72,'plan_id':args['plan_id']}))
+        app.desktop.focus_search_result.assert_not_called()
+        self.assertEqual(bridge.execute_text.await_args.args[2],'text.proof')
+        params=bridge.execute_text.await_args.args[1]
+        _,frame=await tools.proof({**args,'scale':4},guard)
+        self.assertEqual(frame['scale'],4)
+        bridge.execute_text.assert_awaited_with({},params,'text.proof',before_dispatch=guard,proof_history=72,proof_scale=4)
+        with self.assertRaisesRegex(ValueError,'分辨率'):await tools.proof({**args,'scale':8},guard)
+        await tools.apply(args,guard)
+        bridge.execute_text.assert_awaited_with({},params,'text.replace',before_dispatch=guard,proof_history=72)
+
+    async def test_unverified_target_never_submits_proof(self):
+        tools=TextTools(SimpleNamespace());tools.available=Mock()
+        tools.snapshot={'text':'one','revision':'r','target':{}}
+        from backend.text_plan import compute
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            plan=await tools.preview({'revision':'r','draft':'two','operation':'edit'})
+        with self.assertRaises(ValueError):
+            await tools.proof({'revision':'r','plan_id':plan['plan_id']},AsyncMock())
+
+    async def test_table_proof_binds_cells_before_zoom_and_commit(self):
+        memory=Mock()
+        bridge=SimpleNamespace(execute_text_object=AsyncMock(side_effect=[
+            {'frame':(memory,{'history':72})},{'frame':(memory,{'history':72,'scale':4})},{}]),
+            busy=False,layer_context={})
+        app=SimpleNamespace(operation_lock=asyncio.Lock(),desktop=SimpleNamespace(focus_search_result=Mock()),
+            bridge=bridge,broadcast=AsyncMock())
+        tools=TextTools(app);tools.available=Mock();guard=AsyncMock()
+        tools.snapshot={'revision':'r','text':'','target':{},'object_proof':True,'proof_size':[600,440],
+                        'table':[['original']],'vector_object':True,'object_source':{},'object_render':'a'*64}
+        draft={'revision':'r','cells':[['updated']]}
+        self.assertEqual(await tools.proof(draft,guard),(memory,{'history':72,'table':True}))
+        with self.assertRaisesRegex(ValueError,'原尺寸预览'):
+            await tools.proof({'revision':'r','cells':[['changed']],'scale':4},guard)
+        await tools.proof({**draft,'scale':4},guard)
+        app.desktop.focus_search_result.assert_not_called()
+        payload={**draft,'object_source':{},'object_render':'a'*64}
+        bridge.execute_text_object.assert_awaited_with({},payload,before_dispatch=guard,proof_scale=4,proof_history=72)
+        await tools.table(draft,guard)
+        bridge.execute_text_object.assert_awaited_with({},payload,before_dispatch=guard,proof_history=72)
 
     def test_split_offsets_are_bounded_and_ordered(self):
         self.assertEqual(split_parameters({'revision':'s:1','breaks':[3,8]})['breaks'],[3,8])

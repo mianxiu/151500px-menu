@@ -21,6 +21,7 @@ from .stability_failures import describe
 class Stopped(RuntimeError):pass
 
 STAGE_LABELS={'fixture':'正在创建隔离临时文档','idle-read':'正在检查闲置后的图层读取',
+    'isolated-read':'正在检查隔离文档的图层读取','shape-commit-undo':'正在核验形状写入与一次撤销',
     'text-object-fixture':'正在创建隔离文字文档','text-object-create':'正在生成矢量文字对象',
     'text-object-scale':'正在缩放独立测试副本','text-object-update':'正在更新测试文字源',
     'text-object-undo-save-close':'正在核验撤销、保存重开和文档收尾',
@@ -128,7 +129,7 @@ class StabilityTest:
         await self.app.broadcast({'type':'stability','data':self.snapshot()})
 
     async def start(self,profile='standard'):
-        if profile not in ('standard','extended','text-object','color-native','gradient-editor'):raise ValueError('未知测试模式')
+        if profile not in ('standard','extended','quiet','text-object','color-native','gradient-editor'):raise ValueError('未知测试模式')
         if self.report.get('native_request',{}).get('phase') in ('submitted','unknown'):
             raise RuntimeError('原生验收请求退出仍未知，未开始新的测试')
         if self.report.get('text_fixture'):
@@ -155,9 +156,9 @@ class StabilityTest:
             app.operation_lock.release();raise
         self.active=True;self.finalizing=False;self.stop_requested=False
         self.report={'schema':1,'run_id':uuid.uuid4().hex,'phase':'running','message':'正在准备隔离测试',
-            'profile':profile,'rounds':2 if profile in ('text-object','color-native','gradient-editor') else 3 if profile=='standard' else 10,'round':0,'stage':'preflight',
+            'profile':profile,'rounds':{'quiet':1,'standard':3,'extended':10}.get(profile,2),'round':0,'stage':'preflight',
             'started_at':time.time(),'application_version':APP_VERSION,'steps':[],'system_samples':[],
-            'cleanup':'not-created','scope':{'native_menu_lifecycle':profile not in ('text-object','color-native','gradient-editor'),'native_menu_read_only':True,'temporary_document_only':True,'changes_power_plan':False,
+            'cleanup':'not-created','scope':{'native_menu_lifecycle':profile in ('standard','extended'),'native_menu_read_only':True,'temporary_document_only':True,'changes_power_plan':False,
             'injects_input':False,'uploads':False,'original_documents_saved_or_closed':False},
             'not_tested':['physical_caps_and_UU_remote','mouse_hit_testing','visible_canvas','real_document_content',
                 'GPU_causality','thermal_throttling_causality','other_OS_or_Photoshop_versions'],
@@ -325,13 +326,13 @@ class StabilityTest:
                 await asyncio.to_thread(desktop.end_stability_menu)
                 if desktop.visible or desktop.gui.IsWindowVisible(desktop.hwnd):raise RuntimeError('测试菜单未收起')
 
-    async def paint(self,cancel=False):
+    async def paint(self,cancel=False,*,live_preview=True):
         baseline=await self.inspect();shape=baseline['shape_editor'];checkpoint=baseline['stability']['history_id']
         if not shape.get('available') or 'mask' not in shape:raise RuntimeError('测试形状颜色／羽化能力缺失')
         params={k:deepcopy(shape[k]) for k in ('revision','fill','stroke','mask')}
         params['fill']['rgb']=[210,60,30];params['mask']={'feather':4.5,'density':77}
         bridge=self.app.bridge;frames=[]
-        if shape.get('live_preview'):
+        if live_preview and shape.get('live_preview'):
             preview=self.preview=MaskPreview(len(self.report['steps']),params,trace=True)
             task=asyncio.create_task(bridge.execute_shape(params,before_dispatch=self.before_dispatch,preview=preview,_stability_run=self.report['run_id']))
             # Keep the original request alive only while we are testing it.
@@ -457,22 +458,29 @@ class StabilityTest:
             self.report['cleanup']='fixture-started-outcome-not-yet-verified'
             await self.step('fixture',lambda:self.command('fixture'));owned=True;self.report['cleanup']='owned-document-retained'
             await self.step('native-selection-probe',self.native_selection_probe)
+            quiet=self.report.get('profile')=='quiet'
+            read=self.inspect if quiet else self.menu_read
+            repetitions=2 if quiet else 8
             for round_number in range(1,self.report['rounds']+1):
                 self.report['round']=round_number
-                await self.step('idle-read',self.menu_read)
-                for i in range(8):
+                await self.step('isolated-read' if quiet else 'idle-read',read)
+                for i in range(repetitions):
                     await self.step('fixed-layer-label',lambda i=i:self.command('label',test_color='red' if i%2==0 else 'blue'))
-                    await self.step('fixed-layer-read',self.menu_read)
-                await self.step('preview-commit-undo',self.paint)
-                await self.step('preview-cancel',lambda:self.paint(True))
-                for i in range(8):
+                    await self.step('fixed-layer-read',read)
+                if quiet:
+                    await self.step('shape-commit-undo',lambda:self.paint(live_preview=False))
+                else:
+                    await self.step('preview-commit-undo',self.paint)
+                    await self.step('preview-cancel',lambda:self.paint(True))
+                for i in range(repetitions):
                     await self.step('grow-layer',lambda:self.command('layer.new'))
-                    await self.step('growing-layer-read',self.menu_read)
+                    await self.step('growing-layer-read',read)
                 await self.step('select-many',lambda:self.command('select-many'))
-                await self.step('multi-selection-read',self.menu_read)
+                await self.step('multi-selection-read',read)
                 await self.step('select-shape',lambda:self.command('select-shape'))
-                self.report.update(stage='idle',message='闲置后继续检查首次读取');await self.save()
-                for _ in range(10):self.check();await asyncio.sleep(1)
+                if not quiet:
+                    self.report.update(stage='idle',message='闲置后继续检查首次读取');await self.save()
+                    for _ in range(10):self.check();await asyncio.sleep(1)
             await self.step('finish',lambda:self.command('finish'));owned=False
             self.report.update(phase='completed',message='自动测试完成，报告已保存',cleanup='verified-closed-and-original-restored')
         except Stopped as error:

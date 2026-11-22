@@ -10,6 +10,17 @@ from tests import test_input_language as fixtures
 
 
 class InputFocusTests(unittest.TestCase):
+    def test_recent_authenticated_tool_state_precedes_pending_request(self):
+        desktop=SimpleNamespace(input_tool_state=Mock(),input_language_tool=Mock())
+        guard=InputFocus(desktop)
+        recent={'classID':'typeCreateOrEditTool','isModal':True,'created_at_ms':time.time()*1000}
+        desktop.input_tool_state.return_value=recent
+        self.assertEqual(guard.read_tool([1]),recent)
+        desktop.input_language_tool.assert_not_called()
+        recent['created_at_ms']-=3000
+        guard.read_tool([1])
+        desktop.input_language_tool.assert_called_once_with(identity=[1])
+
     def start(self):
         self.desktop=SimpleNamespace(stop=threading.Event(),visible=False,
             input_language_tool=Mock(return_value={'classID':'moveTool','isModal':False}),

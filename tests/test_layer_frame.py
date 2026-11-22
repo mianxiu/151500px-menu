@@ -11,11 +11,11 @@ from backend.layer_frame import FramePreview
 
 
 class FramePreviewTests(unittest.IsolatedAsyncioTestCase):
-    def test_solo_tap_always_restores(self):
+    def test_solo_tap_commits_once(self):
         preview=FramePreview(13,solo=True)
         preview.finish(False)
         preview.finish(True)
-        self.assertEqual((preview.phase,preview.seq),('cancel',2))
+        self.assertEqual((preview.phase,preview.seq),('commit',2))
 
     def test_release_before_bind_keeps_original_identity(self):
         with tempfile.TemporaryDirectory() as folder:

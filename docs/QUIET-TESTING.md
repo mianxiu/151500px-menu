@@ -1,5 +1,25 @@
 # 副屏低干扰测试
 
+## 一次运行菜单模拟和 Photoshop 后台验收
+
+从项目根目录运行。先打开 Photoshop 和与当前源码版本一致的后台，确认 UXP 就绪。
+
+```powershell
+.\Scripts\python.exe tools/run-quiet-acceptance.py
+```
+
+脚本先运行实际后台内置的原生菜单自测，再用同一个服务依次跑受限 CPU 和正常 CPU 的隔离文档测试。真实 Photoshop 测试覆盖读取、标签、新建图层、多选、形状写入和一次撤销。测试期间可使用其他应用。光标由你控制，脚本只向自测程序内部模拟菜单输入。遇到目标变化、等待超时或未知结果时停止后续批次，保留原记录。
+
+每次运行生成 `.runtime/quiet-acceptance-<标识>/report.json`，附菜单自测日志、Photoshop 报告及资源恢复记录。成功后可以在方便的时候集中验收 Caps 和中文输入法，并记录到同一报告。
+
+```powershell
+.\Scripts\python.exe tools/run-quiet-acceptance.py --finish-interactive '.runtime/quiet-acceptance-<标识>/report.json'
+```
+
+实体输入由测试人员在自建文档中实际操作。自动报告把这两项保留为待验收。已有 Photoshop 主窗口可以用 `tools/test-quiet-ps.py --place-right` 移到最右侧显示器，日常自动测试沿用当前窗口位置。
+
+## 独立副屏工具
+
 2026-10-17新增Windows源码维护工具，不是后台新增按钮。主程序快捷键、输入保护和执行队列保持。使用说明同步到[Wiki](https://github.com/mianxiu/151500px-menu/wiki/Quiet-testing)。
 
 用户2026-10-17明确要求后续优先面向低配办公电脑验收。新增／修复默认先跑受限CPU的短批次真实PS事务，再补正常配置对照；同时检查正确目标、新鲜选择、原内容、一次撤销、未知结果不重发和资源恢复。前台变化时暂停，不为完成测试抢焦点。不得延长刷新间隔或删减校验换取通过；真实低内存／集显及故障机器继续独立验收，CPU限制不能替代这些硬件条件。

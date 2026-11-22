@@ -22,6 +22,7 @@ a = Analysis(
                       (str(root / 'native/vendor/json/LICENSE.MIT'), 'native/licenses/json'),
                       (str(root / 'native/vendor/manifest.json'), 'native/licenses'),
                       (str(root / 'uxp/offline-probe/manifest.json'), 'uxp/offline-probe'),
+                      (str(root / 'generator/text-canvas'), 'generator/text-canvas'),
                       (str(root / 'uxp/offline-probe/main.js'), 'uxp/offline-probe'),
                       (str(root / 'uxp/offline-probe/labels.js'), 'uxp/offline-probe'),
                       (str(root / 'jsx'), 'jsx')],

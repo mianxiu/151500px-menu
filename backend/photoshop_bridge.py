@@ -138,6 +138,24 @@ class PhotoshopBridge:
         script = label_script(action) if action in LABEL_ACTIONS else self.scripts[action]
         return app.DoJavaScript(guarded_script(script, target))
 
+    async def execute_screen_mode(self, root, before_dispatch, check_focus):
+        def post(action):
+            import win32gui
+            import win32process
+            from .uxp_management import photoshop_process_ids
+            script=(ROOT/'jsx/next_screen_mode.jsx').read_text('utf-8')
+            command=int(self._captured_app.DoJavaScript(guarded_script(script,self._captured_target)))
+            check_focus()
+            if (command not in (5991,5992,5993) or win32gui.GetForegroundWindow()!=root or
+                    win32gui.GetClassName(root)!='Photoshop' or not win32gui.IsWindowEnabled(root) or
+                    photoshop_process_ids()!=(win32process.GetWindowThreadProcessId(root)[1],)):
+                raise RuntimeError('Photoshop 窗口或屏幕模式已改变')
+            # Post to PS's normal menu loop so its native full-screen confirmation works.
+            win32gui.PostMessage(root,0x0111,command,0)
+            return str(command)
+        return await self._execute_task('view.screenMode',before_dispatch,
+            capture=lambda:PhotoshopBridge._capture_target(self),execute=post,channel='com-win32')
+
     def request_cancel(self, task_id):
         task = self.tasks.get(task_id)
         if task.get('restored'):
@@ -216,7 +234,7 @@ class PhotoshopBridge:
         self._captured_app, self._captured_target = app, actual
         return dict(expected)
 
-    async def _execute_task(self, action, before_dispatch=None, task_id=None, binding=None, capture=None, execute=None, interactive=False, result_target=None):
+    async def _execute_task(self, action, before_dispatch=None, task_id=None, binding=None, capture=None, execute=None, interactive=False, result_target=None, channel=None):
         command = validate_command(action)
         if self.closed:
             raise RuntimeError("服务正在退出")
@@ -224,7 +242,7 @@ class PhotoshopBridge:
             raise RuntimeError("上一项操作尚未完成，请稍后再试")
         self.busy = True
         if task_id:self.tasks.update(task_id,'capturing',wait_reason='',message='开始重新核验固定目标')
-        else:task_id = self.tasks.create(action, command.label)
+        else:task_id = self.tasks.create(action, command.label, **({'channel':channel} if channel else {}))
         self._active_task_id = task_id
         future = None
         dispatched = False
@@ -268,7 +286,7 @@ class PhotoshopBridge:
             self._operation_future = future
             dispatched = True
             future.add_done_callback(finished)
-            execution_timeout = 120 if action in ('text.split','text.object') else self.operation_timeout
+            execution_timeout = 120 if action in ('text.split','text.object','text.proof') else self.operation_timeout
             result = await asyncio.wait_for(asyncio.shield(future), None if action=='editStyle' or interactive else execution_timeout)
             if result_target:target=result_target(result)
             return {"message": self._result_message(action,result), "result": str(result or ""), "target":target, 'task_id':task_id}
@@ -309,6 +327,7 @@ class PhotoshopBridge:
                     self._queue_changed.set()
 
     def _result_message(self, action, result):
+        if action=='view.screenMode':return '已发送 Photoshop 屏幕模式切换命令'
         message = validate_command(action).label + '已完成'
         if action=='shape.paint' and json.loads(result).get('cancelled'):return '已取消预览并恢复原值'
         if action in ('editStyle','pasteStyle') and json.loads(result).get('cancelled'):return '已取消图层样式，未提交修改'

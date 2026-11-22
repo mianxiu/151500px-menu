@@ -21,8 +21,9 @@ inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool
 }
 struct PanelStyle {
     bool stableVisual;
+    static float padding(float scale,bool compact=false){return (compact?menuDenseGap:menuControlPadding)*scale;}
     explicit PanelStyle(float scale,bool compact=false,bool stableVisual=false):stableVisual(stableVisual) {
-        const float padding=(compact?menuDenseGap:menuControlPadding)*scale;
+        const float padding=PanelStyle::padding(scale,compact);
         const float gap=(compact?menuDenseGap:menuPanelGap)*scale;
         ImGui::PushFont(compact?menuFont(MenuTextRole::Shortcut):menuFont(MenuTextRole::Control));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{(compact?menuDenseGap:menuControlTextInset)*scale,std::max(0.f,((compact?menuShortcutHeight:menuControlHeight)*scale-ImGui::GetFontSize())*.5f)});
@@ -68,10 +69,71 @@ inline bool input(const char* id,const char* hint,char* value,size_t capacity,Em
     requireText(value);
     return enter;
 }
+inline int listChoice(const char* id,const char* current,const std::vector<std::pair<std::string,std::string>>& rows,ImGuiTextFilter* filter=nullptr,bool* open=nullptr,int* hovered=nullptr) {
+    ImGui::SetNextItemWidth(-1);
+    if(!ImGui::BeginCombo(id,current,ImGuiComboFlags_HeightLarge))return -1;
+    if(open)*open=true;
+    if(rows.empty())ImGui::TextUnformatted("正在读取字体…");
+    else if(filter){
+        input("##filter","搜索字体",filter->InputBuf,sizeof(filter->InputBuf));
+        if(ImGui::IsItemEdited())filter->Build();
+    }
+    std::vector<int> visible;
+    for(int i=0;i<int(rows.size());++i)
+        if(!filter || filter->PassFilter(rows[i].first.c_str()) || filter->PassFilter(rows[i].second.c_str()))visible.push_back(i);
+    int chosen=-1;
+    ImGuiListClipper clipper;
+    clipper.Begin(int(visible.size()));
+    while(clipper.Step())for(int i=clipper.DisplayStart;i<clipper.DisplayEnd;++i){
+        const int index=visible[i];
+        const auto& name=rows[index].first;
+        requireText(name);
+        ImGui::PushID(index);
+        if(ImGui::Selectable(name.c_str(),std::string_view(current)==name))chosen=index;
+        if(hovered && ImGui::IsItemHovered())*hovered=index;
+        ImGui::PopID();
+    }
+    ImGui::EndCombo();
+    return chosen;
+}
+inline bool colorSwatch(const char* label,float (&rgb)[3]) {
+    return ImGui::ColorEdit3(label,rgb,ImGuiColorEditFlags_NoInputs);
+}
+inline bool section(const char* label,bool expanded=true){return ImGui::CollapsingHeader(label,expanded?ImGuiTreeNodeFlags_DefaultOpen:0);}
+inline bool multiline(const char* id,char* value,size_t capacity,ImVec2 size,ImGuiInputTextCallback callback,void* user,bool wrap) {
+    const bool changed=ImGui::InputTextMultiline(id,value,capacity,size,ImGuiInputTextFlags_AllowTabInput|(wrap?ImGuiInputTextFlags_WordWrap:0)|(callback?ImGuiInputTextFlags_CallbackAlways|ImGuiInputTextFlags_CallbackCharFilter:0),callback,user);
+    requireText(value);return changed;
+}
 inline bool multiline(const char* id,char* value,size_t capacity,float height,ImGuiInputTextCallback callback=nullptr,void* user=nullptr) {
     MenuTextStyle text(MenuTextRole::Body);
-    const bool changed=ImGui::InputTextMultiline(id,value,capacity,{-1,height},ImGuiInputTextFlags_AllowTabInput|ImGuiInputTextFlags_WordWrap|(callback?ImGuiInputTextFlags_CallbackAlways|ImGuiInputTextFlags_CallbackCharFilter:0),callback,user);
-    requireText(value);return changed;
+    return multiline(id,value,capacity,{-1,height},callback,user,true);
+}
+inline bool canvasText(const char* id,char* value,size_t capacity,ImVec2 size,float em,ImU32 color,bool wrap,
+                       bool showText,ImGuiInputTextCallback callback,void* user) {
+    // Document text uses canvas pixels. Panel typography is independent of canvas zoom.
+    ImGui::PushFont(menuFont(MenuTextRole::Body),em);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{0,0});
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize,0.f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImU32(0));
+    ImGui::PushStyleColor(ImGuiCol_Text,showText?color:ImU32(0));
+    if(!showText){
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,ImU32(0));
+        ImGui::PushStyleColor(ImGuiCol_InputTextCursor,ImU32(0));
+    }
+    const bool changed=multiline(id,value,capacity,size,callback,user,wrap);
+    ImGui::PopStyleColor(showText?2:4);ImGui::PopStyleVar(3);ImGui::PopFont();
+    return changed;
+}
+inline bool windowDragBar(const char* label,float height,float width) {
+    const auto pos=ImGui::GetCursorScreenPos();
+    const ImVec2 max={pos.x+width,pos.y+height};
+    ImGui::InvisibleButton("##drag-window",{max.x-pos.x,height});
+    auto* draw=ImGui::GetWindowDrawList();
+    if(ImGui::IsItemHovered() || ImGui::IsItemActive())ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    const auto labelSize=ImGui::CalcTextSize(label);
+    draw->AddText({pos.x+(max.x-pos.x-labelSize.x)*.5f,pos.y+(height-labelSize.y)*.5f},ImGui::GetColorU32(ImGuiCol_Text),label);
+    return ImGui::IsItemActivated();
 }
 using TextRange=std::pair<int,int>;
 struct PreviewLine {const char* begin;const char* end;float x;};
@@ -131,6 +193,16 @@ struct TipStyle {
 };
 inline void tip(const char* text,float scale) {
     TipStyle style(scale);ImGui::BeginTooltip();ImGui::TextUnformatted(text);ImGui::EndTooltip();
+}
+inline void fieldIcon(const char* label,int icon,float scale) {
+    const auto a=ImGui::GetCursorScreenPos();
+    const float h=ImGui::GetFrameHeight(),glyph=figmaDisplayIconSize*scale;
+    ImGui::Dummy({glyph,h});
+    const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
+    drawStyledMenuIcon(ImGui::GetWindowDrawList(),icon,{a.x,a.y+(h-glyph)*.5f},glyph,
+        ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))tip(label,scale);
+    ImGui::SameLine();
 }
 inline void detailLine(const char* value,float scale,float reserve=0) {
     MenuTextStyle text(MenuTextRole::Secondary);

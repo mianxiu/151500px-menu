@@ -423,6 +423,7 @@ class GradientEditor:
             process.stdin.close()
             if process is self.process:
                 self.app.desktop.gradient_window = (0, 0)
+                if self.app.desktop.input_focus:self.app.desktop.input_focus.refresh()
                 await asyncio.to_thread(self.app.desktop.sync_native)
                 self.hwnd = None
                 if self.preview:

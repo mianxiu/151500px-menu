@@ -137,6 +137,14 @@ def panel_bounds(ps_rect, work_rect, cursor, width, height):
     return max(left, min(cursor[0], right-width)), max(top, min(cursor[1], bottom-height)), width, height
 
 
+def typeset_bounds(ps_rect, work_rect, scale):
+    x,y,available_width,available_height=panel_bounds(
+        ps_rect,work_rect,work_rect[:2],work_rect[2]-work_rect[0],work_rect[3]-work_rect[1])
+    width=min(round(1130*scale),available_width-available_width//8)
+    height=min(round(860*scale),available_height-available_height//8)
+    return x+(available_width-width)//2,y+(available_height-height)//2,width,height
+
+
 def pie_layout(ps_rect, work_rect, cursor, scale, home=False, color_editor=False, left_work=None, right_inset=None):
     width, height = round((920 if color_editor else 820 if home else 620)*scale), round((620 if color_editor else 440 if home else 500)*scale)
     # The color editor is left of the radial controls. Reserve asymmetric
@@ -198,6 +206,7 @@ class Desktop:
         self.visible = False
         self.hold_active = False
         self.menu_tools_active = False
+        self.text_tool_owner = self.text_tool_foreground = None
         self.restore_pending = False
         self.menu_epoch = 0
         self.menu_context_requester=None
@@ -324,7 +333,8 @@ class Desktop:
             gradient_window,gradient_owner=self.gradient_window
             value.update(preview_guard_owner=guard['owner'] if guarded else 0,
                          preview_guard_panel=guard['panel'] if guarded else 0,
-                         gradient_window=gradient_window,gradient_owner=gradient_owner)
+                         gradient_window=gradient_window,gradient_owner=gradient_owner,
+                         text_tool_owner=(self.text_tool_owner or 0) if self.visible else 0)
             payload=json.dumps(value)
             if payload != self.native_payload:
                 try:
@@ -477,7 +487,7 @@ class Desktop:
                     if self.input_focus:self.input_focus.edit_end(event.get('input_epoch'))
                 elif event.get("type") == "action":
                     logging.info('Native hook action: %s cursor=%s', event['action'], event.get('cursor'))
-                    if event.get('action')=='layer.frame' and event.get('native_non_input') is True:
+                    if event.get('action') in ('layer.frame','view.screenMode') and event.get('native_non_input') is True:
                         with self.frame_grant_lock:
                             self.frame_grants[event.get('frame_id')]=dict(event.get('input_guard') or {})
                             while len(self.frame_grants)>8:self.frame_grants.pop(next(iter(self.frame_grants)))
@@ -668,10 +678,12 @@ class Desktop:
         if not self.settings["enabled"]:
             return False
         hwnd = self.gui.GetForegroundWindow()
-        if self._is_photoshop(hwnd):
+        root=self._workspace_root(hwnd)
+        if root:
+            if self.visible and self.text_tool_owner and root!=self.text_tool_owner:return False
             # Floating document windows can be hidden/replaced when PS changes
             # active documents. Keep popup ownership on the stable workspace.
-            self.target = self._workspace_root(hwnd)
+            self.target = root
             self.caption_window = hwnd
             return True
         # Windows can retain our hidden popup as foreground while restoring
@@ -794,11 +806,13 @@ class Desktop:
                 if getattr(self,'mask_preview',None):raise RuntimeError('请先完成颜色或羽化调整')
                 if not self.visible:self.open(hold=True,keyboard_anchor=True)
                 current=self.menu_epoch
-                if mode=='split':
+                if mode in ('split','typeset'):
                     value=self.menu_layer_context or {}
                     if value.get('kind') not in ('text','smart') or len(value.get('layer_ids',[]))!=1 or value.get('locked'):
                         raise RuntimeError('请单选未锁定的文字图层或文字对象后打开文本工具')
                 self.hold_active=False;self.menu_tools_active=True
+                self.text_tool_owner=self.target if mode in ('split','typeset') else None
+                self.text_tool_foreground=None
                 if self.input_focus:self.input_focus.menu_open(mode)
                 self.menu_epoch+=1
                 current=self.menu_epoch
@@ -810,6 +824,8 @@ class Desktop:
                 work=win32api.GetMonitorInfo(win32api.MonitorFromWindow(self.target,2))['Work']
                 dpi=self.icons.u.GetDpiForWindow(self.hwnd) or 96
                 bounds=panel_bounds(rect,work,(round(anchor[0]+12*dpi/96),round(anchor[1]+12*dpi/96)),round((432 if mode=='search' else 632)*dpi/96),round((274 if mode=='search' else 780)*dpi/96))
+                if mode=='typeset':
+                    bounds=typeset_bounds(rect,work,dpi/96)
                 self.gui.SetWindowPos(self.hwnd,0,*bounds,0x4|0x10)
                 scale=dpi/96
                 self.preview_hint_anchor=[round(bounds[0]+bounds[2]*.5),round(bounds[1]+bounds[3]*.5)]
@@ -852,6 +868,8 @@ class Desktop:
         rect = self.gui.GetWindowRect(self.hwnd)
         if rect[0] <= point[0] < rect[2] and rect[1] <= point[1] < rect[3]:
             return False
+        if self.text_tool_owner and self._workspace_root(self.gui.WindowFromPoint(point))==self.text_tool_owner:
+            return False
         scoped = self._scope()
         self.visible = False
         self.notify("dismiss")
@@ -861,6 +879,7 @@ class Desktop:
         # Independent of UIA/focus inspection and the window lock. A slow panel
         # lookup must not leave the next menu with old selection eligibility.
         from .layer_context import unavailable
+        last_tip=None
         while not self.stop.is_set():
             delay=.04
             try:
@@ -869,6 +888,12 @@ class Desktop:
                 else:
                     self.layer_context=unavailable()
                     delay=2
+                isolation=self.layer_context.get('isolation_id')
+                owner=self._workspace_root(self.gui.GetForegroundWindow()) if isolation else 0
+                tip=(owner,isolation) if owner and not self.visible else (0,None)
+                if tip!=last_tip:
+                    self._send_menu_event({'type':'isolation.tip','owner':tip[0],'id':tip[1] or ''})
+                    last_tip=tip
                 self._cancel_closed_menu_context()
                 self._publish_menu_context()
                 self._finish_menu_context()
@@ -903,6 +928,8 @@ class Desktop:
                         logging.info('Menu auto-hide: scoped=%s foreground=%s target=%s target_valid=%s',
                                      scoped, self.gui.GetForegroundWindow(), self.target, self._is_photoshop(self.target))
                         self.hide(restore=False)
+                    if self.visible and self.text_tool_owner:
+                        self._keep_text_tool_above_workspace()
                     self._native_config()
                 if panel_target is not None:
                     self.panel_context.snapshot(panel_target,accept=lambda:
@@ -916,6 +943,16 @@ class Desktop:
                     delay=2
             except Exception:
                 logging.exception("Window monitor failed")
+
+    @window_transition
+    def _keep_text_tool_above_workspace(self):
+        foreground=self.gui.GetForegroundWindow()
+        if foreground==self.text_tool_foreground:return
+        self.text_tool_foreground=foreground
+        if foreground!=self.text_tool_owner and self._workspace_root(foreground)==self.text_tool_owner:
+            # The main owner already keeps its popup above it. An owned dock
+            # can move ahead of its sibling when clicked.
+            self.gui.SetWindowPos(self.hwnd,0,0,0,0,0,0x1|0x2|0x10|0x200)
 
     @window_transition
     def apply_settings(self, settings):
@@ -1072,6 +1109,7 @@ class Desktop:
         if self.gui.GetForegroundWindow() != foreground or not self._is_photoshop(hwnd):
             raise RuntimeError("Photoshop 焦点已改变，已取消唤出")
         self.menu_tools_active = False
+        self.text_tool_owner = self.text_tool_foreground = None
         self.visible = True
         self.preview_hint_anchor=[bounds[0]+anchor,
             round(bounds[1]+bounds[3]*.5)]
@@ -1366,6 +1404,7 @@ class Desktop:
         self.visible = False
         self.hold_active = False
         self.menu_tools_active = False
+        self.text_tool_owner = self.text_tool_foreground = None
         if self.hwnd and self.gui.IsWindow(self.hwnd):
             self.gui.ShowWindow(self.hwnd, 0)
         self._native_config()

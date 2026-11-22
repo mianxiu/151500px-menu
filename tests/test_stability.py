@@ -36,6 +36,29 @@ class StabilityTests(unittest.IsolatedAsyncioTestCase):
         restored=StabilityTest(self.app)
         self.assertEqual(restored.snapshot()['phase'],'interrupted');self.assertFalse(restored.active);self.assertIsNone(restored.task)
 
+    async def test_quiet_run_only_uses_isolated_host_and_single_commit(self):
+        with patch('backend.stability.host_scope',return_value=(1,lambda:None)), \
+             patch.object(type(self.bridge.transport),'folder',self.root), \
+             patch('backend.stability.read_heartbeat',return_value={'probe_version':'0.3.121'}), \
+             patch('backend.stability.machine_info',return_value={}), \
+             patch.object(self.test,'monitor',new_callable=AsyncMock), \
+             patch.object(self.test,'command',new_callable=AsyncMock) as command, \
+             patch.object(self.test,'native_selection_probe',new_callable=AsyncMock), \
+             patch.object(self.test,'inspect',new_callable=AsyncMock) as inspect, \
+             patch.object(self.test,'menu_read',new_callable=AsyncMock) as menu_read, \
+             patch.object(self.test,'paint',new_callable=AsyncMock) as paint:
+            await self.test.start('quiet')
+            await self.test.task
+        self.assertEqual(self.test.report['phase'],'completed')
+        self.assertEqual(self.test.report['cleanup'],'verified-closed-and-original-restored')
+        self.assertFalse(self.test.report['scope']['native_menu_lifecycle'])
+        self.assertFalse(self.app.operation_lock.locked())
+        self.assertEqual(command.await_args_list[0].args,('fixture',))
+        self.assertEqual(command.await_args_list[-1].args,('finish',))
+        self.assertEqual(inspect.await_count,6)
+        menu_read.assert_not_awaited()
+        paint.assert_awaited_once_with(live_preview=False)
+
     async def test_text_object_profile_reserves_existing_lock_without_external_scripts(self):
         gate=asyncio.Event()
         with patch.object(self.test,'run',gate.wait):

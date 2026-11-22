@@ -15,6 +15,13 @@ SOURCE={'schema':1,'canvas':{'width':600,'height':400,'resolution':300,'mode':'R
 
 
 class TextObjectTests(unittest.TestCase):
+    def test_table_source_round_trip_and_cell_bounds(self):
+        model={'schema':3,'canvas':SOURCE['canvas'],'table':[['项目','单价'],['A&B','']]}
+        self.assertEqual(text_object.read(text_object.write('',model)),model)
+        for cells in ([],[[]],[['a'],[]],[['x']*9],[['']]*13,[['a\nb']],[['a'*129]],[[False]]):
+            with self.subTest(cells=cells), self.assertRaises(ValueError):
+                text_object.source({**model,'table':cells})
+
     def test_single_packet_roundtrip_preserves_full_styles_list_data_and_foreign_metadata(self):
         value=copy.deepcopy(SOURCE);value['layer']['xmp']=text_list.write(FOREIGN,OPTIONS)
         raw=text_object.write(FOREIGN,value);self.assertEqual(text_object.read(raw),value)

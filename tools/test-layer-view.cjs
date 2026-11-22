@@ -2,9 +2,10 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const source=fs.readFileSync('uxp/offline-probe/labels.js','utf8').slice(fs.readFileSync('uxp/offline-probe/labels.js','utf8').lastIndexOf('function createLayerView('));
 function fixture(){
  const state={zoom:1,x:200,y:100,edge:false,extras:true,writes:0,fail:false,badMenu:false,failToggle:false,captures:0,modal:false};
- const target={session:'s',document_id:9,active_layer_id:11,layer_ids:[11]};const doc={width:900,height:650,activeLayers:[{id:11,visible:true,parent:null,boundsNoEffects:{left:400,top:200,right:500,bottom:250}}]};
+ const target={session:'s',document_id:9,active_layer_id:11,layer_ids:[11]};const doc={id:9,width:900,height:650,activeLayers:[{id:11,visible:true,parent:null,boundsNoEffects:{left:400,top:200,right:500,bottom:250}}]};
  const ps={app:{activeDocument:doc,currentTool:{id:'moveTool'}},core:{redrawDocument:async()=>{},executeAsModal:async fn=>{assert.equal(state.modal,false);state.modal=true;try{return await fn({isCancelled:false,hostControl:state.history});}finally{state.modal=false;}},performMenuCommand:async({commandID})=>{state.writes++;if(state.failToggle)return false;if(commandID===1&&!state.extras)state.extras=true;else state[commandID===1?'edge':'extras']=!state[commandID===1?'edge':'extras'];return true;}},action:{batchPlay:async commands=>commands.map(c=>{
   if(c._obj==='show'||c._obj==='hide'){state.members.find(l=>l.id===c._target[0]._id).visible=c._obj==='show';return {};}
+  if(c._obj==='wait'){assert.equal(c.state._value,'redrawComplete');state.redraws=(state.redraws||0)+1;return {};}
   if(c._obj==='uiInfo')return {result:{commandID:c.commandID,checked:state[c.commandID===1?'edge':'extras']}};
   if(c._obj==='get')switch(c._target[0]._property){
    case 'menuBarInfo':return {menuBarInfo:{submenu:[{name:'Layer Edges',command:1,checked:false},{name:state.badMenu?'Unknown':'Extras',command:2,checked:false}]}};
@@ -16,13 +17,13 @@ function fixture(){
     return {viewInfo:{activeView:{globalBounds:{left:{_value:-1200},top:50,right:0,bottom:770}}}};
   }
   state.writes++;
-  if(c._obj==='select'){if(state.fail)return {_obj:'error'};state.zoom=10;state.x=2250;state.y=1125;return {};}
+  if(c._obj==='select'){if(state.fail)return {_obj:'error',message:'host rejected fit',result:-25920};state.zoom=10;state.x=2250;state.y=1125;return {};}
   if(c._obj==='set'&&c.to._obj==='zoom'){const ratio=c.to.zoom/state.zoom;state.x*=ratio;state.y*=ratio;state.zoom=c.to.zoom;return {};}
   if(c._obj==='set'&&c.to._obj==='center'){state.x=c.to.horizontal._value;state.y=c.to.vertical._value;return {};}
   throw Error('unexpected action');
  })}};
  let clock=Date.now();const context={Date:{now:()=>clock},setTimeout:fn=>{clock+=40;fn();},ps,session:'s',capture:async()=>{state.captures++;return {...target,layer_ids:[...target.layer_ids]};}};vm.createContext(context);vm.runInContext(source+'\nthis.tool=createLayerView(ps,session,capture);',context);
- return {state,target,doc,tool:context.tool,request:()=>({id:'f',session:'s',token:'t',target:structuredClone(target),expires_at_ms:Date.now()+5000})};
+ return {state,target,doc,ps,tool:context.tool,request:()=>({id:'f',session:'s',token:'t',target:structuredClone(target),expires_at_ms:Date.now()+5000})};
 }
 (async()=>{
  let canvas=fixture();
@@ -42,7 +43,7 @@ function fixture(){
  f=fixture();f.state.badMenu=true;await assert.rejects(f.tool.frame(f.request()),/原生/);assert.equal(f.state.writes,0);
  f=fixture();const stale=f.request();f.target.document_id=10;await assert.rejects(f.tool.frame(stale),/文档已改变/);assert.equal(f.state.writes,0);
  f=fixture();await assert.rejects(f.tool.frame({...f.request(),expires_at_ms:0}),/过期/);assert.equal(f.state.writes,0);
- for(const key of ['fail','failToggle']){f=fixture();f.state[key]=true;await assert.rejects(f.tool.frame(f.request()),e=>!e.resultUnknown);assert.equal(f.state.zoom,1);assert.equal(f.state.x,200);assert.equal(f.state.y,100);assert.equal(f.state.edge,false);}
+ for(const key of ['fail','failToggle']){f=fixture();f.state[key]=true;await assert.rejects(f.tool.frame(f.request()),e=>!e.resultUnknown&&(key!=='fail'||/select\[1\].*-25920.*host rejected fit/.test(e.message)));assert.equal(f.state.zoom,1);assert.equal(f.state.x,200);assert.equal(f.state.y,100);assert.equal(f.state.edge,false);}
 
  f=fixture();f.state.edge=true;await f.tool.frame(f.request());assert.equal(f.state.edge,false,'clear persistent 319 edges');
  for(const phase of ['commit','cancel']){
@@ -55,6 +56,7 @@ function fixture(){
  f=fixture();await assert.rejects(f.tool.frame(f.request(),{read:async()=>({id:'foreign',session:'s',token:'t',seq:1,phase:'commit',lease_until_ms:Date.now()+4000})}),/mailbox/);assert.equal(f.state.writes,0);
  for(const failure of ['','read','restore']){
   const f=fixture(),child=f.doc.activeLayers[0];
+  if(!failure)delete f.ps.core.redrawDocument;
   const group={id:20,visible:false,layers:[child,{id:21,visible:true}]};
   const kept={id:30,visible:true,layers:[{id:31,visible:false}]};
   child.parent=group;child.visible=false;
@@ -62,16 +64,20 @@ function fixture(){
   f.doc.activeLayers.push(kept);f.target.layer_ids.push(kept.id);kept.boundsNoEffects=child.boundsNoEffects;
   const members=f.state.members=[...f.doc.layers,...group.layers,...kept.layers];
   const before=members.map(l=>l.visible);let shown=false,restores=0;
+  let historyID=1;
+  Object.defineProperty(f.doc,'activeHistoryState',{get:()=>({id:historyID}),set:value=>{
+   restores++;assert.equal(value.id,1);if(failure==='restore')throw Error('restore failed');
+   // On PS 24.0.1 rewinding history may leave all the eye icons unchanged.
+   historyID=value.id;
+  }});
   f.state.history={suspendHistory:async()=>17,resumeHistory:async(id,commit)=>{
-   assert.equal(id,17);assert.equal(commit,false);restores++;
-   if(failure==='restore')throw Error('restore failed');
-   members.forEach((l,i)=>{l.visible=before[i];});
+   assert.equal(id,17);assert.equal(commit,true);historyID=2;
   }};
   const run=f.tool.frame({...f.request(),frame_solo:true},{
-   applied:async()=>{shown=true;assert.equal(f.state.modal,true);
+   applied:async()=>{shown=true;assert.equal(f.state.modal,false);
     assert.deepEqual(members.map(l=>l.visible),[true,true,false,false,true,false,false]);},
    read:async()=>{if(shown && failure==='read')throw Error('mailbox failed');
-    return {id:'f',session:'s',token:'t',seq:1,phase:shown?'commit':'preview',lease_until_ms:Date.now()+4000};}
+    return {id:'f',session:'s',token:'t',seq:1,phase:shown?'cancel':'preview',lease_until_ms:Date.now()+4000};}
   });
   if(failure)await assert.rejects(run,e=>failure==='restore'?e.resultUnknown===true:e.message==='mailbox failed');
   else assert.equal((await run).view_restored,true);
@@ -79,9 +85,21 @@ function fixture(){
   if(failure!=='restore')assert.deepEqual(members.map(l=>l.visible),before);
  }
  f=fixture();
- const tap=await f.tool.frame({...f.request(),frame_solo:true},{read:async()=>({
+ const chosen=f.doc.activeLayers[0],other={id:42,visible:true},removed={id:43,visible:true};
+ f.doc.layers=f.state.members=[chosen,other,removed];
+ f.state.history={suspendHistory:async()=>7,resumeHistory:async(id,commit)=>assert.equal(commit,true)};
+ const tap=()=>f.tool.frame({...f.request(),frame_solo:true},{read:async()=>({
   id:'f',session:'s',token:'t',seq:2,phase:'commit',lease_until_ms:Date.now()+4000
  })});
- assert.equal(tap.cancelled,true);assert.equal(f.state.writes,0);
+ assert.equal((await tap()).isolated,true);assert.equal(other.visible,false);assert.equal(f.state.modal,false);
+ assert.equal(f.tool.isolationID(f.doc.id),'f');
+ await assert.rejects(f.tool.frame({...f.request(),exit_isolation:'stale'}),/隔离已结束/);
+ assert.equal(other.visible,false);
+ chosen.name='edited';f.doc.layers.pop();const added={id:44,visible:false};f.doc.layers.push(added);
+ f.doc.activeLayers=[added];f.target.active_layer_id=44;f.target.layer_ids=[44];
+ assert.equal((await f.tool.frame({...f.request(),exit_isolation:'f'})).isolated,false);assert.equal(other.visible,true);assert.equal(added.visible,false);
+ assert.equal(f.tool.isolationID(f.doc.id),undefined);
+ await assert.rejects(f.tool.frame({...f.request(),exit_isolation:'f'}),/隔离已结束/);
+ assert.equal(chosen.name,'edited');assert.equal(f.doc.layers.includes(removed),false);
  console.log('Layer frame and Shift+F visibility, nested groups, release and rollback passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

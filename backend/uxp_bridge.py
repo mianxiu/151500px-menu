@@ -147,6 +147,18 @@ class UxpTransport:
                     raise RuntimeError('文本工具需要正常重启PS加载UXP0.3.58')
                 if payload.get('command')=='text.split' and version(heartbeat.get('probe_version'))<(0,3,59):
                     raise RuntimeError('文字拆分需要正常重启PS加载UXP0.3.59')
+                if 'cells' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,120):raise RuntimeError('表格需要加载 UXP 0.3.120')
+                if 'typography' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,118):
+                    raise RuntimeError('文字排版需要正常重启PS加载UXP0.3.118')
+                if 'range' in payload.get('text',{}).get('typography',{}) and version(heartbeat.get('probe_version'))<(0,3,119):
+                    raise RuntimeError('局部排版需要正常重启PS加载UXP0.3.119')
+                if {'startIndent','endIndent','firstLineIndent'}.intersection(payload.get('text',{}).get('typography',{})) and version(heartbeat.get('probe_version'))<(0,3,122):
+                    raise RuntimeError('段落缩进需要正常重启 Photoshop 加载 UXP 0.3.122')
+                if payload.get('command')=='text.object' and {'startIndent','endIndent','firstLineIndent'}.intersection(payload.get('text',{}).get('typography',{})) and version(heartbeat.get('probe_version'))<(0,3,123):
+                    raise RuntimeError('矢量段落缩进需要正常重启 Photoshop 加载 UXP 0.3.123')
+                fields=payload.get('text',{}).get('typography',{})
+                if ({'align','baselineShift','horizontalScale','verticalScale'}.intersection(fields) or fields.get('leading')=='auto') and version(heartbeat.get('probe_version'))<(0,3,125):
+                    raise RuntimeError('扩展排版选项需要正常重启 Photoshop 加载 UXP 0.3.125')
                 if payload.get('command') in ('text.replace','text.split') and 'value' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,71):
                     raise RuntimeError('文字处理计划需要正常重启PS加载UXP0.3.71；未提交修改')
                 if payload.get('command')=='text.replace' and 'list_xmp' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,81):
@@ -163,7 +175,8 @@ class UxpTransport:
                 if payload.get('command')=='layer.thumbnail':
                     raise RuntimeError('非静默缩略图已停用，未提交操作')
                 if payload.get('command')=='layer.frame' and version(heartbeat.get('probe_version'))<(0,3,99):raise RuntimeError('F聚焦需要正常重启PS加载UXP0.3.99')
-                if payload.get('frame_solo') and version(heartbeat.get('probe_version'))<(0,3,112):raise RuntimeError('Shift+F 临时独显需要加载 UXP 0.3.112 或更高版本')
+                if payload.get('frame_solo') and version(heartbeat.get('probe_version'))<(0,3,114):raise RuntimeError('Shift+F 图层隔离需要加载 UXP 0.3.114 或更高版本')
+                if payload.get('exit_isolation') and version(heartbeat.get('probe_version'))<(0,3,116):raise RuntimeError('点击退出隔离需要 UXP 0.3.116')
                 if payload.get('command') in SHAPE_TOOLS and version(heartbeat.get('probe_version'))<(0,3,107):
                     raise RuntimeError('形状工具需要更新并重启PS加载UXP0.3.107')
                 if payload.get('command')=='layer.focus' and (version(heartbeat.get('probe_version'))<(0,3,57) or payload.get('target',{}).get('session')!=heartbeat.get('session')):
@@ -197,7 +210,15 @@ class UxpTransport:
                     raise RuntimeError('请更新并重新加载 UXP 0.3.31，以支持颜色及蒙版实时预览；未提交操作')
                 if payload.get('command')=='shape.preview' and (version_tuple(heartbeat.get('photoshop_version'))<(24,1,0) or heartbeat.get('document_redraw_available') is not True):
                     raise RuntimeError('当前PS使用本地草稿，实时预览需要PS24.1及官方重绘API；未提交修改')
+                if (payload.get('command')=='text.proof' or 'proof_history' in payload) and version(heartbeat.get('probe_version'))<(0,3,121):
+                    raise RuntimeError('草稿画布需要 UXP 0.3.121')
+                if 'proof_scale' in payload and version(heartbeat.get('probe_version'))<(0,3,126):
+                    raise RuntimeError('高清草稿需要 UXP 0.3.126')
+                if 'proof_isolated' in payload and version(heartbeat.get('probe_version'))<(0,3,128):
+                    raise RuntimeError('独立背景预览需要 UXP 0.3.128')
                 text_object=payload.get('command')=='text.object'
+                if text_object and ('object_proof' in payload or 'proof_history' in payload) and version(heartbeat.get('probe_version'))<(0,3,127):
+                    raise RuntimeError('矢量草稿需要 UXP 0.3.127')
                 if text_object and (native_preview is None or version(heartbeat.get('probe_version'))<(0,3,100)):
                     raise RuntimeError('智能文字对象需要正常重启PS加载UXP0.3.100；未提交操作')
                 legacy=payload.get('command')=='shape.legacy.preview' or text_object
@@ -211,7 +232,9 @@ class UxpTransport:
                     raise RuntimeError('实时预览需要更新并加载UXP0.3.43，以核验脚本退出并恢复PS原生操作；未提交操作')
                 if preview is not None and getattr(preview,'trace',False):payload['preview_trace']=True
                 request={**payload,'id':identity,'token':token,'session':heartbeat.get('session'),'operation':operation,'expires_at_ms':int(time.time()*1000)+5000}
-                if text_object:
+                if payload.get('command') in ('text.proof','text.replace') and version(heartbeat.get('probe_version'))>=(0,3,121) and len(json.dumps(request).encode())>4000:
+                    request['external_text']=True
+                if text_object or request.get('external_text'):
                     from .settings import atomic_json
                     params=request.pop('text');request['text']={'revision':params['revision']}
                     data={**{k:request[k] for k in ('id','session','operation','token')},'params':params}
@@ -575,13 +598,14 @@ class UxpBridge(PhotoshopBridge):
             return await self._execute_task(action,before_dispatch,capture=self._prepare_direct_caps,result_target=self._direct_caps_result_target)
         return await super().execute(action,before_dispatch,enqueue=False)
 
-    async def execute_frame(self,preview,before_dispatch=None):
+    async def execute_frame(self,preview,before_dispatch=None,exit_id=None):
         if self.execution_guard:self.execution_guard()
         def write(action):
             self.transport.task_id=self._active_task_id;self._uxp_worker_active=True
             try:
-                response=self.transport.call('set_label',command='layer.frame',target=self._captured_target,frame_preview=True,preview=preview,
-                                             **({'frame_solo':True} if preview.solo else {}))
+                gesture=({'exit_isolation':exit_id} if exit_id else
+                         {'frame_preview':True,'preview':preview,'frame_solo':preview.solo})
+                response=self.transport.call('set_label',command='layer.frame',target=self._captured_target,**gesture)
                 value=validate(response.get('layer_context'),self._captured_app)
                 self.layer_context=value if fresh(value) else unavailable()
                 return json.dumps(response['result'])
@@ -614,34 +638,53 @@ class UxpBridge(PhotoshopBridge):
             finally:self._uxp_worker_active=False
         return await self._execute_task('layer.focus',before_dispatch,capture=capture,execute=write)
 
-    async def execute_text(self,target,params,action,before_dispatch=None):
+    async def execute_text(self,target,params,action,before_dispatch=None,proof_history=None,proof_scale=1,proof_isolated=False):
         from .text_tools import replace_parameters,split_parameters
-        if action not in ('text.replace','text.split'):raise ValueError('无效的文字操作')
+        if action not in ('text.replace','text.split','text.proof'):raise ValueError('无效的文字操作')
         params=split_parameters(params) if action=='text.split' else replace_parameters(params,allow_xmp=True)
         if self.execution_guard:self.execution_guard()
+        proof_frame=None
         def write(action):
+            nonlocal proof_frame
             if self.focus_guard:self.focus_guard()
             self.transport.task_id=self._active_task_id;self._uxp_worker_active=True
             try:
-                response=self.transport.call('set_label',command=action,target=self._captured_target,text=params)
+                response=self.transport.call('set_label',command=action,target=self._captured_target,text=params,
+                    **({'proof_history':proof_history} if proof_history is not None else {}),
+                    **({'proof_isolated':True} if proof_isolated else {}),
+                    **({'proof_scale':proof_scale} if proof_scale>1 else {}))
+                if action=='text.proof':
+                    from .text_canvas import staged_frame
+                    pending=self.transport.pending.value
+                    if not pending or pending['id']!=response.get('id'):raise RuntimeError('草稿读取会话已改变')
+                    proof_frame=staged_frame(Path(pending['folder']),response,self._captured_target,scale=proof_scale,isolated=proof_isolated)
                 value=validate(response.get('layer_context'),self._captured_app)
                 self.layer_context=value if fresh(value) else unavailable()
                 return json.dumps(response['result'])
             finally:self._uxp_worker_active=False
-        return await self._execute_task(action,before_dispatch,capture=lambda:self._bind_menu_target(target),execute=write)
+        try:
+            result=await self._execute_task(action,before_dispatch,capture=lambda:self._bind_menu_target(target),execute=write)
+            if proof_frame:result['frame']=proof_frame
+            return result
+        except BaseException:
+            if proof_frame:proof_frame[0].close()
+            raise
 
-    async def execute_text_object(self,target,params,before_dispatch=None):
+    async def execute_text_object(self,target,params,before_dispatch=None,proof_scale=None,proof_history=None,proof_isolated=False):
         from .text_tools import replace_parameters
         from . import text_object
         params=dict(params);existing=params.pop('object_source',None);render=params.pop('object_render',None)
-        params=replace_parameters(params,allow_xmp=True)
+        if set(params)=={'revision','cells'} and isinstance(params['revision'],str):text_object.table_cells(params['cells'])
+        else:params=replace_parameters(params,allow_xmp=True)
         if existing is not None:
             import re
             text_object.source(existing)
             if not isinstance(render,str) or not re.fullmatch('[0-9a-f]{64}',render):raise ValueError('文字对象显示校验无效')
             params.update(object_source=existing,object_render=render)
         if self.execution_guard:self.execution_guard()
+        proof_frame=None
         def write(_):
+            nonlocal proof_frame
             if self.focus_guard:self.focus_guard()
             application=self._application()
             self.transport.task_id=self._active_task_id;self._uxp_worker_active=True
@@ -651,7 +694,7 @@ class UxpBridge(PhotoshopBridge):
                 from .text_object_native import invoke
                 try:
                     model=ready['prepared']['source'];encoded=text_object.source(model)
-                    xml=text_object.write(ready['prepared']['before_xmp'],model)
+                    xml=text_object.write('' if ready['prepared']['kind']=='new-table' else ready['prepared']['before_xmp'],model)
                     ready['prepared']['source_sha256']=hashlib.sha256(encoded).hexdigest()
                     if model.get('renderer')=='list-v1':
                         from .text_object_render import render
@@ -669,11 +712,26 @@ class UxpBridge(PhotoshopBridge):
                     return json.dumps(rejected)
                 return invoke(application,folder,request,ready,model,xml)
             try:
-                response=self.transport.call('set_label',command='text.object',target=self._captured_target,text=params,native_preview=native)
+                response=self.transport.call('set_label',command='text.object',target=self._captured_target,text=params,native_preview=native,
+                    **({'object_proof':True,'proof_scale':proof_scale} if proof_scale is not None else {}),
+                    **({'proof_isolated':True} if proof_isolated else {}),
+                    **({'proof_history':proof_history} if proof_history is not None else {}))
+                if proof_scale is not None:
+                    from .text_canvas import staged_frame
+                    pending=self.transport.pending.value
+                    if not pending or pending['id']!=response.get('id'):raise RuntimeError('矢量草稿读取会话已改变')
+                    proof_frame=staged_frame(Path(pending['folder']),response,self._captured_target,scale=proof_scale,isolated=proof_isolated)
                 value=validate(response.get('layer_context'),self._captured_app);self.layer_context=value if fresh(value) else unavailable()
                 return json.dumps(response['result'])
             finally:self._uxp_worker_active=False
-        return await self._execute_task('text.object',before_dispatch,capture=lambda:self._bind_menu_target(target),execute=write)
+        try:
+            result=await self._execute_task('text.proof' if proof_scale is not None else 'text.object',before_dispatch,
+                                            capture=lambda:self._bind_menu_target(target),execute=write)
+            if proof_frame:result['frame']=proof_frame
+            return result
+        except BaseException:
+            if proof_frame:proof_frame[0].close()
+            raise
 
     async def execute_shape(self, params, before_dispatch=None, frozen_target=None, preview=None, _stability_run=None, focus_guard=None):
         from .shape_paint import parameters

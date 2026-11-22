@@ -78,9 +78,16 @@ def save(path, value):
             time.sleep(.004)
 
 
-def place(state, journal):
-    ps, monitor = select(state)
-    if win32gui.GetForegroundWindow() == ps['hwnd']:
+def place(state, journal, *, rightmost=False):
+    if rightmost:
+        hosts = [w for w in state['windows'] if w['role'] == 'photoshop' and w['cls'] == 'Photoshop']
+        if len(hosts) != 1 or not state['monitors']:
+            raise RuntimeError('Expected one Photoshop main window and at least one display')
+        ps = hosts[0]
+        monitor = max(state['monitors'], key=lambda item: (item['Monitor'][2], item['Monitor'][0]))
+    else:
+        ps, monitor = select(state)
+    if not rightmost and win32gui.GetForegroundWindow() == ps['hwnd']:
         raise RuntimeError('Photoshop is in use; no window moved')
     # Persist original placements before moving. Retain Z-order and activation.
     owned = [w for w in state['windows'] if w['pid'] == ps['pid'] and

@@ -1,4 +1,5 @@
 #pragma once
+static constexpr wchar_t frameScreenProp[]=L"PhotoshopMenu.FrameKey.ScreenMode.v1";
 static constexpr wchar_t frameSoloProp[]=L"PhotoshopMenu.FrameKey.ShiftSolo.v1";
 static constexpr wchar_t frameEndpointClass[]=L"PhotoshopMenu.FrameKey.v1";
 static constexpr wchar_t frameOwnerProp[]=L"PhotoshopMenu.FrameKey.Owner.v1";

@@ -69,7 +69,8 @@ static bool frameKeyboard(int code,WPARAM key,LPARAM data,DWORD messageTime=DWOR
     if(!up && !repeat)frameDrainUp=false;
     if(frameKeyOwned){if(up)frameEnd(!policyForeground() || DWORD(messageTime-DWORD(framePressTick))>=250,true);return 1;}
     bool executable=false;
-    const bool plain=!(GetKeyState(VK_CONTROL)&0x8000) && (!(GetKeyState(VK_SHIFT)&0x8000) || GetPropW(frameHost,frameSoloProp)) && !(GetKeyState(VK_MENU)&0x8000) && !(GetKeyState(VK_CAPITAL)&0x8000) && !(GetKeyState(VK_LWIN)&0x8000) && !(GetKeyState(VK_RWIN)&0x8000);
+    const bool screen=(GetKeyState(VK_SHIFT)&0x8000) && GetPropW(frameHost,frameScreenProp);
+    const bool plain=(!(GetKeyState(VK_CONTROL)&0x8000) || screen) && (!(GetKeyState(VK_SHIFT)&0x8000) || GetPropW(frameHost,frameSoloProp)) && !(GetKeyState(VK_MENU)&0x8000) && !(GetKeyState(VK_CAPITAL)&0x8000) && !(GetKeyState(VK_LWIN)&0x8000) && !(GetKeyState(VK_RWIN)&0x8000);
     if(up || !plain || !frameNonInput(&executable))return false;
     // Known non-input F never falls back to PS, including notification failure and repeats.
     if(repeat)return 1;

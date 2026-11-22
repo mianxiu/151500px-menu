@@ -582,8 +582,12 @@ class Application(web.Application):
                 raise ValueError('无效的颜色返回菜单请求')
             if not self.desktop:
                 raise RuntimeError("无桌面模式不提供图层操作")
-            frame_context=self.desktop.frame_input_context(args.get('frame_id'),args.get('input_guard')) if name=='layer.frame' else None
-            gradient=getattr(self,'gradient_editor',None) if frame_context and 'frame_id' in args else None
+            exit_id=args.get('exit_isolation')
+            if exit_id is not None and (name!='layer.frame' or not isinstance(exit_id,str) or len(exit_id)!=32 or
+                    self.desktop.layer_context.get('isolation_id')!=exit_id or 'frame_id' in args):
+                raise ValueError('当前文档的图层隔离已改变')
+            frame_context=self.desktop.frame_input_context(args.get('frame_id'),args.get('input_guard')) if not exit_id and name in ('layer.frame','view.screenMode') else None
+            gradient=getattr(self,'gradient_editor',None) if name=='layer.frame' and frame_context and 'frame_id' in args else None
             if gradient and not gradient.owns_overlay(frame_context.get('root')):gradient=None
             gradient_preview=gradient.preview if gradient and gradient.phase=='preview' else None
             if (self.operation_lock.locked() or self.bridge.busy) and not gradient_preview:
@@ -609,7 +613,7 @@ class Application(web.Application):
                     if not self.bridge.busy:
                         await self.broadcast({"type":"operation","busy":True,"action":name})
                     await asyncio.to_thread(self.desktop.require_action_focus)
-                    frame_input=await asyncio.to_thread(self.desktop.require_layer_frame,args.get('input_guard'),accepted=frame_context) if name=='layer.frame' else None
+                    frame_input=await asyncio.to_thread(self.desktop.require_layer_frame,args.get('input_guard'),accepted=frame_context) if not exit_id and name in ('layer.frame','view.screenMode') else None
                     if name in ('moveToTop','moveToBottom','moveUp','moveDown','moveDocumentTop','moveDocumentBottom'):
                         await asyncio.to_thread(self.desktop.require_move_context,name)
                     async with self.panel_lock:
@@ -622,7 +626,7 @@ class Application(web.Application):
                             frozen_target['active_layer_id']=(snapshot.get('shape_editor',{}).get('active_layer_id') if name in ('shape.paint','shape.pastePaint') and snapshot.get('shape_editor',{}).get('mask_batch') else snapshot['layer_ids'][0])
                     async def before_dispatch(target):
                         async with self.panel_lock:
-                            if name=='layer.frame':await asyncio.to_thread(self.desktop.require_layer_frame,frame_input,reserved=True)
+                            if frame_input:await asyncio.to_thread(self.desktop.require_layer_frame,frame_input,reserved=True)
                             if gradient:await asyncio.to_thread(gradient.require_target,target)
                             if name in ('moveToTop','moveToBottom','moveUp','moveDown','moveDocumentTop','moveDocumentBottom'):
                                 await asyncio.to_thread(self.desktop.require_move_context,name)
@@ -633,7 +637,12 @@ class Application(web.Application):
                             if not return_to_menu:await asyncio.to_thread(self.desktop.hide)
                     # Frozen menu targets stay bound; direct UXP Caps actions capture
                     # in their single request and revalidate inside the write transaction.
-                    if frame_preview:
+                    if name=='view.screenMode':
+                        result=await self.bridge.execute_screen_mode(frame_input['root'],before_dispatch,
+                            lambda:self.desktop.require_layer_frame(frame_input,reserved=True))
+                    elif exit_id:
+                        result=await self.bridge.execute_frame(None,before_dispatch=before_dispatch,exit_id=exit_id)
+                    elif frame_preview:
                         result=await self.bridge.execute_frame(frame_preview,before_dispatch=before_dispatch)
                     elif name=='shape.paint':
                         result=await self.bridge.execute_shape(args.get('params'),before_dispatch=before_dispatch,frozen_target=frozen_target)
@@ -828,6 +837,9 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_c
             mapping['tools.search']='menu.tools.open'
             mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview')})
             mapping['document.new'] = 'document.new'
+            if action=='isolation.exit':
+                await app.dispatch('action.execute',{'name':'layer.frame','exit_isolation':event_args['params']['id']})
+                return
             if action in ('gradient.offer','gradient.open'):
                 from .gradient_editor import GradientEditor
                 if not getattr(app,'gradient_editor',None):app.gradient_editor=GradientEditor(app)
