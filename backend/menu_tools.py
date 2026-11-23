@@ -4,7 +4,7 @@ import json
 from .layer_context import fresh
 from .layer_search import LayerSearch, require_available
 from .text_tools import TextTools
-from . import text_canvas
+from . import text_canvas,typeset_settings
 
 
 class MenuTools:
@@ -38,8 +38,31 @@ class MenuTools:
             self.epoch=epoch
             self.last_request=0
             self.search=LayerSearch(self.app);self.text=TextTools(self.app)
-            self.app.desktop.event({'type':'menu.tools.opened','epoch':epoch,'mode':mode})
+            event={'type':'menu.tools.opened','epoch':epoch,'mode':mode}
+            if mode=='typeset':
+                event['view_settings']=typeset_settings.load(self.app.runtime/'typeset-view.json')
+                event['style_library']=typeset_settings.load_styles(self.app.runtime/'typeset-styles.json')
+            self.app.desktop.event(event)
         return {'message':'Caps工具已打开','epoch':epoch}
+
+    async def preferences(self,args):
+        epoch=args.get('menu_epoch');value=args.get('params')
+        if (type(epoch) is not int or epoch!=self.epoch or
+                not isinstance(value,dict) or set(value) not in ({'view_settings'},{'style_name','style'})):
+            raise ValueError('排版设置会话已改变')
+        desktop=self.app.desktop
+        if not desktop.visible or not desktop.typeset_open or desktop.menu_epoch!=epoch:
+            raise ValueError('排版设置会话已关闭')
+        if 'view_settings' in value:
+            saved=typeset_settings.save(self.app.runtime/'typeset-view.json',value['view_settings'])
+            return {'view_settings':saved}
+        try:
+            styles=typeset_settings.save_style(self.app.runtime/'typeset-styles.json',value['style_name'],value['style'])
+        except ValueError as error:
+            desktop.event({'type':'menu.tools.styles','epoch':epoch,'ok':False,'message':str(error)})
+            raise
+        desktop.event({'type':'menu.tools.styles','epoch':epoch,'ok':True,'styles':styles})
+        return {'styles':styles}
 
     async def request(self,args):
         epoch=args.get('menu_epoch');value=args.get('params',{})

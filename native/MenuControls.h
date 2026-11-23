@@ -14,19 +14,20 @@ inline void panelFrame(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale) {
     const float inset=menuControlBorder*scale*.5f;
     outline(draw,{a.x+inset,a.y+inset},{b.x-inset,b.y-inset},scale);
 }
-inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool highlighted,float scale,bool vertical=false) {
-    if(highlighted)draw->AddRectFilled(a,b,ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding,
+inline void segment(ImDrawList* draw,ImVec2 a,ImVec2 b,bool first,bool last,bool highlighted,float scale,bool vertical=false,ImGuiCol fill=ImGuiCol_ButtonHovered) {
+    if(highlighted)draw->AddRectFilled(a,b,ImGui::GetColorU32(fill),ImGui::GetStyle().FrameRounding,
         first && last?ImDrawFlags_RoundCornersAll:first?(vertical?ImDrawFlags_RoundCornersTop:ImDrawFlags_RoundCornersLeft):last?(vertical?ImDrawFlags_RoundCornersBottom:ImDrawFlags_RoundCornersRight):ImDrawFlags_RoundCornersNone);
     if(!first)draw->AddLine(a,vertical?ImVec2{b.x,a.y}:ImVec2{a.x,b.y},ImGui::GetColorU32(ImGuiCol_Border),menuControlBorder*scale);
 }
 struct PanelStyle {
     bool stableVisual;
     static float padding(float scale,bool compact=false){return (compact?menuDenseGap:menuControlPadding)*scale;}
-    explicit PanelStyle(float scale,bool compact=false,bool stableVisual=false):stableVisual(stableVisual) {
+    explicit PanelStyle(float scale,bool compact=false,bool stableVisual=false,bool propertyPanel=false):stableVisual(stableVisual) {
         const float padding=PanelStyle::padding(scale,compact);
         const float gap=(compact?menuDenseGap:menuPanelGap)*scale;
         ImGui::PushFont(compact?menuFont(MenuTextRole::Shortcut):menuFont(MenuTextRole::Control));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{(compact?menuDenseGap:menuControlTextInset)*scale,std::max(0.f,((compact?menuShortcutHeight:menuControlHeight)*scale-ImGui::GetFontSize())*.5f)});
+        const float textInset=compact?menuDenseGap:propertyPanel?menuControlPadding:menuControlTextInset;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{textInset*scale,std::max(0.f,((compact?menuShortcutHeight:menuControlHeight)*scale-ImGui::GetFontSize())*.5f)});
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize,menuControlBorder*scale);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize,menuControlBorder*scale);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,ImGui::GetStyle().FrameRounding);
@@ -36,6 +37,25 @@ struct PanelStyle {
     }
     ~PanelStyle(){ImGui::PopStyleVar(stableVisual?7:6);ImGui::PopFont();}
 };
+struct PropertyRowSpacing {
+    explicit PropertyRowSpacing(float scale){ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{menuPanelGap*scale,menuCompactGap*scale});}
+    ~PropertyRowSpacing(){ImGui::PopStyleVar();}
+};
+template<class Left,class Right>
+void propertyPair(const char* id,float scale,bool compact,const Left& left,const Right& right){
+    const float gap=menuCompactGap*scale;
+    const float minimum=figmaDisplayIconSize*scale+gap+ImGui::GetFrameHeight()+ImGui::CalcTextSize("沿用").x+
+        2*ImGui::GetStyle().FramePadding.x;
+    if(compact && ImGui::GetContentRegionAvail().x<2*minimum+gap){left();right();return;}
+    if(compact)ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,{gap*.5f,0});
+    const ImGuiTableFlags flags=ImGuiTableFlags_SizingStretchSame|(compact?ImGuiTableFlags_NoPadOuterX:0);
+    if(ImGui::BeginTable(id,2,flags)){
+        ImGui::TableNextColumn();left();
+        ImGui::TableNextColumn();right();
+        ImGui::EndTable();
+    }
+    if(compact)ImGui::PopStyleVar();
+}
 inline void buttonCursor() {
     if(!ImGui::IsItemHovered() || GetCapture())return;
     POINT at{};
@@ -55,23 +75,46 @@ inline bool number(const char* label,double& value,float width,float step,double
     ImGui::SetNextItemWidth(width);
     return ImGui::DragScalar(label,ImGuiDataType_Double,&value,step,&low,&high,format,ImGuiSliderFlags_AlwaysClamp);
 }
-template<size_t N> bool choice(const char* label,const char* const (&names)[N],size_t& selected) {
-    if(!ImGui::BeginCombo(label,names[selected]))return false;
+template<size_t N> bool choice(const char* label,const char* const (&names)[N],size_t& selected,const char* preview=nullptr) {
+    if(!ImGui::BeginCombo(label,preview?preview:names[selected]))return false;
     const size_t previous=selected;
     for(size_t i=0;i<N;++i)if(ImGui::Selectable(names[i],i==selected))selected=i;
     ImGui::EndCombo();return selected!=previous;
 }
-inline bool input(const char* id,const char* hint,char* value,size_t capacity,Emphasis emphasis=Emphasis::Accent) {
-    ImGui::SetNextItemWidth(-1);
+inline bool input(const char* id,const char* hint,char* value,size_t capacity,Emphasis emphasis=Emphasis::Accent,float width=-1) {
+    ImGui::SetNextItemWidth(width);
     if(emphasis==Emphasis::Neutral)ImGui::PushStyleColor(ImGuiCol_NavCursor,ImGui::GetStyleColorVec4(ImGuiCol_Border));
     const bool enter=ImGui::InputTextWithHint(id,hint,value,capacity,ImGuiInputTextFlags_EnterReturnsTrue);
     if(emphasis==Emphasis::Neutral)ImGui::PopStyleColor();
     requireText(value);
     return enter;
 }
-inline int listChoice(const char* id,const char* current,const std::vector<std::pair<std::string,std::string>>& rows,ImGuiTextFilter* filter=nullptr,bool* open=nullptr,int* hovered=nullptr) {
+inline void propertyInput(const char* id,const char* hint,char* value,size_t capacity,const char* unit,float scale) {
+    const float available=ImGui::GetContentRegionAvail().x,gap=menuCompactGap*scale;
+    float unitWidth;
+    {
+        MenuTextStyle text(MenuTextRole::Secondary);
+        unitWidth=ImGui::CalcTextSize(unit).x;
+    }
+    const bool showUnit=available>=unitWidth+gap+menuControlHeight*scale;
+    input(id,hint,value,capacity,Emphasis::Accent,showUnit?available-unitWidth-gap:-1);
+    if(showUnit){
+        const auto at=ImGui::GetItemRectMax();
+        const float center=(ImGui::GetItemRectMin().y+at.y)*.5f;
+        MenuTextStyle text(MenuTextRole::Secondary);
+        ImGui::GetWindowDrawList()->AddText({at.x+gap,center-ImGui::GetTextLineHeight()*.5f},ImGui::GetColorU32(ImGuiCol_Text),unit);
+    }
+}
+inline void tip(const char* text,float scale);
+inline int listChoice(const char* id,const char* current,const std::vector<std::pair<std::string,std::string>>& rows,ImGuiTextFilter* filter=nullptr,bool* open=nullptr,int* hovered=nullptr,
+                      const std::function<void(int,ImVec2,ImVec2)>& sample={},float scale=0) {
     ImGui::SetNextItemWidth(-1);
-    if(!ImGui::BeginCombo(id,current,ImGuiComboFlags_HeightLarge))return -1;
+    if(!ImGui::BeginCombo(id,current,ImGuiComboFlags_HeightLarge)){
+        if(scale>0 && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) &&
+            ImGui::CalcTextSize(current).x>ImGui::GetItemRectSize().x-ImGui::GetFrameHeight()-2*ImGui::GetStyle().FramePadding.x)
+            tip(current,scale);
+        return -1;
+    }
     if(open)*open=true;
     if(rows.empty())ImGui::TextUnformatted("正在读取字体…");
     else if(filter){
@@ -89,19 +132,30 @@ inline int listChoice(const char* id,const char* current,const std::vector<std::
         const auto& name=rows[index].first;
         requireText(name);
         ImGui::PushID(index);
-        if(ImGui::Selectable(name.c_str(),std::string_view(current)==name))chosen=index;
+        const auto at=ImGui::GetCursorScreenPos();
+        if(ImGui::Selectable(sample?"##sample-row":name.c_str(),std::string_view(current)==name,0,{0,ImGui::GetTextLineHeight()}))chosen=index;
         if(hovered && ImGui::IsItemHovered())*hovered=index;
+        if(sample){
+            const auto itemEnd=ImGui::GetItemRectMax();
+            const float split=std::round(at.x+(itemEnd.x-at.x)*.57f);
+            auto* list=ImGui::GetWindowDrawList();
+            list->PushClipRect(at,{split-ImGui::GetStyle().ItemSpacing.x,itemEnd.y},true);
+            list->AddText(at,ImGui::GetColorU32(ImGuiCol_Text),name.c_str());
+            list->PopClipRect();
+            sample(index,{split,at.y},{itemEnd.x-ImGui::GetStyle().FramePadding.x,at.y+ImGui::GetTextLineHeight()});
+        }
         ImGui::PopID();
     }
     ImGui::EndCombo();
     return chosen;
 }
-inline bool colorSwatch(const char* label,float (&rgb)[3]) {
-    return ImGui::ColorEdit3(label,rgb,ImGuiColorEditFlags_NoInputs);
+inline bool colorSwatch(const char* label,float (&rgb)[3],bool nativeTooltip=true) {
+    return ImGui::ColorEdit3(label,rgb,ImGuiColorEditFlags_NoInputs|(nativeTooltip?0:ImGuiColorEditFlags_NoTooltip));
 }
 inline bool section(const char* label,bool expanded=true){return ImGui::CollapsingHeader(label,expanded?ImGuiTreeNodeFlags_DefaultOpen:0);}
-inline bool multiline(const char* id,char* value,size_t capacity,ImVec2 size,ImGuiInputTextCallback callback,void* user,bool wrap) {
-    const bool changed=ImGui::InputTextMultiline(id,value,capacity,size,ImGuiInputTextFlags_AllowTabInput|(wrap?ImGuiInputTextFlags_WordWrap:0)|(callback?ImGuiInputTextFlags_CallbackAlways|ImGuiInputTextFlags_CallbackCharFilter:0),callback,user);
+inline bool multiline(const char* id,char* value,size_t capacity,ImVec2 size,ImGuiInputTextCallback callback,void* user,bool wrap,bool draftUndo=false) {
+    const bool changed=ImGui::InputTextMultiline(id,value,capacity,size,ImGuiInputTextFlags_AllowTabInput|(wrap?ImGuiInputTextFlags_WordWrap:0)|
+        (draftUndo?ImGuiInputTextFlags_NoUndoRedo:0)|(callback?ImGuiInputTextFlags_CallbackAlways|ImGuiInputTextFlags_CallbackCharFilter:0),callback,user);
     requireText(value);return changed;
 }
 inline bool multiline(const char* id,char* value,size_t capacity,float height,ImGuiInputTextCallback callback=nullptr,void* user=nullptr) {
@@ -109,7 +163,7 @@ inline bool multiline(const char* id,char* value,size_t capacity,float height,Im
     return multiline(id,value,capacity,{-1,height},callback,user,true);
 }
 inline bool canvasText(const char* id,char* value,size_t capacity,ImVec2 size,float em,ImU32 color,bool wrap,
-                       bool showText,ImGuiInputTextCallback callback,void* user) {
+                       bool showText,ImGuiInputTextCallback callback,void* user,bool draftUndo=false) {
     // Document text uses canvas pixels. Panel typography is independent of canvas zoom.
     ImGui::PushFont(menuFont(MenuTextRole::Body),em);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{0,0});
@@ -117,12 +171,10 @@ inline bool canvasText(const char* id,char* value,size_t capacity,ImVec2 size,fl
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize,0.f);
     ImGui::PushStyleColor(ImGuiCol_FrameBg,ImU32(0));
     ImGui::PushStyleColor(ImGuiCol_Text,showText?color:ImU32(0));
-    if(!showText){
-        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,ImU32(0));
-        ImGui::PushStyleColor(ImGuiCol_InputTextCursor,ImU32(0));
-    }
-    const bool changed=multiline(id,value,capacity,size,callback,user,wrap);
-    ImGui::PopStyleColor(showText?2:4);ImGui::PopStyleVar(3);ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,showText?ImGui::GetColorU32(ImGuiCol_TextSelectedBg):ImU32(0));
+    ImGui::PushStyleColor(ImGuiCol_InputTextCursor,showText?ImGui::GetColorU32(ImGuiCol_InputTextCursor):ImU32(0));
+    const bool changed=multiline(id,value,capacity,size,callback,user,wrap,draftUndo);
+    ImGui::PopStyleColor(4);ImGui::PopStyleVar(3);ImGui::PopFont();
     return changed;
 }
 inline bool windowDragBar(const char* label,float height,float width) {
@@ -194,7 +246,7 @@ struct TipStyle {
 inline void tip(const char* text,float scale) {
     TipStyle style(scale);ImGui::BeginTooltip();ImGui::TextUnformatted(text);ImGui::EndTooltip();
 }
-inline void fieldIcon(const char* label,int icon,float scale) {
+inline void fieldIcon(const char* label,int icon,float scale,float gap=-1) {
     const auto a=ImGui::GetCursorScreenPos();
     const float h=ImGui::GetFrameHeight(),glyph=figmaDisplayIconSize*scale;
     ImGui::Dummy({glyph,h});
@@ -202,7 +254,7 @@ inline void fieldIcon(const char* label,int icon,float scale) {
     drawStyledMenuIcon(ImGui::GetWindowDrawList(),icon,{a.x,a.y+(h-glyph)*.5f},glyph,
         ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))tip(label,scale);
-    ImGui::SameLine();
+    ImGui::SameLine(0,gap);
 }
 inline void detailLine(const char* value,float scale,float reserve=0) {
     MenuTextStyle text(MenuTextRole::Secondary);
@@ -220,47 +272,91 @@ inline void detailLine(const char* value,float scale,float reserve=0) {
 inline bool check(const char* label,bool& value) {
     const bool clicked=ImGui::Checkbox(label,&value);buttonCursor();return clicked;
 }
-inline bool iconButton(const char* label,int icon,float scale,bool compact=false) {
+inline bool iconButton(const char* label,int icon,float scale,bool compact=false,float height=0) {
     const auto a=ImGui::GetCursorScreenPos();
     const float side=(compact?menuShortcutHeight:menuControlHeight)*scale,glyph=figmaDisplayIconSize*scale,inset=(side-glyph)*.5f;
-    const ImVec2 b={a.x+side,a.y+side};
-    const bool clicked=ImGui::InvisibleButton(label,{side,side},ImGuiButtonFlags_EnableNav);
+    const float h=height>0?height:side;
+    const ImVec2 b={a.x+side,a.y+h};
+    const bool clicked=ImGui::InvisibleButton(label,{side,h},ImGuiButtonFlags_EnableNav);
     buttonCursor();
     const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
     auto* draw=ImGui::GetWindowDrawList();
     surface(draw,a,b,scale,false);
     if(!disabled && (ImGui::IsItemHovered() || ImGui::IsItemActive()))segment(draw,a,b,true,true,true,scale);
     outline(draw,a,b,scale);
-    drawStyledMenuIcon(draw,icon,{a.x+inset,a.y+inset},glyph,ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
+    drawStyledMenuIcon(draw,icon,{a.x+inset,a.y+(h-glyph)*.5f},glyph,ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
     ImGui::RenderNavCursor(ImRect(a,b),ImGui::GetItemID());
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))tip(label,scale);
     return clicked;
 }
-template<size_t N> bool iconSegments(const char* id,const char* const (&names)[N],const int (&icons)[N],int& selected,float scale) {
+struct IconGroupItem {
+    const char* title;
+    int glyph;
+    bool selected=false;
+    bool enabled=true;
+    bool indeterminate=false;
+    std::string detail;
+    bool showLabel=false;
+};
+template<size_t N,class ItemAt,class Activate>
+bool iconGroup(const char* id,float scale,bool fitContent,const ItemAt& itemAt,const Activate& activate){
     const auto origin=ImGui::GetCursorScreenPos();
     const float width=ImGui::GetContentRegionAvail().x,w=figmaDisplayIconWidth*scale,h=figmaDisplayWidgetHeight*scale,gap=menuPanelGap*scale;
-    const int columns=std::max(1,std::min(int(N),int(width/w)));
+    std::array<IconGroupItem,N> items{};
+    std::array<float,N> widths{};
+    for(size_t i=0;i<N;++i){
+        items[i]=itemAt(int(i));
+        widths[i]=w+(items[i].showLabel?ImGui::CalcTextSize(items[i].title).x+menuCompactGap*scale:0);
+    }
     auto* draw=ImGui::GetWindowDrawList();bool changed=false;ImGui::PushID(id);
-    for(size_t first=0;first<N;first+=columns) {
-        const int count=std::min(columns,int(N-first));const float y=origin.y+(first/columns)*(h+gap);
-        surface(draw,{origin.x,y},{origin.x+w*count,y+h},scale,false);
-        for(int n=0;n<count;++n) {
-            const int i=int(first)+n;const ImVec2 at={origin.x+n*w,y};ImGui::PushID(i);ImGui::SetCursorScreenPos(at);
-            const bool clicked=ImGui::InvisibleButton(names[i],{w,h},ImGuiButtonFlags_EnableNav);
+    float y=origin.y,usedWidth=0;
+    for(size_t first=0;first<N;y+=h+gap) {
+        size_t end=first+1;
+        float rowWidth=widths[first];
+        while(end<N && rowWidth+widths[end]<=width)rowWidth+=widths[end++];
+        usedWidth=std::max(usedWidth,rowWidth);
+        const ImVec2 rowEnd={origin.x+rowWidth,y+h};
+        surface(draw,{origin.x,y},rowEnd,scale,false);
+        float x=origin.x;
+        for(size_t i=first;i<end;++i) {
+            const auto& item=items[i];
+            const float side=widths[i];
+            const bool left=i==first,right=i+1==end;
+            const ImVec2 at={x,y},itemEnd={x+side,y+h};
+            ImGui::PushID(int(i));ImGui::SetCursorScreenPos(at);
+            ImGui::BeginDisabled(!item.enabled);
+            const bool clicked=ImGui::InvisibleButton(item.title,{side,h},ImGuiButtonFlags_EnableNav);
             const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
             const float mouse=ImGui::GetIO().MousePos.x;
-            const bool seam=(n && mouse<at.x+scale) || (n<count-1 && mouse>=at.x+w-scale);
-            segment(draw,at,{at.x+w,at.y+h},n==0,n==count-1,!disabled && ((!seam && ImGui::IsItemHovered()) || selected==i),scale);
+            const bool seam=(!left && mouse<at.x+scale) || (!right && mouse>=itemEnd.x-scale);
+            const auto fill=item.selected && !item.detail.empty()?ImGuiCol_ButtonActive:ImGuiCol_ButtonHovered;
+            segment(draw,at,itemEnd,left,right,!disabled && ((!seam && ImGui::IsItemHovered()) || item.selected),scale,false,fill);
             const float icon=figmaDisplayIconSize*scale;
-            drawStyledMenuIcon(draw,icons[i],{at.x+(w-icon)*.5f,at.y+(h-icon)*.5f},icon,ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
-            ImGui::RenderNavCursor(ImRect(at,{at.x+w,at.y+h}),ImGui::GetItemID());
-            if(!seam && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))tip(names[i],scale);
-            if(clicked && !disabled && (!seam || !ImGui::IsMouseReleased(ImGuiMouseButton_Left))){selected=i;changed=true;}
-            ImGui::PopID();
+            const auto ink=ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text);
+            drawStyledMenuIcon(draw,item.glyph,{at.x+(w-icon)*.5f,at.y+(h-icon)*.5f},icon,ink,ImGui::GetColorU32(ImGuiCol_Button));
+            if(item.showLabel)draw->AddText({at.x+w,at.y+(h-ImGui::GetTextLineHeight())*.5f},ink,item.title);
+            if(item.indeterminate){
+                const float markRight=itemEnd.x-menuCompactGap*scale,markY=itemEnd.y-menuCompactGap*scale;
+                draw->AddLine({markRight-3*scale,markY},{markRight,markY},ink,scale);
+            }
+            ImGui::RenderNavCursor(ImRect(at,itemEnd),ImGui::GetItemID());
+            if(!seam && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)){
+                if(item.detail.empty())tip(item.title,scale);
+                else tip((std::string(item.title)+"\n"+item.detail).c_str(),scale);
+            }
+            if(clicked && !disabled && (!seam || !ImGui::IsMouseReleased(ImGuiMouseButton_Left))){activate(int(i));changed=true;}
+            ImGui::EndDisabled();
+            ImGui::PopID();x=itemEnd.x;
         }
-        outline(draw,{origin.x,y},{origin.x+w*count,y+h},scale);
+        outline(draw,{origin.x,y},rowEnd,scale);
+        first=end;
     }
-    ImGui::PopID();ImGui::SetCursorScreenPos(origin);ImGui::Dummy({width,((N+columns-1)/columns)*(h+gap)-gap});return changed;
+    ImGui::PopID();ImGui::SetCursorScreenPos(origin);
+    ImGui::Dummy({fitContent?usedWidth:width,y-origin.y-gap});return changed;
+}
+template<size_t N> bool iconSegments(const char* id,const char* const (&names)[N],const int (&icons)[N],int& selected,float scale,bool fitContent=false,bool showLabels=false) {
+    return iconGroup<N>(id,scale,fitContent,[&](int i){return IconGroupItem{names[i],icons[i],selected==i,true,false,{},showLabels};},
+        [&](int i){selected=i;});
 }
 inline bool resultRow(const char* id,int icon,const char* title,const char* detail,float scale,bool& previewHover,ImVec2& previewAnchor,bool* previewClick=nullptr,bool previewAvailable=true) {
     const auto at=ImGui::GetCursorScreenPos();const float width=ImGui::GetContentRegionAvail().x,h=menuSearchRowHeight*scale,pad=menuControlPadding*scale;

@@ -313,6 +313,25 @@ class MenuToolsDesktopTests(unittest.TestCase):
         desktop._keep_text_tool_above_workspace()
         self.assertEqual(desktop.gui.SetWindowPos.call_count,1)
 
+    def test_typeset_retains_session_across_foreign_clicks_without_granting_host_scope(self):
+        desktop=Desktop('http://localhost',Mock());desktop.gui=Mock()
+        desktop.visible=desktop.menu_tools_active=desktop.typeset_open=True
+        desktop.target=desktop.text_tool_owner=1;desktop.hwnd=2;desktop.menu_epoch=7
+        desktop.gui.GetClassName.return_value='Photoshop';desktop.gui.GetWindow.return_value=1
+        desktop.gui.GetForegroundWindow.return_value=5
+        desktop._workspace_root=lambda hwnd:1 if hwnd in (1,3) else 0
+        desktop._is_menu_window=lambda hwnd:hwnd==2
+        self.assertTrue(desktop.keep_typeset())
+        self.assertFalse(desktop.outside_click((10,10)))
+        self.assertIn('保留',desktop.dismiss()['message'])
+        desktop.gui.ShowWindow.assert_not_called();desktop.gui.SetForegroundWindow.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError,'仅在 Photoshop'):desktop.require_menu_tools(7)
+        desktop.gui.GetForegroundWindow.return_value=3
+        desktop.require_menu_tools(7)
+        self.assertTrue(desktop.visible);self.assertEqual(desktop.menu_epoch,7)
+        desktop.gui.GetWindow.return_value=4
+        self.assertFalse(desktop.keep_typeset())
+
     def test_search_results_resize_within_ps_and_closed_epoch_rejects(self):
         desktop=Desktop('http://localhost',Mock());desktop.hwnd=2;desktop.target=1;desktop.gui=Mock()
         desktop.require_menu_tools=Mock();desktop.icons=Mock();desktop.icons.u.GetDpiForWindow.return_value=96

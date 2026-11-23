@@ -15,6 +15,19 @@ SOURCE={'schema':1,'canvas':{'width':600,'height':400,'resolution':300,'mode':'R
 
 
 class TextObjectTests(unittest.TestCase):
+    def test_resolved_font_metadata_validates_utf16_ranges(self):
+        raw=text_object.write('',SOURCE);doc=minidom.parseString(raw)
+        node=doc.createElementNS(text_object.NAMESPACE,'pxText:fontFallbacks')
+        node.setAttribute('xmlns:pxText',text_object.NAMESPACE)
+        doc.getElementsByTagNameNS(text_list.RDF,'Description')[0].appendChild(node)
+        text=SOURCE['layer']['text']['textKey']
+        self.assertEqual(text_object.font_fallbacks(raw,text),[])
+        node.appendChild(doc.createTextNode('[[1,3,"MicrosoftYaHei"]]'))
+        self.assertEqual(text_object.font_fallbacks(doc.toxml(),text),[[1,3,'MicrosoftYaHei']])
+        for value in ('[[1,999,"Wrong"]]','[[1,3,"Alpha"],[2,4,"Beta"]]','[[0,2,true]]'):
+            node.firstChild.data=value
+            with self.subTest(value=value),self.assertRaises(ValueError):text_object.font_fallbacks(doc.toxml(),text)
+
     def test_table_source_round_trip_and_cell_bounds(self):
         model={'schema':3,'canvas':SOURCE['canvas'],'table':[['项目','单价'],['A&B','']]}
         self.assertEqual(text_object.read(text_object.write('',model)),model)

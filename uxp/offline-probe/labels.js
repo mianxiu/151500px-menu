@@ -2332,9 +2332,13 @@ function createTextTools(ps,session,capture,readTree,options={}) {
   let snapshot=null,serial=0;
   const indents=['startIndent','endIndent','firstLineIndent'];
   const paragraphDistances=['spaceBefore','spaceAfter',...indents];
-  const paragraphFields=[...paragraphDistances,'align','hyphenate'];
+  const hyphenationFields={hyphenateWordSize:[1,99],hyphenatePreLength:[0,99],hyphenatePostLength:[0,99],hyphenateLimit:[0,99],hyphenationZone:[0,1296]};
+  const justificationFields={justifyWord:['Word',0,1000],justifyLetter:['Letter',-100,500],justifyGlyph:['Glyph',50,200]};
+  const paragraphSwitches=['hyphenate','hyphenateCapitalized','hangingRoman','textEveryLineComposer'];
+  const paragraphComposition=[...paragraphSwitches,...Object.keys(hyphenationFields),...Object.keys(justificationFields)];
+  const paragraphFields=[...paragraphDistances,'align',...paragraphComposition];
   const scales=['horizontalScale','verticalScale'];
-  const switches=['syntheticBold','syntheticItalic','ligature','noBreak','hyphenate','contextualLigatures','stylisticAlternates',
+  const switches=['syntheticBold','syntheticItalic','ligature','noBreak',...paragraphSwitches,'contextualLigatures','stylisticAlternates',
     'swash','titling','ornaments','fractions','ordinals'];
   const enums={
     align:['left','center','right','justifyLeft','justifyCenter','justifyRight','justifyAll'],
@@ -2410,20 +2414,29 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     if(!style||typeof style!=='object'||Array.isArray(style)||!Object.keys(style).length)throw Error('排版参数无效');
     const {range,...fields}=style;
     if(!Object.keys(fields).length)throw Error('缺少排版字段');
+    let paragraphs;
     if(range!==undefined){
       const value=text.textKey;
       if(!Array.isArray(range)||range.length!==2||!range.every(Number.isInteger)||range[0]<0||range[0]>=range[1]||range[1]>value.length+1||
           range.some(offset=>offset<value.length&&/[\uDC00-\uDFFF]/.test(value[offset])))throw Error('排版选区已改变');
-      if(Object.keys(fields).some(key=>!paragraphFields.includes(key))){
-        text.textStyleRange=text.textStyleRange.flatMap(row=>{
-          const stops=[row.from,...range.filter(i=>i>row.from&&i<row.to),row.to];
-          return stops.slice(1).map((to,i)=>({...row,from:stops[i],to,textStyle:{...row.textStyle}}));
+      const first=range[0]===0?0:value.lastIndexOf('\r',range[0]-1)+1;
+      const lineEnd=value.indexOf('\r',range[1]-1);
+      paragraphs=[first,lineEnd<0?value.length+1:lineEnd+1];
+      function split(field,span) {
+        text[field+'Range']=text[field+'Range'].flatMap(row=>{
+          const stops=[row.from,...span.filter(i=>i>row.from&&i<row.to),row.to];
+          return stops.slice(1).map((to,i)=>({...row,from:stops[i],to,[field]:{...row[field]}}));
         });
       }
+      const keys=Object.keys(fields);
+      if(keys.some(key=>!paragraphFields.includes(key)))split('textStyle',range);
+      if(keys.some(key=>paragraphFields.includes(key)))split('paragraphStyle',paragraphs);
     }
     for(const [key,value] of Object.entries(fields)) {
       const paragraph=paragraphFields.includes(key),scale=scales.includes(key);
       const auto=key==='leading'&&value==='auto';
+      const hyphen=Object.prototype.hasOwnProperty.call(hyphenationFields,key);
+      const justify=Object.prototype.hasOwnProperty.call(justificationFields,key);
       if(key==='fontPostScriptName'){
         if(typeof value!=='string'||!value.length||value.length>200||/[\x00-\x1f]/.test(value))throw Error('字体名称无效');
       }else if(key==='tracking'){
@@ -2432,6 +2445,13 @@ function createTextTools(ps,session,capture,readTree,options={}) {
         if(!enums[key].includes(value))throw Error('字符或段落样式无效');
       }else if(switches.includes(key)){
         if(typeof value!=='boolean')throw Error('排版开关无效');
+      }else if(hyphen){
+        const [low,high]=hyphenationFields[key];
+        if(!Number.isFinite(value)||value<low||value>high||(key!=='hyphenationZone'&&!Number.isInteger(value)))throw Error('断字数值超出范围');
+      }else if(justify){
+        const [,low,high]=justificationFields[key];
+        if(!Array.isArray(value)||value.length!==3||value.some((n,i)=>!Number.isFinite(n)||n<low||n>high||(i&&n<value[i-1])))
+          throw Error('两端对齐参数需要按最小、理想、最大排列');
       }else if(key==='color'){
         if(!Array.isArray(value)||value.length!==3||!value.every(v=>Number.isInteger(v)&&v>=0&&v<=255)||
             ps.app.activeDocument.mode!==ps.constants.DocumentMode.RGB||
@@ -2442,10 +2462,15 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       }else if(!auto&&((!paragraph&&!['size','leading','baselineShift'].includes(key))||!Number.isFinite(value)
                 ||value<(['firstLineIndent','baselineShift'].includes(key)?-1296:0)||value>1296||(['size','leading'].includes(key)&&!value)))throw Error('排版数值无效');
       const field=paragraph?'paragraphStyle':'textStyle';
+      const span=paragraph?paragraphs:range;
       for(const row of text[field+'Range']) {
-        if(range&&(row.from>=range[1]||row.to<=range[0]))continue;
+        if(span&&(row.from>=span[1]||row.to<=span[0]))continue;
         const target=row[field];
-        if(key==='fontPostScriptName'||key==='tracking'||switches.includes(key))target[key]=value;
+        if(key==='fontPostScriptName'||key==='tracking'||switches.includes(key)||hyphen)target[key]=value;
+        else if(justify){
+          const prefix='justification'+justificationFields[key][0];
+          ['Minimum','Desired','Maximum'].forEach((part,i)=>{target[prefix+part]=Math.fround(value[i]/100);});
+        }
         else if(Object.prototype.hasOwnProperty.call(enums,key))target[key]={_enum:key==='align'?'alignmentType':key,_value:value};
         else if(key==='color'){
           // The text engine stores normalized RGB channels as single-precision values.
@@ -2465,21 +2490,46 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       }
     }
   }
-  function plan(raw,params,resolution) {
+  function plannedStyles(params) {
+    if(params.typography_runs===undefined)return params.typography?[params.typography]:[];
+    if(params.typography!==undefined||!Array.isArray(params.typography_runs)||!params.typography_runs.length||
+       params.typography_runs.length>256||params.typography_runs.some(run=>!run||typeof run!=='object'||Array.isArray(run)))
+      throw Error('多范围排版草稿无效');
+    return params.typography_runs;
+  }
+  function plan(raw,params,resolution,sourceWidth) {
     if(params&&Object.prototype.hasOwnProperty.call(params,'value')) {
       const value=params.value,origins=params.origins;
       if(typeof value!=='string'||!value.length||value.length>20000||/[\n\0]/.test(value)||!Number.isInteger(params.count)||params.count<0||params.count>40001||
           !Array.isArray(origins)||origins.length!==value.length+1||origins.some((origin,index)=>!Number.isInteger(origin)||origin<0||origin>raw.textKey.length||index>0&&origin<origins[index-1]))throw Error('文字预览计划无效');
       for(const char of value)if(char.length===1&&char.charCodeAt(0)>=0xd800&&char.charCodeAt(0)<=0xdfff)throw Error('文字包含不完整的Unicode字符');
-      if(params.typography&&indents.some(key=>Object.prototype.hasOwnProperty.call(params.typography,key))){
+      const styles=plannedStyles(params);
+      const includes=key=>styles.some(run=>Object.prototype.hasOwnProperty.call(run,key));
+      if(indents.some(includes)){
         if(!canIndent(raw))throw Error('段落缩进需要水平段落文字');
-        if(params.list_layout&&['startIndent','firstLineIndent'].some(key=>Object.prototype.hasOwnProperty.call(params.typography,key)))throw Error('列表的左缩进和首行缩进由列表层级控制');
+        if(params.list_layout&&['startIndent','firstLineIndent'].some(includes))throw Error('列表的左缩进和首行缩进由列表层级控制');
       }
-      if(params.typography?.align&&(raw.orientation?._value!=='horizontal'||params.list_layout))throw Error('段落对齐需要普通水平文字');
-      if((params.typography?.align?.startsWith('justify')||params.typography?.hyphenate!==undefined)&&(!canIndent(raw)||params.list_layout))
+      if(includes('align')&&(raw.orientation?._value!=='horizontal'||params.list_layout))throw Error('段落对齐需要普通水平文字');
+      if((styles.some(run=>typeof run.align==='string'&&run.align.startsWith('justify'))||paragraphComposition.some(includes))&&(!canIndent(raw)||params.list_layout))
         throw Error('两端对齐和断字需要水平段落文字');
       const mapped=mappedText(raw,value,origins);
-      if(params.typography)applyTypography(mapped,params.typography,resolution??ps.app.activeDocument.resolution);
+      for(const style of styles)applyTypography(mapped,style,resolution??ps.app.activeDocument.resolution);
+      if(mapped.textStyleRange.length>1024||mapped.paragraphStyleRange.length>1024)throw Error('排版草稿产生过多样式范围');
+      if(params.box_size!==undefined){
+        const size=params.box_size;
+        if(!boxSize(raw)||!Array.isArray(size)||size.length!==2||size.some(side=>!Number.isFinite(side)||side<1||side>100000))throw Error('当前文字框无法调整尺寸');
+        mapped.textShape=clone(raw.textShape);
+        const bounds=mapped.textShape[0].bounds;
+        bounds.right=Math.fround(bounds.left+size[0]);bounds.bottom=Math.fround(bounds.top+size[1]);
+      }
+      if(params.box_shift_x!==undefined){
+        const shift=params.box_shift_x,anchor=raw.textClickPoint?.horizontal;
+        const documentWidth=sourceWidth??ps.app.activeDocument.width;
+        if(!params.box_size||!Number.isFinite(shift)||Math.abs(shift)>100000||anchor?._unit!=='percentUnit'||
+           !Number.isFinite(anchor._value)||!Number.isFinite(documentWidth)||documentWidth<=0)throw Error('当前文字框无法移动左边缘');
+        mapped.textClickPoint=clone(raw.textClickPoint);
+        mapped.textClickPoint.horizontal._value=Math.fround(anchor._value+100*shift/documentWidth);
+      }
       if(params.kerning!==undefined){
         if(!canKern(raw)||params.list_layout||!Array.isArray(params.kerning)||!params.kerning.length||params.kerning.length>256)
           throw Error('手动字偶微调需要支持的水平文字');
@@ -2496,7 +2546,7 @@ function createTextTools(ps,session,capture,readTree,options={}) {
         mapped.kerningRange=Array.from(pairs.values()).sort((a,b)=>a.from-b.from);
       }
       if(mapped.kerningRange)applyKerningModes(mapped,params.typography?.autoKern);
-      return {value:mapped,count:params.typography||params.kerning?Math.max(1,params.count):params.count,origins};
+      return {value:mapped,count:styles.length||params.kerning?Math.max(1,params.count):params.count,origins};
     }
     if(!params||typeof params.find!=='string'||!params.find||params.find.length>200||typeof params.replacement!=='string'||params.replacement.length>500)throw Error('查找内容不能为空，查找／替换内容超出上限');
     const find=params.find.replace(/\r\n|\n/g,'\r'),replacement=params.replacement.replace(/\r\n|\n/g,'\r');
@@ -2763,6 +2813,14 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       shape?.char?._value==='box' && (shape.columnCount??1)===1 && (shape.rowCount??1)===1 &&
       raw.warp?.warpStyle?._value==='warpNone';
   }
+  function boxSize(raw){
+    if(!canIndent(raw))return null;
+    const shape=raw.textShape[0],bounds=shape.bounds;
+    const upright=m=>!m||[m.xx-1,m.yy-1,m.xy,m.yx].every(v=>Math.abs(v)<.00001);
+    if(!bounds||!upright(raw.transform)||!upright(shape.transform))return null;
+    const size=[bounds.right-bounds.left,bounds.bottom-bounds.top];
+    return size.every(v=>Number.isFinite(v)&&v>=1&&v<=100000)?size:null;
+  }
   function canKern(raw){
     return raw.orientation?._value==='horizontal'&&raw.textShape?.length===1&&
       ['paint','box'].includes(raw.textShape[0].char?._value)&&raw.warp?.warpStyle?._value==='warpNone';
@@ -2815,15 +2873,16 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     const revision=session+':text:'+String(++serial);
     snapshot={target,row,revision,time:Date.now()};
     const doc=ps.app.activeDocument,supportsProof=canProof(doc);
-    const capabilities={advanced_typography:true,opentype_supported:true,kerning_supported:row.layerKind===5||canKern(row.textKey),text_rgb:doc.mode===ps.constants.DocumentMode.RGB &&
+    const capabilities={advanced_typography:true,typography_runs_supported:true,opentype_supported:true,kerning_supported:row.layerKind===5||canKern(row.textKey),
+      box_shift_supported:row.layerKind===5||row.textKey.textClickPoint?.horizontal?._unit==='percentUnit',text_rgb:doc.mode===ps.constants.DocumentMode.RGB &&
       doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT && doc.colorProfileName==='sRGB IEC61966-2.1',
       ...(fast?{canvas_history:stamp.history,fonts_available:true,...(fontCatalog?{fonts:fontCatalog}:{})}:
         {fonts:(await availableFonts()).map(([family,style,id])=>[[family,style].filter(Boolean).join(' '),id])})};
     const objectProof=supportsProof?{object_proof:true,isolated_proof:true,proof_size:[doc.width,doc.height],proof_resolution:doc.resolution}: {};
-    if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8,typography_supported:true,style_scope_supported:true,extended_typography:true,...capabilities,...objectProof};
+    if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8,typography_supported:true,style_scope_supported:true,extended_typography:true,...capabilities,...objectProof,box_resize_available:true,object_frame:row.smartObjectMore?.transform};
     return {target,revision,proof_available:supportsProof,proof_encoding:'png',...capabilities,...objectProof,
       text:row.textKey.textKey,name:row.name,list_xmp:row.XMPMetadataAsUTF8,list_paragraphs:paragraphLayout(row.textKey),
-      typography_supported:true,style_scope_supported:true,extended_typography:true,paragraph_alignment_supported:row.textKey.orientation?._value==='horizontal',paragraph_indents_supported:canIndent(row.textKey),resolution:ps.app.activeDocument.resolution,style_source:{textStyleRange:row.textKey.textStyleRange,paragraphStyleRange:row.textKey.paragraphStyleRange,kerningRange:row.textKey.kerningRange||[]}};
+      typography_supported:true,style_scope_supported:true,extended_typography:true,paragraph_alignment_supported:row.textKey.orientation?._value==='horizontal',paragraph_indents_supported:canIndent(row.textKey),box_size:boxSize(row.textKey),resolution:ps.app.activeDocument.resolution,style_source:{textStyleRange:row.textKey.textStyleRange,paragraphStyleRange:row.textKey.paragraphStyleRange,kerningRange:row.textKey.kerningRange||[]}};
   }
   async function finishEditing(request,saved) {
     const tool=await ps.core.getActiveTool(),kind=tool?.classID??tool?.classId;
@@ -2863,13 +2922,31 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       return {kind:updating?'smart-object':'new-table',row,proofBefore,before_xmp:row.XMPMetadataAsUTF8,...(existing?{before_render:params.object_render,transform:row.smartObjectMore?.transform}:{before_text:row.textKey}),source:{schema:3,canvas,table:cells}};
     }
     if(!raw||existing&&(!params.object_source||!/^[0-9a-f]{64}$/.test(params.object_render)))throw Error('文字对象源或显示校验缺失');
-    if(existing&&params.typography&&params.object_source.schema!==1)throw Error('此历史文字对象暂不支持排版修改');
-    const wanted=plan(raw,params,existing?params.object_source.canvas.resolution:undefined).value;
+    if(existing&&plannedStyles(params).length&&params.object_source.schema!==1)throw Error('此历史文字对象暂不支持排版修改');
+    const wanted=plan(raw,params,existing?params.object_source.canvas.resolution:undefined,
+      existing?params.object_source.canvas.width:undefined).value;
     const canvas=existing?params.object_source.canvas:{width:doc.width,height:doc.height,resolution:doc.resolution,mode:doc.mode===ps.constants.DocumentMode.RGB?'RGB':'unsupported',depth:doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT?8:0,profile:doc.colorProfileName};
     if(canvas.mode!=='RGB'||canvas.depth!==8)throw Error('矢量文字对象目前仅支持RGB8源');
     const legacy=existing&&params.object_source.schema===2;
     const originalXmp=existing?params.object_source.layer.xmp:row.XMPMetadataAsUTF8;
-    if(!legacy&&Object.prototype.hasOwnProperty.call(params,'list_xmp')&&params.list_xmp!==originalXmp)throw Error('请先写回普通文字列表，再生成矢量文字对象；本次未修改');
+    if(!legacy&&Object.prototype.hasOwnProperty.call(params,'list_xmp')&&params.list_xmp!==originalXmp&&!params.list_layout)
+      throw Error('矢量列表缺少排版数据');
+    if(params.list_layout){
+      if(legacy||typeof params.list_xmp!=='string'||Math.abs(doc.resolution-canvas.resolution)>.001)throw Error('当前对象无法测量列表字宽');
+      await ps.core.executeAsModal(async context=>{
+        if(context.isCancelled||Date.now()>request.expires_at_ms||!same(await descriptor(request.target,true),row))throw Error('列表目标已改变');
+        const stamp=await proofStamp(doc,true);
+        if(request.proof_history!==undefined&&request.proof_history!==stamp.history)throw Error('画布自草稿预览后已改变');
+        const history=await context.hostControl.suspendHistory({documentID:doc.id,name:'测量矢量列表'});
+        try{await formatList(raw,wanted,params.list_layout,request.target,context);}
+        finally{
+          try{
+            await context.hostControl.resumeHistory(history,false);
+            if(!same(await descriptor(request.target,true),row)||!same(await proofStamp(doc,true),stamp))throw Error('列表测量后的原稿状态待核对');
+          }catch(error){error.resultUnknown=true;throw error;}
+        }
+      },{commandName:'测量矢量列表'});
+    }
     return {kind:existing?'smart-object':'text',row,proofBefore,before_xmp:row.XMPMetadataAsUTF8,...(!existing?{before_text:row.textKey}:{transform:row.smartObjectMore?.transform,before_render:params.object_render}),
       source:{...(legacy?{schema:2,renderer:'list-v1'}:{schema:1}),canvas,layer:{name:row.name,text:{...raw,...wanted},xmp:Object.prototype.hasOwnProperty.call(params,'list_xmp')?params.list_xmp:originalXmp}}};
   }
@@ -2905,7 +2982,8 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     if(proof&&!canProof(ps.app.activeDocument))throw Error('当前文档或宿主未验证草稿预览');
     if(!Number.isInteger(scale)||scale<1||scale>8||scale!==1&&(!proof||!Number.isSafeInteger(request.proof_history)))
       throw Error('高清草稿预览缺少有效原尺寸草稿');
-    if(!proof && request.proof_history===undefined && wanted.value.textKey===saved.row.textKey.textKey&&!params.typography&&!params.kerning&&!params.list_layout&&(!tagging||params.list_xmp===(saved.row.XMPMetadataAsUTF8||'')))return {verified:true,count:0};
+    const styles=plannedStyles(params);
+    if(!proof && request.proof_history===undefined && wanted.value.textKey===saved.row.textKey.textKey&&!styles.length&&!params.kerning&&!params.box_size&&!params.list_layout&&(!tagging||params.list_xmp===(saved.row.XMPMetadataAsUTF8||'')))return {verified:true,count:0};
     if(proof || request.proof_history!==undefined){
       if((await ps.core.getActiveTool())?.isModal!==false)throw Error('请先完成当前 Photoshop 工具编辑');
     }else await finishEditing(request,saved);
@@ -2927,7 +3005,7 @@ function createTextTools(ps,session,capture,readTree,options={}) {
         await textWriter(before.textKey)(wanted.value);
         if(tagging&&params.list_xmp!==(before.XMPMetadataAsUTF8||''))await batch([{_obj:'set',_target:[{_ref:'property',_property:'XMPMetadataAsUTF8'},...ref(request.target)],to:{_obj:'layer',XMPMetadataAsUTF8:params.list_xmp},_options:{dialogOptions:'silent'}}]);
         const after=await descriptor(request.target);
-        if(after.textKey.textKey!==wanted.value.textKey||!stylesMatch(after.textKey,wanted.value,undefined,params.typography?.fontPostScriptName?undefined:before.textKey,wanted.origins,params.list_layout)||!same(layout(after.textKey),layout(before.textKey)))throw Error('文本或样式读回不一致');
+        if(after.textKey.textKey!==wanted.value.textKey||!stylesMatch(after.textKey,wanted.value,undefined,styles.some(style=>style.fontPostScriptName)?undefined:before.textKey,wanted.origins,params.list_layout)||!same(layout(after.textKey),layout({...before.textKey,...wanted.value})))throw Error('文本或样式读回不一致');
         if((after.XMPMetadataAsUTF8||'')!==(tagging?params.list_xmp:(before.XMPMetadataAsUTF8||'')))throw Error('列表标记读回不一致');
         if(proof){
           if(context.isCancelled || !sameTarget(await capture(),request.target))throw Error('草稿预览目标已改变');

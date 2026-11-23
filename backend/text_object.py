@@ -138,3 +138,27 @@ def render_hash(raw):
     import re
     if not re.fullmatch('[0-9a-f]{64}',value):raise ValueError('文字对象显示校验无效')
     return value
+
+
+def font_fallbacks(raw,text):
+    _,_,found=packet(raw,namespace=NAMESPACE,field='fontFallbacks',limit=MAX_XMP)
+    if not found:return []
+    desc,node=found[0]
+    if desc.getAttributeNS(RDF,'about'):raise ValueError('文字对象回退字体目标无效')
+    if node.nodeType==Node.ATTRIBUTE_NODE:value=node.value
+    else:
+        if any(child.nodeType not in (Node.TEXT_NODE,Node.CDATA_SECTION_NODE) for child in node.childNodes):
+            raise ValueError('文字对象回退字体记录无效')
+        value=''.join(child.data for child in node.childNodes)
+    try:rows=json.loads(value)
+    except (ValueError,RecursionError):raise ValueError('文字对象回退字体记录无效') from None
+    if not isinstance(rows,list) or len(rows)>1024:raise ValueError('文字对象回退字体范围无效')
+    length=len(text.encode('utf-16-le'))//2
+    end=0
+    for row in rows:
+        if (not isinstance(row,list) or len(row)!=3 or any(type(offset) is not int for offset in row[:2])
+                or not end<=row[0]<row[1]<=length or not isinstance(row[2],str)
+                or not 1<=len(row[2])<=255 or any(ord(ch)<32 for ch in row[2])):
+            raise ValueError('文字对象回退字体范围无效')
+        end=row[1]
+    return rows

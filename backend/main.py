@@ -340,7 +340,7 @@ class Application(web.Application):
             raise RuntimeError('服务正在退出，本次操作未接受')
         if getattr(self,'updating',False) is True and action not in ('status','tasks.list','tasks.get','logs.read','application.update.status'):
             raise RuntimeError('应用正在更新，本次操作未接受')
-        if action in ('menu.tools.open','menu.tools.request','menu.tools.preview'):
+        if action in ('menu.tools.open','menu.tools.request','menu.tools.preview','menu.tools.preferences'):
             from .menu_tools import MenuTools
             if not getattr(self,'menu_tools',None):self.menu_tools=MenuTools(self)
             return await getattr(self.menu_tools,action.rsplit('.',1)[1])(args)
@@ -835,7 +835,7 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_c
             mapping['hold_pin'] = 'panel.hold_pin'
             mapping['menu.settings.save'] = 'menu.settings.save'
             mapping['tools.search']='menu.tools.open'
-            mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview')})
+            mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview','menu.tools.preferences')})
             mapping['document.new'] = 'document.new'
             if action=='isolation.exit':
                 await app.dispatch('action.execute',{'name':'layer.frame','exit_isolation':event_args['params']['id']})

@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <functional>
 #include <sstream>
 #include <regex>
 #include <fstream>
@@ -1043,7 +1044,7 @@ static void accept(const Json& event) {
         }
         return;
     }
-    if(type=="menu.tools.opened" || type=="menu.tools.result" || type=="menu.tools.preview.result"){
+    if(type=="menu.tools.opened" || type=="menu.tools.result" || type=="menu.tools.preview.result" || type=="menu.tools.styles"){
         const bool pending=menuTools.previewPending;menuTools.receive(event);
         if(type=="menu.tools.preview.result" && pending && !menuTools.previewPending && !taskBusy)busyFeedback=false;
         return;
@@ -1474,6 +1475,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if (msg==WM_APP+10) { contextMode=wp!=0;resetMenu();return 0; }
     if (msg==WM_SHOWWINDOW) {
         opened=wp!=0;
+        const bool keepTypeset=menuTools.active && menuTools.mode=="typeset" && !holdFinished;
         if(gradientWindow){
             setOpacity(opened && gradientFramePresented?1.f:0.f);
             if(!opened){
@@ -1484,7 +1486,10 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
                 if(GetCapture()==hwnd)ReleaseCapture();
             }
         }
-        else if (opened) {
+        else if (keepTypeset) {
+            if(!opened)closePopups();
+            setOpacity(opened?1.f:0.f);
+        } else if (opened) {
             resetMenu();pieStarted=0;setOpacity(holdMode?0.f:1.f);
         } else {
             stopShapeEyedrop();
@@ -1500,6 +1505,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
             setOpacity(0.f);
         }
     }
+    if (!gradientWindow && menuTools.windowResizeMessage(hwnd,msg,wp)) return true;
     if (ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp)) return true;
     switch (msg) {
     case WM_SIZE:
@@ -2168,22 +2174,22 @@ static void drawToolBar() {
     toolRow={};
     if(panelKind==3 || panelKind==4 || !layerAware || (layerKind!=4 && layerKind!=5) || layerCount!=1)return;
     const char* label=layerKind==5?"文字源":"画布排版";
-    const bool sharesShapeColumn=panelKind==1 && shapeToolsReady;
-    const float h=menuControlHeight*scale,y=pieCenter.y+(layerKind==5 && !sharesShapeColumn?15.f:-15.f)*scale;
+    const float h=menuControlHeight*scale;
     const auto extent=menuFont(MenuTextRole::Control)->CalcTextSizeA(basicLabelSize(),FLT_MAX,0,label);
-    const float width=extent.x+2*figmaBasicLeftPadding*scale,x=pieCenter.x+65*scale;
+    const float width=extent.x+2*figmaBasicLeftPadding*scale;
+    const LONG right=LONG(std::lround(pieCenter.x-menuQuickGroupOffset*scale));
+    toolRow={right-LONG(std::lround(width)),holdRows[0].top,right,holdRows[0].bottom};
     auto* draw=ImGui::GetWindowDrawList();POINT cursor{};GetCursorPos(&cursor);
-    const ImVec2 a={x,y};
-    toolRow={LONG(x),LONG(y),LONG(x+width),LONG(y+h)};
+    const ImVec2 a={float(toolRow.left),float(toolRow.top)},b={float(toolRow.right),float(toolRow.bottom)};
     const bool enabled=toolEnabled(1),hover=enabled && !pieAnimating && PtInRect(&toolRow,cursor);
-    MenuControls::surface(draw,a,{x+width,y+h},scale);
-    MenuControls::segment(draw,a,{x+width,y+h},true,true,hover,scale);
-    draw->AddText(menuFont(MenuTextRole::Control),basicLabelSize(),{x+(width-extent.x)*.5f,y+(h-extent.y)*.5f},tint(enabled?ImGuiCol_Text:ImGuiCol_TextDisabled),label);
+    MenuControls::surface(draw,a,b,scale);
+    MenuControls::segment(draw,a,b,true,true,hover,scale);
+    draw->AddText(menuFont(MenuTextRole::Control),basicLabelSize(),{(a.x+b.x-extent.x)*.5f,a.y+(h-extent.y)*.5f},tint(enabled?ImGuiCol_Text:ImGuiCol_TextDisabled),label);
     if(pinned && !pieAnimating && enabled && !holdFinished){
         ImGui::SetCursorScreenPos(a);
-        if(ImGui::InvisibleButton("##typeset-tool",{width,h}))menuTools.open("typeset");
+        if(ImGui::InvisibleButton("##typeset-tool",{b.x-a.x,b.y-a.y}))menuTools.open("typeset");
     }
-    MenuControls::outline(draw,a,{x+width,y+h},scale);
+    MenuControls::outline(draw,a,b,scale);
 }
 static void shapeEditorKeys() {
     // The hook leaves letters with the editor so focused RGB/Hex fields keep
@@ -2218,7 +2224,14 @@ static void drawPie() {
     if(menuToolsVisible()) {
         holdRows={};labelRows={};capsRows={};quickRows={};toolRow={};pieReady=false;
         const bool localEditing=allowed || (capable && showingTextProof());
-        menuTools.draw(scale,pieCenter,localEditing && !busyFeedback && !inputFocused && !maskPreviewStarted);
+        const HWND foreground=GetForegroundWindow(),owner=GetWindow(window,GW_OWNER);
+        DWORD foregroundPid=0;
+        GetWindowThreadProcessId(foreground,&foregroundPid);
+        const bool hostForeground=selfTest || foregroundPid==GetCurrentProcessId() ||
+            (owner && IsWindowEnabled(owner) && (foreground==owner ||
+             (GetAncestor(foreground,GA_ROOTOWNER)==owner && (GradientNavigation::windowClass(foreground,L"OWL.Dock") ||
+                GradientNavigation::windowClass(foreground,L"OWL.DocumentWindow")))));
+        menuTools.draw(scale,pieCenter,localEditing && !busyFeedback && !inputFocused && !maskPreviewStarted,hostForeground);
         if(menuTools.mode!="typeset")drawFooter({document,menuTools.status(),menuTools.error},pos.y+size.y-60*scale);
         return;
     }
@@ -2255,12 +2268,12 @@ static void drawPie() {
         holdRows[i]={LONG(std::lround(a.x)),LONG(std::lround(a.y)),LONG(std::lround(a.x+width)),LONG(std::lround(a.y+height))};
         if(i==0){
             shapeAnchor=holdRows[0];
-            if(panelKind==2 && layerAware && layerKind==6 && layerCount==1){
+            if(panelKind!=4){
                 const float left=std::clamp(pos.x+size.x-width-menuShadow::extent*scale,
                     pieCenter.x+25*scale,pieCenter.x+menuQuickGroupOffset*scale);
-                offsets[0].x=left-pieCenter.x+width*.5f;
-                holdRows[0].left=LONG(std::lround(left));
-                holdRows[0].right=LONG(std::lround(left+width));
+                const float bottom=pieCenter.y+(quickGroupY(false)-2*quickGroupGap-figmaDisplayWidgetHeight)*scale;
+                offsets[0]={left-pieCenter.x+width*.5f,bottom-pieCenter.y-height*.5f};
+                holdRows[0]={LONG(std::lround(left)),LONG(std::lround(bottom-height)),LONG(std::lround(left+width)),LONG(std::lround(bottom))};
             }
         }
         // Both sort segments share one pixel seam even with fractional glyph widths.
@@ -3194,6 +3207,7 @@ int main() {
             if (selfTest && frames==21) {
                 holdOrigin={static_cast<LONG>(pieCenter.x),static_cast<LONG>(pieCenter.y)};
                 auto point=[&](float x,float y){return POINT{static_cast<LONG>(pieCenter.x+x*scale),static_cast<LONG>(pieCenter.y+y*scale)};};
+                const POINT selectCenter={(holdRows[0].left+holdRows[0].right)/2,(holdRows[0].top+holdRows[0].bottom)/2};
                 if(footerBounds.y<=std::max(holdRows[1].bottom,holdRows[3].bottom) || footerBounds.w>ImGui::GetMainViewport()->Pos.y+ImGui::GetMainViewport()->Size.y ||
                    holdActionAt({LONG((footerBounds.x+footerBounds.z)*.5f),LONG((footerBounds.y+footerBounds.w)*.5f)})!=-1)
                     throw std::runtime_error("Footer overlaps actions, clips or commits a gesture");
@@ -3201,14 +3215,14 @@ int main() {
                    holdRows[2].top!=holdRows[3].top || holdRows[2].right!=holdRows[3].left || holdRows[3].bottom>=pieCenter.y-19*scale ||
                    std::abs((holdRows[2].left+(panelKind==2 && capsReady && layerAware?capsRows[6].right:holdRows[3].right))*.5f-pieCenter.x)>scale)
                     throw std::runtime_error("Palette below ring; two distinct sort buttons aligned above");
-                for (const auto& entry:std::array<std::pair<POINT,int>,11>{{{point(-110,0),0},{point(45,0),-1},{point(110,0),-1},{point(-50,-80),2},{point(50,-80),3},{point(0,-80),-1},{point(0,80),10},{point(0,0),-1},{point(20,10),-1},{point(150,150),-1},{{-100,-100},-1}}})
+                for (const auto& entry:std::array<std::pair<POINT,int>,11>{{{point(-110,0),-1},{point(45,0),-1},{selectCenter,0},{point(-50,-80),2},{point(50,-80),3},{point(0,-80),-1},{point(0,80),10},{point(0,0),-1},{point(20,10),-1},{point(150,150),-1},{{-100,-100},-1}}})
                     if (holdActionAt(entry.first)!=entry.second) throw std::runtime_error("Pie direction/dead-zone hit test failed");
                 for (int i=0;i<4;++i) {
                     if (i==1) continue; // The palette commits only an explicit swatch.
                     POINT middle={(holdRows[i].left+holdRows[i].right)/2,(holdRows[i].top+holdRows[i].bottom)/2};
                     if (holdActionAt(middle)!=i) throw std::runtime_error("Pie card hit test failed");
                 }
-                holdOrigin=point(-110,0);holdMoved=false;
+                holdOrigin=selectCenter;holdMoved=false;
                 if (holdActionAt(holdOrigin)!=-1) throw std::runtime_error("Clamped invocation must cancel");
                 holdOrigin=point(0,0);
                 if (holdActionAt(point(0,11))!=-1 || holdActionAt(point(0,20))!=-1)
@@ -3221,7 +3235,7 @@ int main() {
                 if (std::string(panelTitle())!="图层操作" || holdActionAt(point(-50,-80))!=2 || holdActionAt(point(50,-80))!=3 || holdActionAt(point(0,80))!=10)
                     throw std::runtime_error("Layer pie lost sorting actions");
                 panelKind=3;
-                if (rowVisible(0) || rowVisible(1) || holdActionAt(point(-110,0))!=-1)
+                if (rowVisible(0) || rowVisible(1) || holdActionAt(selectCenter)!=-1)
                     throw std::runtime_error("Input context exposed pie actions");
                 panelKind=4;
                 const bool previousAllowed=allowed,previousCapable=capable;
@@ -3242,10 +3256,10 @@ int main() {
                 homepageCapable=true;allowed=previousAllowed;capable=previousCapable;document=previousDocument;
                 if (!rowVisible(0) || rowVisible(1) || rowVisible(2) || rowVisible(3) ||
                     std::string(rowAction(0))!="document.new" || !matches(0,"new document") ||
-                    holdActionAt(point(0,-80))!=-1 || holdActionAt(point(68,0))!=-1)
+                    holdActionAt(point(0,-80))!=-1 || holdActionAt(point(-110,0))!=-1)
                     throw std::runtime_error("Home menu leaked layer actions");
                 auto homeActionCount=testedActions.size();
-                finishHold(point(-110,0));
+                finishHold(selectCenter);
                 if (testedActions.size()!=homeActionCount+1 || testedActions.back()!="document.new")
                     throw std::runtime_error("Home release did not request the New dialog");
                 testedActions.pop_back();holdFinished=false;pieReady=true;
@@ -3423,7 +3437,7 @@ int main() {
                 pieAnimating=true;
                 auto animLabel=labelRows[1];
                 if (holdActionAt({(animLabel.left+animLabel.right)/2,(animLabel.top+animLabel.bottom)/2})!=-1 ||
-                    holdActionAt(point(-110,0))!=-1)
+                    holdActionAt(selectCenter)!=-1)
                     throw std::runtime_error("Animation must cancel card and palette releases");
                 pieAnimating=false;
                 allowed=false;
@@ -4049,13 +4063,178 @@ int main() {
                         ImGui::End();ImGui::Render();finishPlatformFrame();
                     }
                     {
+                        MenuToolsPanel editor;std::strcpy(editor.draft,"Draft Font sample suffix");
+                        editor.selectionStart=6;editor.selectionEnd=17;editor.scopeSupported=true;
+                        if(editor.chosenFontSample()!=L"Font sample")throw std::runtime_error("Font menu preview did not use the selected draft text");
+                        const std::vector<std::pair<std::string,std::string>> faces={{"Regular","ArialMT"},{"Bold","Arial-BoldMT"}};
+                        std::array<ImVec2,2> centers{};bool first=true;int hovered=-1,picked=-1;
+                        auto faceFrame=[&](){
+                            io.DeltaTime=1.f/60.f;ImGui::NewFrame();ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+                            ImGui::SetNextWindowPos(ImGui::GetMainViewport()->Pos);ImGui::SetNextWindowSize({280*scale,150*scale});
+                            ImGui::Begin("##font-sample-test",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
+                            {MenuControls::PanelStyle controls(scale);
+                            if(first){ImGui::OpenPopupEx(ImHashStr("##ComboPopup",0,ImGui::GetID("##font-choices")));first=false;}
+                            hovered=-1;
+                            picked=MenuControls::listChoice("##font-choices","Regular",faces,nullptr,nullptr,&hovered,
+                                [&](int row,ImVec2 at,ImVec2 end){centers[row]={(at.x+end.x)*.5f,(at.y+end.y)*.5f};editor.drawFontSample(faces[row].second,editor.chosenFontSample(),at,end);});}
+                            ImGui::End();ImGui::Render();finishPlatformFrame();
+                        };
+                        faceFrame();faceFrame();
+                        if(editor.fontSamples.size()!=2)throw std::runtime_error("The font menu skipped visible samples");
+                        if(editor.fontSamples.at("ArialMT").image && !editor.fontSamples.at("Arial-BoldMT").image)
+                            throw std::runtime_error("An installed font weight failed to preview");
+                        io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(centers[1].x,centers[1].y);faceFrame();
+                        if(hovered!=1)throw std::runtime_error("Font sample row lost its hover hit");
+                        io.AddMouseButtonEvent(0,true);faceFrame();io.AddMouseButtonEvent(0,false);faceFrame();
+                        if(picked!=1)throw std::runtime_error("Clicking a font sample selected the wrong face");
+                        editor.setFont(faces[picked].second);
+                        if(editor.styleChanges().at("fontPostScriptName")!="Arial-BoldMT" || editor.styleChanges().at("range")!=Json({6,17}))
+                            throw std::runtime_error("Selecting a font sample lost the chosen face or text range");
+                        ImGui::ClearActiveID();std::cout<<"Font menu passed: current selection samples, visible row cache, hover hit, face and weight selection\n";
+                    }
+                    {
+                        MenuToolsPanel editor;editor.active=editor.ready=true;editor.mode="typeset";editor.revision="box";
+                        editor.canvasEditAvailable=editor.canvasTextFrame=editor.canvasWrap=true;
+                        editor.boxShiftSupported=true;
+                        editor.sourceStyles=Json{{"size","12"}};editor.extendedTypography=true;
+                        editor.advancedTypography=editor.paragraphIndentsSupported=editor.paragraphAlignmentSupported=true;
+                        editor.kerningSupported=editor.openTypeSupported=true;
+                        editor.textBox={.25f,.25f,.70f,.65f};editor.sourceBoxSize=editor.draftBoxSize={144,128};
+                        std::strcpy(editor.draft,"Text frame contents");
+                        const std::array<unsigned char,16> tex={255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255};
+                        if(!editor.loadPixels(2,2,tex.data()))throw std::runtime_error("Text frame fixture texture failed");
+                        float windowWidth=780;
+                        auto boxFrame=[&](){
+                            io.DeltaTime=1.f/60.f;ImGui::NewFrame();ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+                            ImGui::SetNextWindowPos(ImGui::GetMainViewport()->Pos);ImGui::SetNextWindowSize({windowWidth*scale,420*scale});
+                            ImGui::Begin("##resize-text-test",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
+                            editor.draw(scale,{0,0},true,true);ImGui::End();ImGui::Render();finishPlatformFrame();
+                        };
+                        boxFrame();boxFrame();ImGuiWindow* frame=nullptr;ImGuiWindow* body=nullptr;
+                        ImGuiWindow* properties=nullptr;ImGuiWindow* options=nullptr;ImGuiWindow* canvas=nullptr;
+                        for(auto* child:GImGui->Windows)if(strstr(child->Name,"##resize-text-test/")){
+                            if(strstr(child->Name,"##draft"))frame=child;
+                            if(strstr(child->Name,"##text-body") && !strstr(child->Name,"##text-options"))body=child;
+                            if(strstr(child->Name,"##layout-typography"))properties=child;
+                            if(strstr(child->Name,"##text-options"))options=child;
+                            if(strstr(child->Name,"##layout-canvas") && !strstr(child->Name,"##draft"))canvas=child;
+                        }
+                        if(!frame||!body||!properties||!options||!canvas || properties->ScrollMax.y<=0 || options->Pos.y+options->Size.y>=body->Pos.y+body->Size.y)
+                            throw std::runtime_error("Typeset did not leave separate space for the scrollable properties and pinned action");
+                        const auto activateIcon=[&](ImGuiWindow* child,const char* group,int index,const char* label){
+                            ImGui::ActivateItemByID(ImHashStr(label,0,ImHashData(&index,sizeof(index),child->GetID(group))));boxFrame();
+                        };
+                        activateIcon(canvas,"##canvas-zoom",1,"放大");
+                        if(editor.canvasZoom<=1)throw std::runtime_error("Typeset zoom icon did not activate");
+                        editor.canvasPan={10,20};activateIcon(canvas,"##canvas-zoom",2,"适合窗口");
+                        if(editor.canvasZoom!=1 || editor.canvasPan.x || editor.canvasPan.y)
+                            throw std::runtime_error("Fit icon did not reset the canvas view");
+                        activateIcon(options,"##typeset-tabs",5,"表格");
+                        if(editor.textTab!=6)throw std::runtime_error("Typeset table icon did not open the table tool");
+                        activateIcon(options,"##typeset-tabs",1,"查找替换");
+                        if(editor.textTab!=1)throw std::runtime_error("Labeled typeset tool did not open find and replace");
+                        activateIcon(options,"##typeset-tabs",0,"编辑");
+                        if(editor.textTab!=0)throw std::runtime_error("Typeset text icon did not return to editing");
+                        editor.textDirty=false;boxFrame();
+                        const ImVec2 corner={frame->Pos.x+frame->Size.x,frame->Pos.y+frame->Size.y};
+                        io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(corner.x,corner.y);boxFrame();
+                        io.AddMouseButtonEvent(0,true);boxFrame();
+                        if(editor.resizeHandle!=3)throw std::runtime_error("The text box resize handle did not capture the drag");
+                        io.AddMousePosEvent(corner.x+18*scale,corner.y+13*scale);boxFrame();
+                        io.AddMouseButtonEvent(0,false);boxFrame();
+                        if(editor.resizeHandle || editor.draftBoxSize[0]<=144 || editor.draftBoxSize[1]<=128 ||
+                           editor.textParams().at("box_size")!=Json(editor.draftBoxSize) || std::string(editor.draft)!="Text frame contents")
+                            throw std::runtime_error("Text box drag lost dimensions or edited the contents");
+                        editor.textDirty=false;editor.planId="box-plan";editor.resultKind="replace";
+                        const auto count=testedActions.size();
+                        ImGui::ActivateItemByID(body->GetID("写回当前文字"));boxFrame();
+                        if(editor.pending || testedActions.size()!=count)throw std::runtime_error("Typeset retained the ordinary text write action");
+                        ImGui::ActivateItemByID(body->GetID("生成矢量智能对象"));boxFrame();
+                        if(!editor.pending || editor.pendingAction!="text.vector" || testedActions.size()!=count+1)
+                            throw std::runtime_error("Typeset vector creation action failed");
+                        editor.pending=false;editor.vectorObject=true;boxFrame();
+                        ImGui::ActivateItemByID(body->GetID("更新矢量智能对象"));boxFrame();
+                        if(!editor.pending || editor.pendingAction!="text.vector" || testedActions.size()!=count+2)
+                            throw std::runtime_error("Typeset vector update action failed: pending="+std::to_string(editor.pending)+
+                                " action="+editor.pendingAction+" records="+std::to_string(testedActions.size()-count)+" plan="+editor.planId);
+                        editor.pending=false;
+                        const auto right=frame->Pos.x+frame->Size.x;
+                        const auto left=frame->Pos.x;
+                        const float y=frame->Pos.y+frame->Size.y*.5f;
+                        const auto oldBox=editor.draftBoxSize;
+                        io.AddMousePosEvent(left,y);boxFrame();io.AddMouseButtonEvent(0,true);boxFrame();
+                        if(editor.resizeHandle!=4 || editor.draftBoxSize!=oldBox)throw std::runtime_error("Text box left border changed on click");
+                        io.AddMousePosEvent(left+12*scale,y);boxFrame();io.AddMouseButtonEvent(0,false);boxFrame();
+                        if(editor.draftBoxSize[0]>=oldBox[0] || editor.draftBoxSize[1]!=oldBox[1] || editor.draftBoxOffset<=0 ||
+                           std::abs(right-frame->Pos.x-frame->Size.x)>2 || editor.textParams().at("box_shift_x")!=editor.draftBoxOffset)
+                            throw std::runtime_error("A left edge drag must keep the right edge fixed");
+                        editor.textDirty=false;
+                        editor.sourceStyles["fractions"]="开启";
+                        editor.sourceStyles["ordinals"]="混合";
+                        ImGui::SetScrollY(properties,properties->ScrollMax.y);
+                        boxFrame();boxFrame();
+                        activateIcon(properties,"##opentype-switches",5,"分数");
+                        activateIcon(properties,"##opentype-switches",6,"序数");
+                        const auto enabled=editor.styleChanges();
+                        if(enabled.value("fractions",true) || !enabled.value("ordinals",false))
+                            throw std::runtime_error("OpenType icons lost the source or mixed state when toggled");
+                        activateIcon(properties,"##opentype-switches",6,"序数");
+                        if(editor.styleChanges().value("ordinals",true))
+                            throw std::runtime_error("OpenType icon did not switch off the current draft value");
+                        activateIcon(properties,"##opentype-switches",7,"恢复本组原值");
+                        if(!editor.styleChanges().empty())throw std::runtime_error("OpenType reset retained staged edits");
+                        ImGui::SetScrollY(properties,0);
+                        editor.scopeSupported=true;windowWidth=520;
+                        boxFrame();boxFrame();
+                        if(properties->ScrollMax.x>1 || properties->ScrollMax.y<=0 ||
+                           properties->Pos.x+properties->Size.x>=canvas->Pos.x ||
+                           canvas->Pos.x+canvas->Size.x>=options->Pos.x)
+                            throw std::runtime_error("Narrow typeset window clipped properties or overlapped columns");
+                        editor.setDraft("AB\nCD");
+                        editor.loadStyleRanges(Json{{"textStyle",Json::array({Json{{"from",0},{"to",6},
+                            {"values",Json{{"fontPostScriptName","Original"},{"size","12"}}}}})},
+                            {"paragraphStyle",Json::array({Json{{"from",0},{"to",6},{"values",Json{{"spaceAfter","0"}}}}})}});
+                        editor.selectionStart=0;editor.selectionEnd=1;
+                        editor.setFont("FirstFont");
+                        editor.selectionStart=3;editor.selectionEnd=4;
+                        editor.stageStyle("spaceAfter",8);
+                        if(editor.currentStyle("fontPostScriptName")!="Original" || editor.activeStyleRange(true)!=std::array<int,2>{3,6})
+                            throw std::runtime_error("Paragraph selection inherited an unrelated character edit");
+                        editor.selectionStart=0;editor.selectionEnd=1;
+                        if(editor.currentStyle("fontPostScriptName")!="FirstFont" || editor.textParams().at("typography_runs").size()!=2)
+                            throw std::runtime_error("Returning to a text range lost its staged font");
+                        editor.restoreDraft(false);
+                        if(editor.textParams().at("typography_runs").size()!=1)throw std::runtime_error("Draft undo lost its range boundary");
+                        editor.restoreDraft(true);
+                        if(editor.textParams().at("typography_runs").size()!=2)throw std::runtime_error("Draft redo lost a paragraph edit");
+                        windowWidth=780;boxFrame();boxFrame();
+                        const auto styled=editor.localDraft.Get();const auto dimensions=editor.draftBoxSize;
+                        ImGuiWindow* input=nullptr;
+                        for(auto* child:GImGui->Windows)if(child->Active && strstr(child->Name,"##resize-text-test/") && strstr(child->Name,"##draft"))input=child;
+                        if(!input)throw std::runtime_error("The current canvas draft input is missing");
+                        const ImVec2 inner={input->Pos.x+input->Size.x*.5f,input->Pos.y+input->Size.y*.25f};
+                        io.AddMousePosEvent(inner.x,inner.y);boxFrame();io.AddMouseButtonEvent(0,true);boxFrame();
+                        io.AddMouseButtonEvent(0,false);boxFrame();
+                        if(!styled || editor.localDraft.Get()!=styled || editor.draftBoxSize!=dimensions || !editor.canvasTextActive)
+                            throw std::runtime_error("Text rendering or width changed when placing the caret: raster="+std::to_string(styled!=nullptr)+
+                                " reused="+std::to_string(styled==editor.localDraft.Get())+" focus="+std::to_string(editor.canvasTextActive));
+                        const RECT viewport={100,100,1800,1200},placed={150,150,1150,800};
+                        const int edge=MenuToolsPanel::windowEdges(placed,{1149,799},5);
+                        const auto bigger=MenuToolsPanel::resizedWindow(placed,viewport,{200,140},edge,{520,360});
+                        const auto smaller=MenuToolsPanel::resizedWindow(placed,viewport,{-1200,-1200},edge,{520,360});
+                        if(bigger.right!=1350 || bigger.bottom!=940 || smaller.right!=670 || smaller.bottom!=510 ||
+                           MenuToolsPanel::windowEdges(placed,{400,450},5))throw std::runtime_error("Typeset window edge resizing lost its anchor or size limits");
+                        editor.reset();ImGui::ClearActiveID();
+                        std::cout<<"Text canvas passed: stable focus, left and corner drags, window edge resizing, vector action and narrow layout\n";
+                    }
+                    {
                         MenuToolsPanel editor;editor.active=editor.ready=true;editor.mode="split";editor.revision="r";
                         editor.pending=true;editor.pendingAction="text.preview";std::snprintf(editor.draft,sizeof(editor.draft),"original");
                         auto editorFrame=[&](){
                             io.DeltaTime=1.f/60.f;ImGui::NewFrame();ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);const auto origin=ImGui::GetMainViewport()->Pos;
                             ImGui::SetNextWindowPos(origin);ImGui::SetNextWindowSize({700*scale,850*scale});
                             ImGui::Begin("##text-pending-test",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
-                            editor.draw(scale,{0,0},true);ImGui::End();ImGui::Render();finishPlatformFrame();
+                            editor.draw(scale,{0,0},true,true);ImGui::End();ImGui::Render();finishPlatformFrame();
                         };
                         editorFrame();editorFrame();ImGuiWindow* draftWindow=nullptr;
                         for(auto* child:GImGui->Windows)if(strstr(child->Name,"##text-pending-test/") && strstr(child->Name,"##draft"))draftWindow=child;
@@ -5322,7 +5501,7 @@ int main() {
                     layerLocked=false;inputFocused=true;if(capsEnabled(10))throw std::runtime_error("Input enabled combined Smart Object");inputFocused=false;
                     panelKind=2;layerKind=4;layerCount=1;layerCrossParents=false;holdFinished=false;numberFrame(ImGuiKey_None,false);
                     if(capsRows[9].right || capsEnabled(9) || capsRows[10].top!=holdRows[1].top || std::abs(capsRows[10].right-(holdRows[1].left-quickGroupGap*scale))>1 ||
-                       capsRows[10].right>=holdRows[1].left || capsRows[10].right>=toolRow.left)
+                       capsRows[10].right>=holdRows[1].left || capsRows[10].top<=toolRow.bottom)
                         throw std::runtime_error("Lower-left Smart Object overlaps selection, labels or text tool");
                     for(int kind:{3,4}){panelKind=kind;numberFrame(ImGuiKey_None,false);if(capsRows[9].right || capsRows[10].right || capsEnabled(9) || capsEnabled(10))throw std::runtime_error("Input/home retained Smart Object controls");}
                     panelKind=2;individualSmartReady=false;numberFrame(ImGuiKey_None,false);
@@ -5387,6 +5566,17 @@ int main() {
                         const bool textMenu=kind<3;
                         if(bool(toolRow.right)!=textMenu || toolEnabled(1)!=textMenu)
                             throw std::runtime_error("Text tool eligibility depends on mouse panel instead of selected layer");
+                        if(textMenu){
+                            const auto select=holdRows[0],typeset=toolRow;
+                            if(select.left<=pieCenter.x || typeset.right>=pieCenter.x || typeset.top!=select.top || typeset.bottom!=select.bottom ||
+                               holdActionAt({(select.left+select.right)/2,(select.top+select.bottom)/2})!=0 ||
+                               holdActionAt({(typeset.left+typeset.right)/2,(typeset.top+typeset.bottom)/2})!=71)
+                                throw std::runtime_error("Typeset and adjacent selection lost their left/right positions or hit targets");
+                            layerKind=5;numberFrame(ImGuiKey_None,false);
+                            if(toolRow.right!=typeset.right || toolRow.top!=typeset.top || holdRows[0].left!=select.left)
+                                throw std::runtime_error("Opening an existing text object moved the side controls");
+                            layerKind=4;
+                        }
                         layerCount=2;numberFrame(ImGuiKey_None,false);
                         if(toolRow.right || toolEnabled(1))throw std::runtime_error("Multi-selection enabled single-text tools");
                         layerCount=1;layerLocked=true;numberFrame(ImGuiKey_None,false);
@@ -5395,10 +5585,19 @@ int main() {
                     }
                     panelKind=2;layerKind=4;
                     numberFrame(ImGuiKey_None,false);
-                    if(toolRow.left!=LONG(pieCenter.x+65*scale) || toolRow.top!=LONG(pieCenter.y-15*scale))throw std::runtime_error("Split must replace original right-side creation position");
+                    if(toolRow.right!=LONG(std::lround(pieCenter.x-menuQuickGroupOffset*scale)) || toolRow.top!=holdRows[0].top)
+                        throw std::runtime_error("Typeset must align with adjacent selection across the ring");
                     if(capsRows[5].top!=holdRows[2].top || capsRows[6].bottom>=toolRow.top)throw std::runtime_error("Move controls must share sorting row above the text tool");
                     for(int i=0;i<7;++i){const auto tip=quickTipBounds(i);if(tip.z>tip.x && tipOverlaps(tip,toolRow,2*scale))throw std::runtime_error("Creation tooltip covers relocated split");}
                     const auto r=toolRow;if(r.right<=r.left || !toolEnabled(1))throw std::runtime_error("Text Caps entry unavailable");
+                    const POINT textPoint={(r.left+r.right)/2,(r.top+r.bottom)/2};
+                    const auto writes=testedActions.size();pinned=true;
+                    io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(float(textPoint.x),float(textPoint.y));
+                    numberFrame(ImGuiKey_None,false);io.AddMouseButtonEvent(0,true);numberFrame(ImGuiKey_None,false);
+                    io.AddMouseButtonEvent(0,false);numberFrame(ImGuiKey_None,false);
+                    if(!menuTools.opening || testedActions.size()!=writes+1 || testedActions.back()!="menu.tools.open")
+                        throw std::runtime_error("Pinned typeset click failed at its left-side position");
+                    setHoldMode(true);holdMoved=true;numberFrame(ImGuiKey_None,false);
                     renderedHit=71;finishHold({(r.left+r.right)/2,(r.top+r.bottom)/2});
                     if(!menuTools.opening || !pinned || testedActions.back()!="menu.tools.open")throw std::runtime_error("Caps tool gesture did not pin an editor");
                     menuTools.receive(Json{{"type","menu.tools.opened"},{"epoch",menuEpoch},{"mode","split"}});
@@ -5419,7 +5618,7 @@ int main() {
                     menuTools.textTab=1;std::snprintf(menuTools.find,sizeof(menuTools.find),"a");std::snprintf(menuTools.replacement,sizeof(menuTools.replacement),"猫");
                     if(menuTools.textParams().at("operation")!="replace" || menuTools.textParams().at("draft")!="a\nb")throw std::runtime_error("Text editor parameters lost source or operation");
                     menuTools.changedText();const double textChanged=menuTools.textChanged;
-                    if(menuTools.textDue(textChanged+.17) || !menuTools.textDue(textChanged+.19))throw std::runtime_error("Text live preview debounce failed");
+                    if(menuTools.textDue(textChanged+.11) || !menuTools.textDue(textChanged+.13))throw std::runtime_error("Text live preview debounce failed");
                     menuTools.pending=true;if(menuTools.textDue(textChanged+1))throw std::runtime_error("Text live preview overlapped pending work");menuTools.pending=false;
                     menuTools.error="拆分需要2至64组非空文字";
                     if(menuTools.textStatus()!=menuTools.error)throw std::runtime_error("Disabled text plan hid its reason");
@@ -5467,6 +5666,16 @@ int main() {
                     accept(Json{{"type","menu.tools.result"},{"epoch",menuEpoch},{"request",menuTools.request},{"action","text.proof"},{"ok",false},{"error","test"}});
                     if(showingTextProof() || busyFeedback || !menuTools.active)
                         throw std::runtime_error("Text proof completion did not retain the editor");
+                    std::strcpy(menuTools.draft,"abcde");menuTools.scopeSupported=true;
+                    menuTools.selectionStart=1;menuTools.selectionEnd=3;menuTools.setFont("SelectedFace");
+                    const auto styled=menuTools.styleChanges();
+                    if(styled.at("range")!=Json({1,3}))throw std::runtime_error("Font change lost its selected range");
+                    menuTools.selectionStart=menuTools.selectionEnd=4;menuTools.cursorPos=4;
+                    procedure(window,WM_SHOWWINDOW,FALSE,0);procedure(window,WM_SHOWWINDOW,TRUE,0);
+                    if(!menuTools.active || menuTools.mode!="typeset" || std::string(menuTools.draft)!="abcde" || menuTools.styleChanges()!=styled)
+                        throw std::runtime_error("Selection or visibility changed the applied draft");
+                    std::strcpy(menuTools.draft,"Zabcde");menuTools.changedText();
+                    if(menuTools.styleChanges().at("range")!=Json({2,4}))throw std::runtime_error("A draft insertion moved a style off its original characters");
                     menuTools.reset();menuTools.active=menuTools.ready=true;menuTools.mode="search";
                     menuTools.changeSearch(1);
                     if(menuTools.searchDue(1.17) || !menuTools.searchDue(1.19))throw std::runtime_error("Search debounce failed");

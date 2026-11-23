@@ -26,5 +26,5 @@ if (!(Test-Path -LiteralPath $menuGlyphPath) -or [System.IO.File]::ReadAllText($
     [System.IO.File]::WriteAllText($menuGlyphPath, $menuGlyphHeader, [System.Text.UTF8Encoding]::new($false))
 }
 $menuSources = @('imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','backends/imgui_impl_win32.cpp','backends/imgui_impl_dx11.cpp') | ForEach-Object { Join-Path $menuVendor $_ }
-& $menuCompiler -std=c++17 -O2 -static -mwindows -DUNICODE -D_UNICODE -DIMGUI_ENABLE_WIN32_DEFAULT_IME_FUNCTIONS -finput-charset=UTF-8 "-I$menuVendor" "$menuRoot/native/MenuHost.cpp" @menuSources -o "$OutputPath" -ld3d11 -ldcomp -ld3dcompiler -ldxgi -ldwmapi -lgdi32 -lgdiplus -limm32 -lole32 -lwindowscodecs -luuid -luser32 -lshell32
+& $menuCompiler -std=c++17 -O2 -static -mwindows -DUNICODE -D_UNICODE -DIMGUI_ENABLE_WIN32_DEFAULT_IME_FUNCTIONS -finput-charset=UTF-8 "-I$menuVendor" "$menuRoot/native/MenuHost.cpp" @menuSources -o "$OutputPath" -ld3d11 -ldcomp -ld3dcompiler -ldxgi -ld2d1 -ldwrite -ldwmapi -lgdi32 -lgdiplus -limm32 -lole32 -lwindowscodecs -luuid -luser32 -lshell32
 if ($LASTEXITCODE -ne 0) { throw 'Dear ImGui menu host build failed.' }

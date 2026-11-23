@@ -1,6 +1,41 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('uxp/offline-probe/labels.js','utf8');
 const clone=value=>JSON.parse(JSON.stringify(value));
+{
+ const renderer=fs.readFileSync('jsx/text_object.jsx','utf8');
+ const part=(begin,end)=>renderer.slice(renderer.indexOf(`    function ${begin}(`),renderer.indexOf(`    function ${end}(`));
+ const check=vm.runInNewContext(`${part('encode','name')}${part('signature','checkSourceFonts')}${part('near','drawTable')}checkText`);
+ const sparse={textKey:'AB',textStyleRange:[{from:0,to:3,textStyle:{fontPostScriptName:'MyriadPro-Regular'}}],
+  paragraphStyleRange:[{from:0,to:3,paragraphStyle:{textComposerEngine:{_enum:'textComposerEngine',_value:'textOptycaComposer'},
+   directionType:{_enum:'directionType',_value:'dirLeftToRight'}}}]};
+ const expanded=clone(sparse),paragraph=expanded.paragraphStyleRange[0].paragraphStyle;
+ Object.assign(paragraph,{align:{_enum:'alignmentType',_value:'left'},autoLeadingPercentage:Math.fround(1.2),
+  textEveryLineComposer:true,hyphenate:false,justificationWordMaximum:Math.fround(1.33)});
+ assert.doesNotThrow(()=>check(expanded,sparse));
+ paragraph.hyphenateWordSize=8;
+ assert.doesNotThrow(()=>check(expanded,sparse));
+ paragraph.hyphenate=true;
+ const enabled=clone(sparse);enabled.paragraphStyleRange[0].paragraphStyle.hyphenate=true;
+ assert.throws(()=>check(expanded,enabled),/hyphenateWordSize/);
+ delete paragraph.hyphenateWordSize;
+ paragraph.hyphenate=false;
+ paragraph.textEveryLineComposer=false;
+ assert.throws(()=>check(expanded,sparse),/style readback mismatch/);
+ paragraph.textEveryLineComposer=true;
+ expanded.textStyleRange[0].textStyle.fontPostScriptName='Wrong';
+ assert.throws(()=>check(expanded,sparse),/style readback mismatch/);
+ const wanted=clone(sparse);wanted.textKey='A猫';
+ const native=clone(wanted);native.textStyleRange=[
+  {from:0,to:1,textStyle:{fontPostScriptName:'MyriadPro-Regular'}},
+  {from:1,to:3,textStyle:{fontPostScriptName:'AdobeHeitiStd-Regular',fontAvailable:true}}];
+ const origins=[0,1,2];
+ assert.equal(JSON.stringify(check(native,wanted,sparse,{origins})),JSON.stringify([[1,2,'AdobeHeitiStd-Regular']]));
+ assert.throws(()=>check(native,wanted,sparse,{origins,typography:{fontPostScriptName:'MyriadPro-Regular',range:[1,2]}}),/style readback mismatch/);
+ assert.throws(()=>check(native,wanted,wanted,{origins}),/style readback mismatch/);
+ assert.equal(JSON.stringify(check(native,wanted,wanted,{origins,previous_fallbacks:[[1,2,'AdobeHeitiStd-Regular']]})),JSON.stringify([[1,2,'AdobeHeitiStd-Regular']]));
+ native.textStyleRange[1].textStyle.tracking=99;
+ assert.throws(()=>check(native,wanted,sparse,{origins}),/style readback mismatch/);
+}
 const original={layerID:11,name:'mixed',layerKind:3,layerLocking:{protectAll:false},textKey:{_obj:'textLayer',textKey:'A猫😀\rBC猫',
  textStyleRange:[{_obj:'textStyleRange',from:0,to:2,textStyle:{fontPostScriptName:'Alpha',size:12,color:{red:1}}},{_obj:'textStyleRange',from:2,to:5,textStyle:{fontPostScriptName:'Beta',size:16}},{_obj:'textStyleRange',from:5,to:9,textStyle:{fontPostScriptName:'Gamma',size:20}}],
  paragraphStyleRange:[{_obj:'paragraphStyleRange',from:0,to:5,paragraphStyle:{align:'left'}},{_obj:'paragraphStyleRange',from:5,to:9,paragraphStyle:{align:'center'}}],
@@ -82,7 +117,20 @@ async function request(find,replacement){const read=await tools.read();return {t
  assert.ok(selection.paragraphStyleRange[0].paragraphStyle.spaceAfter);
  assert.equal(selection.paragraphStyleRange[1].paragraphStyle.spaceAfter,undefined);
  await assert.rejects(tools.prepareObject(highDpi,{...selected,typography:{range:[3,4],tracking:35}}),/选区/);
- const highDpiSource=(await tools.prepareObject(highDpi,{...styled.text,revision:highDpi.text.revision})).source.layer.text;
+ const legacyParagraphs=clone(row.textKey.paragraphStyleRange);
+ row.textKey.paragraphStyleRange=[{from:0,to:9,paragraphStyle:{align:'left'}}];
+ const rangeRead=await request('猫','XY');
+ const ranged={revision:rangeRead.text.revision,value:row.textKey.textKey,origins:[0,1,2,3,4,5,6,7,8],count:0,
+  typography_runs:[{range:[0,1],fontPostScriptName:'First'},{range:[5,7],fontPostScriptName:'Second'},{range:[6,7],spaceAfter:9}]};
+ const rangedText=(await tools.prepareObject(rangeRead,ranged)).source.layer.text;
+ assert.deepEqual(Array.from(rangedText.textStyleRange,run=>[run.from,run.to,run.textStyle.fontPostScriptName]),
+   [[0,1,'First'],[1,2,'Alpha'],[2,5,'Beta'],[5,7,'Second'],[7,9,'Gamma']]);
+ assert.deepEqual(Array.from(rangedText.paragraphStyleRange,run=>[run.from,run.to,run.paragraphStyle.spaceAfter?._value??null]),
+   [[0,5,null],[5,9,37.5]]);
+ await assert.rejects(tools.prepareObject(rangeRead,{...ranged,typography:{size:12}}),/多范围/);
+ row.textKey.paragraphStyleRange=legacyParagraphs;
+ const restoredRead=await request('猫','XY');
+ const highDpiSource=(await tools.prepareObject(restoredRead,{...styled.text,revision:restoredRead.text.revision})).source.layer.text;
  assert.equal(highDpiSource.textStyleRange[0].textStyle.impliedFontSize,undefined);
  assert.deepEqual(clone(highDpiSource.textStyleRange[0].textStyle.leading),{_unit:'pixelsUnit',_value:100});
  assert.equal(highDpiSource.paragraphStyleRange[0].paragraphStyle.spaceAfter._value,25);
@@ -95,7 +143,22 @@ async function request(find,replacement){const read=await tools.read();return {t
  assert.equal(nativeSource.source.layer.text.textKey,'AXY😀\rBCXY');
  assert.equal(nativeSource.source.layer.text.textStyleRange[1].textStyle.fontPostScriptName,'Beta');
  assert.deepEqual(clone(nativeSource.source.layer.text.textShape),original.textKey.textShape);assert.equal(writes,0);
- await assert.rejects(tools.prepareObject(preparedRequest,{...preparedRequest.text,list_xmp:'new list options'}),/先写回普通文字列表/);
+ await assert.rejects(tools.prepareObject(preparedRequest,{...preparedRequest.text,list_xmp:'new list options'}),/矢量列表缺少排版数据/);
+ row=clone(original);
+ row.textKey.orientation={_value:'horizontal'};row.textKey.warp={warpStyle:{_value:'warpNone'}};
+ row.textKey.textShape=[{_obj:'textShape',char:{_value:'box'},bounds:{_obj:'rectangle',left:0,top:0,right:320,bottom:240}}];
+ row.textKey.textClickPoint={horizontal:{_unit:'percentUnit',_value:10},vertical:{_unit:'percentUnit',_value:20}};
+ let editable=await tools.read();assert.deepEqual(clone(editable.box_size),[320,240]);
+ const resized={revision:editable.revision,value:editable.text,origins:Array.from({length:editable.text.length+1},(_,i)=>i),count:0,box_size:[175.5,144]};
+ const resizedSource=(await tools.prepareObject({target:editable.target,expires_at_ms:Date.now()+5000},resized)).source.layer.text;
+ assert.deepEqual(clone(resizedSource.textShape[0].bounds),{_obj:'rectangle',left:0,top:0,right:175.5,bottom:144});
+ assert.equal(row.textKey.textShape[0].bounds.right,320);
+ const shift=320-175.5;
+ const shiftedBox=(await tools.prepareObject({target:editable.target,expires_at_ms:Date.now()+5000},{...resized,box_shift_x:shift})).source.layer.text;
+ assert.equal(shiftedBox.textClickPoint.horizontal._value,Math.fround(row.textKey.textClickPoint.horizontal._value+100*shift/ps.app.activeDocument.width));
+ assert.equal(shiftedBox.textShape[0].bounds.right+shift,320);
+ await assert.rejects(tools.prepareObject({target:editable.target,expires_at_ms:Date.now()+5000},{...resized,box_shift_x:100001}),/无法移动左边缘/);
+ await assert.rejects(tools.prepareObject({target:editable.target,expires_at_ms:Date.now()+5000},{...resized,box_size:[0,144]}),/无法调整尺寸/);
  assert.equal(writes,0);
  row.XMPMetadataAsUTF8='saved list options';preparedRequest=await request('猫','XY');
  assert.equal((await tools.prepareObject(preparedRequest,{...preparedRequest.text,list_xmp:'saved list options'})).source.schema,1);
@@ -221,6 +284,16 @@ async function request(find,replacement){const read=await tools.read();return {t
    typography:{range:[2,4],startIndent:12,endIndent:6,firstLineIndent:-3}}};
  const vectorIndent=await tools.prepareObject(indent,indent.text);
  assert.equal(vectorIndent.source.layer.text.paragraphStyleRange[0].paragraphStyle.firstLineIndent._value,-12.5);
+ const composition={...indent.text};
+ delete composition.typography;
+ composition.typography_runs=[{range:[5,6],textEveryLineComposer:false,hangingRoman:true,
+   hyphenateWordSize:8,justifyWord:[80,100,125],justifyLetter:[-5,0,10],justifyGlyph:[95,100,105]}];
+ const compositionSource=(await tools.prepareObject(indent,composition)).source.layer.text;
+ assert.equal(compositionSource.paragraphStyleRange[0].paragraphStyle.textEveryLineComposer,undefined);
+ const composedParagraph=compositionSource.paragraphStyleRange[1].paragraphStyle;
+ assert.equal(composedParagraph.textEveryLineComposer,false);
+ assert.equal(composedParagraph.justificationWordMaximum,1.25);
+ assert.equal(composedParagraph.hyphenateWordSize,8);
  await tools.replace(indent);
  assert.deepEqual(row,indentOriginal);
  const projected=savedProof.row.textKey;

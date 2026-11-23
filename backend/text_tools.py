@@ -5,12 +5,17 @@ import secrets
 from .layer_search import require_available
 from .operation_target import validate_target
 from .text_plan import compute,evaluate,normalize,parameters,units
-from . import text_list,text_object
+from . import text_canvas,text_list,text_object
 
 INDENTS=('startIndent','endIndent','firstLineIndent')
 PARAGRAPH_DISTANCES=('spaceBefore','spaceAfter',*INDENTS)
 OPENTYPE_SWITCHES=('contextualLigatures','stylisticAlternates','swash','titling','ornaments','fractions','ordinals')
-STYLE_SWITCHES=('syntheticBold','syntheticItalic','ligature','noBreak',*OPENTYPE_SWITCHES,'hyphenate')
+CHARACTER_SWITCHES=('syntheticBold','syntheticItalic','ligature','noBreak',*OPENTYPE_SWITCHES)
+PARAGRAPH_SWITCHES=('hyphenate','hyphenateCapitalized','hangingRoman','textEveryLineComposer')
+STYLE_SWITCHES=(*CHARACTER_SWITCHES,*PARAGRAPH_SWITCHES)
+HYPHENATION={'hyphenateWordSize':(1,99),'hyphenatePreLength':(0,99),'hyphenatePostLength':(0,99),
+             'hyphenateLimit':(0,99),'hyphenationZone':(0,1296)}
+JUSTIFICATION={'justifyWord':('Word',0,1000),'justifyLetter':('Letter',-100,500),'justifyGlyph':('Glyph',50,200)}
 STYLE_CHOICES={
     'autoKern':{'metricsKern':'度量','opticalKern':'视觉'},
     'fontCaps':{'normal':'正常','allCaps':'大写','smallCaps':'小型大写'},
@@ -23,13 +28,14 @@ STYLE_CHOICES={
 OPENTYPE_STYLES={*OPENTYPE_SWITCHES,'figureStyle'}
 ADVANCED_STYLES={*STYLE_SWITCHES,*STYLE_CHOICES,'color'}
 CHARACTER_STYLES=('fontPostScriptName','size','leading','tracking','baselineShift','horizontalScale','verticalScale',
-                  *STYLE_CHOICES,*STYLE_SWITCHES[:-1],'color')
+                  *STYLE_CHOICES,*CHARACTER_SWITCHES,'color')
+PARAGRAPH_STYLES=(*PARAGRAPH_DISTANCES,'align',*PARAGRAPH_SWITCHES,*HYPHENATION,*JUSTIFICATION)
 EXTENDED_STYLES={'baselineShift','horizontalScale','verticalScale','align'}
 ALIGNMENT={'left':'左对齐','center':'居中','right':'右对齐','justifyLeft':'两端对齐，末行左',
            'justifyCenter':'两端对齐，末行居中','justifyRight':'两端对齐，末行右','justifyAll':'全部两端对齐'}
 
 def typography(value):
-    if not isinstance(value,dict) or not set(value)-{'range'} or set(value)-set((*CHARACTER_STYLES,*PARAGRAPH_DISTANCES,'hyphenate','align','range')):
+    if not isinstance(value,dict) or not set(value)-{'range'} or set(value)-set((*CHARACTER_STYLES,*PARAGRAPH_STYLES,'range')):
         raise ValueError('排版参数无效')
     result={}
     for key,item in value.items():
@@ -44,6 +50,14 @@ def typography(value):
         if key in STYLE_SWITCHES:
             if type(item) is not bool:raise ValueError('排版开关无效')
             result[key]=item
+            continue
+        if key in JUSTIFICATION:
+            _,low,high=JUSTIFICATION[key]
+            if (not isinstance(item,list) or len(item)!=3 or
+                    any(type(v) not in (int,float) or not low<=v<=high for v in item) or
+                    item!=sorted(item)):
+                raise ValueError('两端对齐参数需要按最小、理想、最大排列')
+            result[key]=item[:]
             continue
         if key=='color':
             if not isinstance(item,list) or len(item)!=3 or any(type(channel) is not int or not 0<=channel<=255 for channel in item):
@@ -68,7 +82,12 @@ def typography(value):
         try:number=float(item)
         except (OverflowError,ValueError):raise ValueError('排版数值无效') from None
         if not math.isfinite(number):raise ValueError('排版数值无效')
-        if key=='tracking':
+        if key in HYPHENATION:
+            low,high=HYPHENATION[key]
+            if not low<=number<=high or key!='hyphenationZone' and not number.is_integer():
+                raise ValueError('断字数值超出范围')
+            result[key]=number if key=='hyphenationZone' else int(number)
+        elif key=='tracking':
             if not number.is_integer() or abs(number)>1000:raise ValueError('字距范围为 −1000 至 1000')
             result[key]=int(number)
         elif key in (*INDENTS,'baselineShift'):
@@ -83,23 +102,37 @@ def typography(value):
     return result
 
 
-def style_summary(raw,resolution):
-    summary={}
-    for field,keys in [('textStyle',CHARACTER_STYLES),('paragraphStyle',(*PARAGRAPH_DISTANCES,'align','hyphenate'))]:
+def typography_runs(value):
+    if not isinstance(value,list) or not 1<=len(value)<=256:
+        raise ValueError('排版草稿需要 1 至 256 组样式')
+    return [typography(run) for run in value]
+
+
+def style_ranges(raw,resolution):
+    result={}
+    for field,keys in [('textStyle',CHARACTER_STYLES),('paragraphStyle',PARAGRAPH_STYLES)]:
         runs=raw[field+'Range']
-        for key in keys:
-            values=set()
-            for run in runs:
-                chain=[run[field]]
-                while isinstance(chain[-1].get('baseParentStyle'),dict):chain.append(chain[-1]['baseParentStyle'])
-                chain.append(runs[0][field].get('baseParentStyle') or {})
+        profiles=[]
+        root=runs[0][field].get('baseParentStyle') or {}
+        for run in runs:
+            chain=[run[field]]
+            while isinstance(chain[-1].get('baseParentStyle'),dict):chain.append(chain[-1]['baseParentStyle'])
+            chain.append(root)
+            values={}
+            for key in keys:
                 item=next((style[key] for style in chain if key in style),None)
+                if key in JUSTIFICATION:
+                    prefix='justification'+JUSTIFICATION[key][0]
+                    triple=[next((style[prefix+part] for style in chain if prefix+part in style),None)
+                            for part in ('Minimum','Desired','Maximum')]
+                    if all(type(v) in (int,float) for v in triple):item=', '.join(format(v*100,'.6g') for v in triple)
                 if key=='leading' and next((style['autoLeading'] for style in chain if 'autoLeading' in style),False):item='自动'
                 if key=='align' and isinstance(item,dict):
                     item=ALIGNMENT.get(item.get('_value'))
                 if key in STYLE_CHOICES and isinstance(item,dict):
                     item=STYLE_CHOICES[key].get(item.get('_value'))
-                if key in STYLE_SWITCHES and type(item) is bool:item='开启' if item else '关闭'
+                if key=='textEveryLineComposer' and type(item) is bool:item='整段' if item else '逐行'
+                elif key in STYLE_SWITCHES and type(item) is bool:item='开启' if item else '关闭'
                 if key=='color' and isinstance(item,dict) and item.get('_obj')=='RGBColor':
                     channels=(item.get('red'),item.get('grain',item.get('green')),item.get('blue'))
                     if all(type(v) in (int,float) and 0<=v<=255 for v in channels):
@@ -111,9 +144,48 @@ def style_summary(raw,resolution):
                     if type(number) in (int,float) and unit in ('pixelsUnit','pointsUnit'):
                         item=format(number*72/resolution if unit=='pixelsUnit' else number,'.7g')
                     else:item=None
-                values.add(str(item) if item is not None else '继承')
-            summary[key]=next(iter(values)) if len(values)==1 else '混合'
+                values[key]=str(item) if item is not None else '继承'
+            profiles.append({'from':run['from'],'to':run['to'],'values':values})
+        result[field]=profiles
+    return result
+
+
+def summarize_ranges(ranges):
+    summary={}
+    for profiles in ranges.values():
+        for key,first in profiles[0]['values'].items():
+            summary[key]=first if all(row['values'][key]==first for row in profiles[1:]) else '混合'
     return summary
+
+
+def style_summary(raw,resolution):
+    return summarize_ranges(style_ranges(raw,resolution))
+
+
+def validate_style_scope(style,saved,args):
+    if style.keys() & OPENTYPE_STYLES and not saved.get('opentype_supported'):
+        raise ValueError('请更新插件后重新读取 OpenType 设置')
+    if (style.keys() & EXTENDED_STYLES or style.get('leading')=='auto') and not saved.get('extended_typography'):
+        raise ValueError('请更新插件后重新读取扩展排版选项')
+    if (style.keys() & ADVANCED_STYLES or style.get('align','') not in ('','left','center','right')) and not saved.get('advanced_typography'):
+        raise ValueError('请更新插件后重新读取字符和段落选项')
+    if 'color' in style and not saved.get('text_rgb'):
+        raise ValueError('文字取色需要 sRGB 8 位文档')
+    composition=set(HYPHENATION)|set(JUSTIFICATION)|set(PARAGRAPH_SWITCHES)
+    if style.keys() & ({'align','startIndent','firstLineIndent'}|composition) and (
+            args.get('operation')=='list' or args.get('list_options') is not None or
+            text_list.read(saved.get('list_xmp','')) is not None):
+        raise ValueError('列表使用自身的段落对齐、缩进与断字设置')
+    if 'align' in style and not saved.get('paragraph_alignment_supported'):
+        raise ValueError('段落对齐需要普通水平文字')
+    if (style.get('align','').startswith('justify') or style.keys() & composition) and not saved.get('paragraph_indents_supported'):
+        raise ValueError('两端对齐和断字需要水平段落文字')
+    if style.keys() & (composition-{'hyphenate'}) and not saved.get('typography_runs_supported'):
+        raise ValueError('高级段落排版需要更新执行插件并重新读取文本')
+    if style.keys() & set(INDENTS) and not saved.get('paragraph_indents_supported'):
+        raise ValueError('请重新读取支持段落缩进的普通文字层')
+    if 'range' in style and (not saved.get('style_scope_supported') or args.get('operation')!='edit'):
+        raise ValueError('局部排版需在排版页确认，请先完成其他正文处理')
 
 
 def font_in_run(style,fallback):
@@ -125,8 +197,14 @@ def font_in_run(style,fallback):
 
 def mapped_parameters(value,split=False):
     keys={'revision','value','origins','count'}|({'breaks','layout'} if split else set())
+    if not split and isinstance(value,dict) and 'box_size' in value:
+        keys.add('box_size');box_dimensions(value['box_size'])
+        if 'box_shift_x' in value:
+            keys.add('box_shift_x');box_horizontal_shift(value['box_shift_x'])
     if not split and isinstance(value,dict) and 'typography' in value:
         keys.add('typography');value={**value,'typography':typography(value['typography'])}
+    if not split and isinstance(value,dict) and 'typography_runs' in value and 'typography' not in value:
+        keys.add('typography_runs');value={**value,'typography_runs':typography_runs(value['typography_runs'])}
     if not split and isinstance(value,dict) and 'list_options' in value:
         keys.add('list_options');value={**value,'list_options':text_list.options(value['list_options'])}
     if not split and isinstance(value,dict) and 'kerning' in value:
@@ -140,6 +218,44 @@ def mapped_parameters(value,split=False):
         split_parameters({'revision':value['revision'],'breaks':value['breaks']})
         if value['breaks'][-1]!=units(value['value']) or value['layout'] not in ('original','lines'):raise ValueError('无效的文字拆分布局')
     return {**value,'origins':list(value['origins']),**({'breaks':list(value['breaks'])} if split else {})}
+
+
+def box_dimensions(value):
+    if not isinstance(value,list) or len(value)!=2 or any(type(side) not in (int,float) or not 1<=side<=100000 for side in value):
+        raise ValueError('文字框尺寸超出范围')
+    return value
+
+
+def box_horizontal_shift(value):
+    if type(value) not in (int,float) or not -100000<=value<=100000:
+        raise ValueError('文字框左边位置超出范围')
+    return value
+
+
+def object_text_box(raw,canvas,frame,document):
+    if (not isinstance(frame,list) or len(frame)!=8 or any(type(value) not in (int,float) or not math.isfinite(value) for value in frame)
+            or not isinstance(document,list) or len(document)!=2 or any(type(value) is not int or value<=0 for value in document)):
+        return None
+    shape=raw['textShape'][0]
+    for transform in (raw.get('transform'),shape.get('transform')):
+        if transform and any(abs(transform.get(key,expected)-expected)>.00001 for key,expected in (('xx',1),('yy',1),('xy',0),('yx',0),('tx',0),('ty',0))):
+            return None
+    left,top,x1,y1,x2,y2,x3,y3=frame
+    width,height=x1-left,y3-top
+    if width<=0 or height<=0 or max(abs(y1-top),abs(x3-left),abs(x2-x1),abs(y2-y3))>.01:return None
+    click=raw.get('textClickPoint',{})
+    anchors=[click.get(key,{}) for key in ('horizontal','vertical')]
+    bounds=shape.get('bounds',{})
+    if any(anchor.get('_unit')!='percentUnit' or type(anchor.get('_value')) not in (int,float) for anchor in anchors):return None
+    if any(type(bounds.get(key)) not in (int,float) for key in ('left','top','right','bottom')):return None
+    size=[bounds['right']-bounds['left'],bounds['bottom']-bounds['top']]
+    if not all(1<=side<=100000 for side in size):return None
+    x,y=(anchor['_value']/100 for anchor in anchors)
+    box=[(left+(x+value/canvas['width'])*width)/document[0] for value in (bounds['left'],bounds['right'])]
+    vertical=[(top+(y+value/canvas['height'])*height)/document[1] for value in (bounds['top'],bounds['bottom'])]
+    box.insert(1,vertical[0]);box.append(vertical[1])
+    if not text_canvas.valid_box(box):return None
+    return size,{'box':box,'wrap':True,'em':0,'color':[0,0,0]}
 
 
 def kerning_edits(rows):
@@ -221,7 +337,7 @@ class TextTools:
             if snapshot.get('proof_available') and snapshot.get('proof_encoding')!='png':
                 snapshot['proof_available']=False
             self.snapshot=snapshot
-            public={key:value for key,value in snapshot.items() if key not in ('style_source','list_xmp','list_paragraphs','object_xmp','object_source','object_render')}
+            public={key:value for key,value in snapshot.items() if key not in ('style_source','list_xmp','list_paragraphs','object_xmp','object_source','object_render','object_frame')}
             if snapshot.get('typography_supported'):
                 model=snapshot.get('object_source')
                 if model and model['schema']==2:
@@ -236,7 +352,14 @@ class TextTools:
                                    and shapes[0].get('columnCount',1)==shapes[0].get('rowCount',1)==1)
                         public['paragraph_indents_supported']=snapshot['paragraph_indents_supported']=supported
                         public['paragraph_alignment_supported']=snapshot['paragraph_alignment_supported']=raw.get('orientation',{}).get('_value')=='horizontal'
-                    public['styles']=style_summary(raw,model['canvas']['resolution'] if model else snapshot['resolution'])
+                        if supported and snapshot.get('box_resize_available'):
+                            geometry=object_text_box(raw,model['canvas'],snapshot.get('object_frame'),snapshot.get('proof_size'))
+                            if geometry:
+                                public['box_size']=snapshot['box_size']=geometry[0]
+                                public['object_text_frame']=geometry[1]
+                    ranges=style_ranges(raw,model['canvas']['resolution'] if model else snapshot['resolution'])
+                    public['styles']=summarize_ranges(ranges)
+                    if snapshot.get('typography_runs_supported'):public['style_ranges']=ranges
                     if snapshot.get('opentype_supported'):
                         fallback=raw['textStyleRange'][0]['textStyle'].get('baseParentStyle')
                         public['font_runs']=[[run['from'],run['to'],font_in_run(run['textStyle'],fallback)]
@@ -277,58 +400,55 @@ class TextTools:
     def table_proof_key(params):
         return (params['revision'],tuple(tuple(row) for row in params['cells']))
     async def vector(self,args,menu_guard=None):
+        history=None
         if isinstance(args,dict) and set(args)=={'revision','plan_id'}:
             if not self.plan or args['plan_id']==self.transient_plan or (args['plan_id'],args['revision'])!=(self.plan[0],self.plan[1]['revision']) or self.plan[2]!='text.replace':raise ValueError('文字对象预览已改变，请先选定字体')
-            _,params,_=self.plan;self.plan=None
+            identity,params,_=self.plan;self.plan=None
+            if self.proved and self.proved[0]==identity:history=self.proved[1]
         else:
             if not isinstance(args,dict) or set(args) not in ({'revision','draft'},{'revision','draft','list_options'}):raise ValueError('文字对象草稿无效')
             result=await self.preview({**args,'operation':'edit'});_,params,_=self.plan;self.plan=None
-        return await self._apply(params,'text.object',menu_guard)
+        return await self._apply(params,'text.object',menu_guard,proof_history=history)
 
     async def preview(self,args):
         self.available();saved=self.snapshot;self.plan=None
         transient=False
+        styles=None
+        style_key=None
+        if isinstance(args,dict) and ('typography' in args or 'typography_runs' in args):
+            if args.get('operation')=='split' or not saved or not saved.get('typography_supported'):
+                raise ValueError('请重新读取支持排版的文字层或矢量文字对象')
+            if 'typography_runs' in args:
+                if 'typography' in args or not saved.get('typography_runs_supported'):
+                    raise ValueError('多范围样式需要更新执行插件并重新读取文本')
+                style_key='typography_runs'
+                styles=typography_runs(args[style_key])
+            else:
+                style_key='typography'
+                styles=[typography(args[style_key])]
+            for style in styles:validate_style_scope(style,saved,args)
+            args={key:value for key,value in args.items() if key!=style_key}
         if isinstance(args,dict) and 'font_preview' in args:
             if (args['font_preview'] is not True or not saved or not saved.get('proof_available') or args.get('operation')!='edit' or
-                    not isinstance(args.get('typography'),dict) or 'fontPostScriptName' not in args['typography']):
+                    not styles or not any('fontPostScriptName' in style for style in styles)):
                 raise ValueError('字体预览参数无效')
             transient=True
             args={k:v for k,v in args.items() if k!='font_preview'}
-        style=None
         kern=None
+        box=None
+        shift=None
+        if isinstance(args,dict) and 'box_size' in args:
+            if not saved or not saved.get('box_size') or args.get('operation')=='split':raise ValueError('当前文字框无法调整尺寸')
+            box=box_dimensions(args['box_size'])
+            if 'box_shift_x' in args:
+                if not saved.get('box_shift_supported'):raise ValueError('当前文字框无法移动左边缘')
+                shift=box_horizontal_shift(args['box_shift_x'])
+            args={key:value for key,value in args.items() if key not in ('box_size','box_shift_x')}
         if isinstance(args,dict) and 'kerning' in args:
             if not saved or not saved.get('kerning_supported') or args.get('operation')!='edit':
                 raise ValueError('手动字偶微调需要打开支持的水平文字并选择编辑')
             kern=kerning_edits(args['kerning'])
             args={key:value for key,value in args.items() if key!='kerning'}
-        if isinstance(args,dict) and 'typography' in args:
-            if args.get('operation')=='split' or not saved or not saved.get('typography_supported'):
-                raise ValueError('请重新读取支持排版的文字层或矢量文字对象')
-            style=typography(args['typography'])
-            if style.keys() & OPENTYPE_STYLES and not saved.get('opentype_supported'):
-                raise ValueError('请更新插件后重新读取 OpenType 设置')
-            if (style.keys() & EXTENDED_STYLES or style.get('leading')=='auto') and not saved.get('extended_typography'):
-                raise ValueError('请更新插件后重新读取扩展排版选项')
-            if (style.keys() & ADVANCED_STYLES or style.get('align','') not in ('','left','center','right')) and not saved.get('advanced_typography'):
-                raise ValueError('请更新插件后重新读取字符和段落选项')
-            if 'color' in style and not saved.get('text_rgb'):
-                raise ValueError('文字取色需要 sRGB 8 位文档')
-            if style.keys() & {'align','hyphenate'} and (args.get('operation')=='list' or args.get('list_options') is not None
-                                     or text_list.read(saved.get('list_xmp','')) is not None):
-                raise ValueError('列表使用自身的段落对齐与断字设置')
-            if 'align' in style and not saved.get('paragraph_alignment_supported'):
-                raise ValueError('段落对齐需要普通水平文字')
-            if (style.get('align','').startswith('justify') or 'hyphenate' in style) and not saved.get('paragraph_indents_supported'):
-                raise ValueError('两端对齐和断字需要水平段落文字')
-            if style.keys() & set(INDENTS) and not saved.get('paragraph_indents_supported'):
-                raise ValueError('请重新读取支持段落缩进的普通文字层')
-            if style.keys() & {'startIndent','firstLineIndent'} and (
-                    args.get('operation')=='list' or args.get('list_options') is not None
-                    or text_list.read(saved.get('list_xmp','')) is not None):
-                raise ValueError('列表的左缩进和首行缩进由列表层级控制')
-            if 'range' in style and (not saved.get('style_scope_supported') or args.get('operation')!='edit'):
-                raise ValueError('局部排版需在排版页确认，请先完成其他正文处理')
-            args={key:value for key,value in args.items() if key!='typography'}
         carried=isinstance(args,dict) and 'list_options' in args
         if carried and args.get('operation') in ('list','split'):raise ValueError('列表草稿参数无效')
         params=parameters({key:value for key,value in args.items() if key!='list_options'} if carried else args)
@@ -340,8 +460,10 @@ class TextTools:
         if self.snapshot is not saved:raise ValueError('文字读取已改变，请重新预览')
         split=result['kind']=='split'
         payload={key:result[key] for key in ({'value','origins','count','breaks','layout'} if split else {'value','origins','count'})}
-        if style:payload['typography']=style
+        if styles:payload[style_key]=styles if style_key=='typography_runs' else styles[0]
         if kern:payload['kerning']=kern
+        if box:payload['box_size']=box
+        if shift is not None:payload['box_shift_x']=shift
         payload['revision']=saved['revision'];payload=mapped_parameters(payload,split)
         if params['operation']=='list' or carried:
             value=args['list_options'] if carried else (None if params['kind']=='remove' else {key:params[key] for key in text_list.KEYS})
@@ -358,6 +480,9 @@ class TextTools:
         if not isinstance(args,dict) or not saved or args.get('revision')!=saved['revision']:
             raise ValueError('请重新读取画布草稿')
         table='cells' in args
+        vector=args.get('vector',False)
+        if type(vector) is not bool or vector and (table or not saved.get('object_proof')):
+            raise ValueError('当前文档尚不支持矢量草稿预览')
         isolated=args.get('isolated',False)
         if type(isolated) is not bool or (isolated and saved.get('isolated_proof') is not True):
             raise ValueError('当前文档尚不支持独立背景预览')
@@ -367,7 +492,7 @@ class TextTools:
             params={'revision':saved['revision'],'cells':text_object.table_cells(args['cells'])}
             key=self.table_proof_key(params)
         else:
-            if (set(args)-{'revision','plan_id','scale','isolated'} or not self.plan or args.get('plan_id')!=self.plan[0]
+            if (set(args)-{'revision','plan_id','scale','isolated','vector'} or not self.plan or args.get('plan_id')!=self.plan[0]
                     or saved['revision']!=self.plan[1]['revision'] or self.plan[2]!='text.replace' or not saved.get('proof_available')):
                 raise ValueError('请重新生成当前排版草稿')
             key,params,_=self.plan
@@ -379,7 +504,7 @@ class TextTools:
             raise ValueError('草稿预览分辨率超出范围')
         if scale>1 and (not self.proved or self.proved[0]!=key):
             raise ValueError('请先获取当前草稿的原尺寸预览')
-        result=await self._apply(params,'text.proof',menu_guard,proof_history=self.proved[1] if scale>1 else None,proof_scale=scale,
+        result=await self._apply(params,'text.proof',menu_guard,proof_history=self.proved[1] if scale>1 else None,proof_scale=scale,vector_proof=vector,
                                  **({'proof_isolated':True} if isolated else {}))
         memory,frame=result['frame']
         if self.snapshot is not saved or (not table and (not self.plan or self.plan[0]!=key)):
@@ -395,13 +520,13 @@ class TextTools:
         proof=self.proved;self.proved=None
         return await self._apply(params,command,menu_guard,proof[1] if proof and proof[0]==identity else None)
 
-    async def _apply(self,params,command,menu_guard=None,proof_history=None,proof_scale=1,proof_isolated=False):
+    async def _apply(self,params,command,menu_guard=None,proof_history=None,proof_scale=1,proof_isolated=False,vector_proof=False):
         self.available()
         snapshot=self.snapshot
         if not snapshot or params['revision']!=snapshot['revision']:raise ValueError('文本预览已过期，请重新读取')
         if 'table' in snapshot and 'cells' not in params:raise ValueError('请在表格页修改单元格')
         proof=command=='text.proof'
-        object_operation=command=='text.object' or snapshot.get('vector_object') or 'cells' in params
+        object_operation=command=='text.object' or vector_proof or snapshot.get('vector_object') or 'cells' in params
         if snapshot.get('vector_object'):
             if command=='text.split':raise ValueError('矢量文字对象暂不支持拆成图层')
             params={**params,'object_source':snapshot['object_source'],'object_render':snapshot['object_render']}
@@ -409,9 +534,22 @@ class TextTools:
             if 'list_xmp' not in snapshot:raise ValueError('列表保存需要正常重启PS加载UXP0.3.81')
             enabled=params['list_options'] is not None
             xml=text_list.write(snapshot['list_xmp'],params['list_options'])
-            if not object_operation:
-                if 'list_paragraphs' not in snapshot:raise ValueError('列表排版需要正常重启PS加载UXP0.3.92')
-                formatting,xml=text_list.formatting(params['value'],params['origins'],snapshot['list_paragraphs'],xml,enabled)
+            model=snapshot.get('object_source')
+            if not model or model['schema']==1:
+                current=snapshot.get('list_paragraphs')
+                if current is None and model:
+                    rows=model['layer']['text']['paragraphStyleRange']
+                    base=rows[0]['paragraphStyle'].get('baseParentStyle',{})
+                    def points(value):
+                        if value==0:return 0
+                        return value['_value']*(72/model['canvas']['resolution'] if value['_unit']=='pixelsUnit' else 1)
+                    current=[]
+                    for row in rows:
+                        style=row['paragraphStyle'];inherited={**base,**style.get('baseParentStyle',{}),**style}
+                        current.append({'from':row['from'],'to':row['to'],'start':points(inherited.get('startIndent',0)),
+                                        'first':points(inherited.get('firstLineIndent',0))})
+                if current is None:raise ValueError('请重新读取支持列表排版的图层')
+                formatting,xml=text_list.formatting(params['value'],params['origins'],current,xml,enabled)
                 params={**params,'list_layout':formatting}
             params={**{key:value for key,value in params.items() if key!='list_options'},'list_xmp':xml}
         app=self.app

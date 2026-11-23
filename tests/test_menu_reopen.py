@@ -135,6 +135,7 @@ class MenuFocusTests(unittest.TestCase):
         desktop.gui = SimpleNamespace(GetForegroundWindow=lambda:foreground[0])
         desktop._is_menu_window = lambda hwnd:hwnd == 2
         desktop._is_photoshop = lambda hwnd:hwnd == 1
+        desktop._workspace_root = lambda hwnd:1 if hwnd==1 else 0
         desktop.require_action_focus()
         foreground[0] = 3
         with self.assertRaisesRegex(RuntimeError, '仅在 Photoshop'):

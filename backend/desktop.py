@@ -207,6 +207,7 @@ class Desktop:
         self.hold_active = False
         self.menu_tools_active = False
         self.text_tool_owner = self.text_tool_foreground = None
+        self.typeset_open = False
         self.restore_pending = False
         self.menu_epoch = 0
         self.menu_context_requester=None
@@ -334,7 +335,8 @@ class Desktop:
             value.update(preview_guard_owner=guard['owner'] if guarded else 0,
                          preview_guard_panel=guard['panel'] if guarded else 0,
                          gradient_window=gradient_window,gradient_owner=gradient_owner,
-                         text_tool_owner=(self.text_tool_owner or 0) if self.visible else 0)
+                         text_tool_owner=(self.text_tool_owner or 0) if self.visible else 0,
+                         typeset_open=bool(self.visible and self.typeset_open))
             payload=json.dumps(value)
             if payload != self.native_payload:
                 try:
@@ -813,6 +815,7 @@ class Desktop:
                 self.hold_active=False;self.menu_tools_active=True
                 self.text_tool_owner=self.target if mode in ('split','typeset') else None
                 self.text_tool_foreground=None
+                self.typeset_open=mode=='typeset'
                 if self.input_focus:self.input_focus.menu_open(mode)
                 self.menu_epoch+=1
                 current=self.menu_epoch
@@ -865,6 +868,7 @@ class Desktop:
     def outside_click(self, point):
         if not self.visible or not self.hwnd:
             return False
+        if self.keep_typeset():return False
         rect = self.gui.GetWindowRect(self.hwnd)
         if rect[0] <= point[0] < rect[2] and rect[1] <= point[1] < rect[3]:
             return False
@@ -924,7 +928,7 @@ class Desktop:
                     if self.hwnd and time.monotonic() >= next_icon_refresh:
                         self.icons.apply(self.hwnd)
                         next_icon_refresh = time.monotonic() + 2
-                    if self.visible and (not scoped or not self._is_photoshop(self.target)):
+                    if self.visible and not self.keep_typeset() and (not scoped or not self._is_photoshop(self.target)):
                         logging.info('Menu auto-hide: scoped=%s foreground=%s target=%s target_valid=%s',
                                      scoped, self.gui.GetForegroundWindow(), self.target, self._is_photoshop(self.target))
                         self.hide(restore=False)
@@ -943,6 +947,14 @@ class Desktop:
                     delay=2
             except Exception:
                 logging.exception("Window monitor failed")
+
+    @window_transition
+    def keep_typeset(self):
+        # This controls lifetime only. Host commands still require _scope().
+        owner=self.text_tool_owner
+        return bool(self.visible and self.hwnd and self.typeset_open and self.settings['enabled'] and owner and
+                    self.gui.IsWindow(owner) and self.gui.GetWindow(self.hwnd,4)==owner and
+                    self.gui.GetClassName(owner)=='Photoshop')
 
     @window_transition
     def _keep_text_tool_above_workspace(self):
@@ -1110,6 +1122,7 @@ class Desktop:
             raise RuntimeError("Photoshop 焦点已改变，已取消唤出")
         self.menu_tools_active = False
         self.text_tool_owner = self.text_tool_foreground = None
+        self.typeset_open = False
         self.visible = True
         self.preview_hint_anchor=[bounds[0]+anchor,
             round(bounds[1]+bounds[3]*.5)]
@@ -1405,6 +1418,7 @@ class Desktop:
         self.hold_active = False
         self.menu_tools_active = False
         self.text_tool_owner = self.text_tool_foreground = None
+        self.typeset_open = False
         if self.hwnd and self.gui.IsWindow(self.hwnd):
             self.gui.ShowWindow(self.hwnd, 0)
         self._native_config()
@@ -1426,6 +1440,7 @@ class Desktop:
 
     def dismiss(self):
         with self.window_lock:
+            if self.keep_typeset():return {'message':'画布排版草稿已保留'}
             inspection=getattr(self,'_stability_inspection',None)
             if inspection and not self._is_photoshop(self.gui.GetForegroundWindow()):
                 try:

@@ -150,6 +150,10 @@ class UxpTransport:
                 if 'cells' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,120):raise RuntimeError('表格需要加载 UXP 0.3.120')
                 if 'typography' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,118):
                     raise RuntimeError('文字排版需要正常重启PS加载UXP0.3.118')
+                if 'typography_runs' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,136):
+                    raise RuntimeError('多范围排版需要加载 UXP 0.3.136；未提交修改')
+                if 'box_shift_x' in payload.get('text',{}) and version(heartbeat.get('probe_version'))<(0,3,137):
+                    raise RuntimeError('拖动文字框左边缘需要加载 UXP 0.3.137')
                 if 'range' in payload.get('text',{}).get('typography',{}) and version(heartbeat.get('probe_version'))<(0,3,119):
                     raise RuntimeError('局部排版需要正常重启PS加载UXP0.3.119')
                 if {'startIndent','endIndent','firstLineIndent'}.intersection(payload.get('text',{}).get('typography',{})) and version(heartbeat.get('probe_version'))<(0,3,122):
@@ -217,6 +221,8 @@ class UxpTransport:
                 if 'proof_isolated' in payload and version(heartbeat.get('probe_version'))<(0,3,128):
                     raise RuntimeError('独立背景预览需要 UXP 0.3.128')
                 text_object=payload.get('command')=='text.object'
+                if ('box_size' in payload.get('text',{}) or text_object and 'list_layout' in payload.get('text',{})) and version(heartbeat.get('probe_version'))<(0,3,135):
+                    raise RuntimeError('文字框尺寸和矢量列表需要加载 UXP 0.3.135')
                 if text_object and ('object_proof' in payload or 'proof_history' in payload) and version(heartbeat.get('probe_version'))<(0,3,127):
                     raise RuntimeError('矢量草稿需要 UXP 0.3.127')
                 if text_object and (native_preview is None or version(heartbeat.get('probe_version'))<(0,3,100)):
@@ -695,6 +701,10 @@ class UxpBridge(PhotoshopBridge):
                 try:
                     model=ready['prepared']['source'];encoded=text_object.source(model)
                     xml=text_object.write('' if ready['prepared']['kind']=='new-table' else ready['prepared']['before_xmp'],model)
+                    edit={key:params[key] for key in ('origins','typography','typography_runs','list_layout') if key in params}
+                    if existing and existing['schema']==1:
+                        edit['original_text']=existing['layer']['text']['textKey']
+                        edit['previous_fallbacks']=text_object.font_fallbacks(ready['prepared']['before_xmp'],edit['original_text'])
                     ready['prepared']['source_sha256']=hashlib.sha256(encoded).hexdigest()
                     if model.get('renderer')=='list-v1':
                         from .text_object_render import render
@@ -710,7 +720,7 @@ class UxpBridge(PhotoshopBridge):
                     rejected={**{k:request[k] for k in ('id','session','operation','token')},'schema':1,'phase':'failed','error':str(error),'not_executed':True,'result_unknown':False,'execution_exit':{'engine':'backend-preflight','not_started':True,'exited':True}}
                     atomic_json(folder/('legacy-result-'+request['id']+'.json'),rejected)
                     return json.dumps(rejected)
-                return invoke(application,folder,request,ready,model,xml)
+                return invoke(application,folder,{**request,'edit':edit},ready,model,xml)
             try:
                 response=self.transport.call('set_label',command='text.object',target=self._captured_target,text=params,native_preview=native,
                     **({'object_proof':True,'proof_scale':proof_scale} if proof_scale is not None else {}),

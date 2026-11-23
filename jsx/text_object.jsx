@@ -2,7 +2,7 @@
 (function(){
     var request=__PS_MENU_TEXT_OBJECT_REQUEST__,s=stringIDToTypeID,c=charIDToTypeID;
     var prepared=request.prepared,source=request.source,doc=null,anchor=null,work=null,history=null,historyId=null,changed=false,result,colorType,colorValue,documentsBefore=null,dialogs=null,identityConflict=false;
-    var proof=request.object_proof===true,scale=request.proof_scale||1,proofUnknown=false;
+    var proof=request.object_proof===true,scale=request.proof_scale||1,proofUnknown=false,fontFallbacks=[];
     var isolated=proof&&request.proof_isolated===true;
     var folder=new Folder(request.folder),pdf=new File(folder+'/text-object-'+request.id+'.pdf'),receipt=new File(folder+'/legacy-result-'+request.id+'.json');
     var proofFile=new File(folder+'/text-proof-'+request.id+'.png');
@@ -39,7 +39,11 @@
     function renderHash(suffix){var file=new File(folder+'/text-object-'+suffix+'-'+request.id+'.pdf');if(file.exists)throw Error('Render evidence already exists');var a=new ActionDescriptor();a.putPath(c('null'),file);executeAction(s('placedLayerExportContents'),a,DialogModes.NO);if(file.length>16777216)throw Error('Vector source exceeds16MiB');file.encoding='BINARY';if(!file.open('r'))throw Error('Cannot read vector source');try{var bytes=file.read();if(bytes.slice(0,5)!=='%PDF-')throw Error('Vector source format mismatch');return sha256(bytes);}finally{file.close();}}
     function finalMetadata(){
         var digest=renderHash('render');if(!ExternalObject.AdobeXMPScript)ExternalObject.AdobeXMPScript=new ExternalObject('lib:AdobeXMPScript');
-        XMPMeta.registerNamespace('https://15100px.menu/ns/text-object/1.0/','pxText');var meta=new XMPMeta(request.xmp);meta.setProperty('https://15100px.menu/ns/text-object/1.0/','render',digest);request.xmp=meta.serialize();
+        var ns='https://15100px.menu/ns/text-object/1.0/';XMPMeta.registerNamespace(ns,'pxText');
+        var meta=new XMPMeta(request.xmp);meta.setProperty(ns,'render',digest);
+        if(fontFallbacks.length)meta.setProperty(ns,'fontFallbacks',encode(fontFallbacks));
+        else meta.deleteProperty(ns,'fontFallbacks');
+        request.xmp=meta.serialize();
         var value={schema:1,id:request.id,session:request.session,operation:request.operation,token:request.token,xmp:request.xmp},file=new File(folder+'/text-object-final-'+request.id+'.json');if(file.exists)throw Error('Final source evidence already exists');file.encoding='UTF-8';if(!file.open('w'))throw Error('Cannot persist final source evidence');try{file.write(encode(value));}finally{file.close();}
     }
     function target(start){
@@ -70,7 +74,7 @@
         var a=new ActionDescriptor(),r=new ActionReference();r.putEnumerated(s('textLayer'),s('ordinal'),s('targetEnum'));a.putReference(s('null'),r);a.putObject(s('to'),s('textLayer'),descriptor(to));executeAction(s('set'),a,DialogModes.NO);
     }
     function signature(style){var o={},key;if(style.baseParentStyle)o=signature(style.baseParentStyle);for(key in style)if(style.hasOwnProperty(key)&&key!=='_obj'&&key!=='baseParentStyle'&&key!=='styleSheetHasParent'&&key!=='fontAvailable'&&key!=='fontName'&&key!=='fontStyleName'&&key.indexOf('implied')!==0)o[key]=style[key];return o;}
-    function checkText(actual,wanted){
+    function checkText(actual,wanted,original,edit){
         if(actual.textKey!==wanted.textKey)throw Error('Text source content readback mismatch');
         function pairs(value){
             var out=[],rows=value.kerningRange||[],previous=0;
@@ -88,6 +92,44 @@
             return out;
         }
         if(encode(pairs(actual))!==encode(pairs(wanted)))throw Error('Native kerning readback mismatch');
+        function glyphAt(text,offset){
+            if(typeof offset!=='number'||offset<0||offset>=text.length)return '';
+            var code=text.charCodeAt(offset);
+            if(code>=0xdc00&&code<=0xdfff&&offset>0)offset--;
+            code=text.charCodeAt(offset);
+            return text.substr(offset,code>=0xd800&&code<=0xdbff?2:1);
+        }
+        function allowsFallback(offset,font,replacement){
+            if(!original||!edit||!edit.origins||offset>=edit.origins.length)return false;
+            var styles=edit.typography_runs||(edit.typography?[edit.typography]:[]);
+            for(var i=0;i<styles.length;i++){
+                var style=styles[i],range=style.range;
+                if(style.fontPostScriptName&&(!range||offset>=range[0]&&offset<range[1]))return false;
+            }
+            if(edit.list_layout&&edit.list_layout.marker_font==='SegoeUISymbol'&&font==='SegoeUISymbol')return false;
+            var origin=edit.origins[offset];
+            if(glyphAt(wanted.textKey,offset)!==glyphAt(original.textKey,origin))return true;
+            var rows=edit.previous_fallbacks||[],lo=0,hi=rows.length;
+            while(lo<hi){
+                var middle=Math.floor((lo+hi)/2),row=rows[middle];
+                if(origin<row[0])hi=middle;
+                else if(origin>=row[1])lo=middle+1;
+                else return row[2]===replacement;
+            }
+            return false;
+        }
+        var fallbacks=[];
+        // Photoshop can expand a sparse Optyca paragraph to explicit defaults on a new text layer.
+        var optycaDefaults={
+            align:{_enum:'alignmentType',_value:'left'},autoLeadingPercentage:1.2,
+            burasagari:{_enum:'burasagari',_value:'burasagariStandard'},hangingRoman:false,hyphenate:false,
+            justificationGlyphDesired:1,justificationGlyphMaximum:1,justificationGlyphMinimum:1,
+            justificationLetterDesired:0,justificationLetterMaximum:0,justificationLetterMinimum:0,
+            justificationWordDesired:1,justificationWordMaximum:1.33,justificationWordMinimum:.8,
+            kashidaWidthType:{_enum:'kashidaWidthType',_value:'kashidaWidthMedium'},
+            leadingType:{_enum:'leadingType',_value:'leadingBelow'},
+            preferredKinsokuOrder:{_enum:'preferredKinsokuOrder',_value:'pushIn'},textEveryLineComposer:true
+        };
         var keys=['textStyleRange','paragraphStyleRange'];
         for(var k=0;k<keys.length;k++){
             var field=k===0?'textStyle':'paragraphStyle',a=actual[keys[k]],b=wanted[keys[k]],ai=0,bi=0;
@@ -97,9 +139,18 @@
                 // The PostScript name identifies the face; Photoshop recalculates its script and technology tags.
                 if(k===0&&typeof o.fontPostScriptName==='string'){delete o.fontScript;delete o.fontTechnology;}
                 if(k===0&&o.autoLeading===true)delete o.leading;
-                if(k===1&&o.hyphenate===true){
+                if(k===1){
                     var defaults={hyphenateLimit:0,hyphenateCapitalized:true,hyphenationZone:36,hyphenatePreLength:2,hyphenatePostLength:2,hyphenateWordSize:6};
-                    for(var fieldName in defaults)if(defaults.hasOwnProperty(fieldName)&&o[fieldName]===undefined)o[fieldName]=defaults[fieldName];
+                    // Photoshop can materialize a shared dictionary's settings on a paragraph
+                    // with hyphenation off. Those fields affect rendering only when it is on.
+                    for(var fieldName in defaults)if(defaults.hasOwnProperty(fieldName)){
+                        if(o.hyphenate!==true)delete o[fieldName];
+                        else if(o[fieldName]===undefined)o[fieldName]=defaults[fieldName];
+                    }
+                }
+                if(k===1&&o.textComposerEngine&&o.textComposerEngine._value==='textOptycaComposer'&&
+                    o.directionType&&o.directionType._value==='dirLeftToRight'){
+                    for(var fieldName in optycaDefaults)if(optycaDefaults.hasOwnProperty(fieldName)&&near(o[fieldName],optycaDefaults[fieldName]))delete o[fieldName];
                 }
                 var keys=k===0?['baselineShift']:['startIndent','endIndent','firstLineIndent','spaceBefore','spaceAfter'];
                 for(var q=0;q<keys.length;q++){
@@ -108,9 +159,21 @@
                     else if(b&&b._unit==='pointsUnit')o[key]=Math.round(b._value*source.canvas.resolution/72*1000)/1000;
                     else if(b&&b._unit==='pixelsUnit')o[key]=Math.round(b._value*1000)/1000;
                 }
-                var complete=encode(o),kerning=o.autoKern&&o.autoKern._value;
+                if(k===1)for(var key in o)if(o.hasOwnProperty(key)&&/^justification(?:Word|Letter|Glyph)(?:Minimum|Desired|Maximum)$/.test(key)&&typeof o[key]==='number')
+                    o[key]=Math.round(o[key]*100000)/100000;
+                var complete=encode(o),kern=o.autoKern,font=o.fontPostScriptName,fields={};
+                for(var key in o)if(o.hasOwnProperty(key))fields[key]=o[key];
+                var available=false;
+                if(k===0){
+                    var style=rows[index][field],parent=style.baseParentStyle;
+                    available=style.fontAvailable===true;
+                    if(!available&&parent)available=parent.fontAvailable===true;
+                }
                 delete o.autoKern;
-                return {complete:complete,kerning:kerning,kernless:encode(o)};
+                var kernless=encode(o);
+                if(kern)o.autoKern=kern;
+                delete o.fontPostScriptName;
+                return {complete:complete,kerning:kern?kern._value:null,kernless:kernless,font:font,fontless:encode(o),available:available,fields:fields};
             }
             var left=[],right=[],j;for(j=0;j<a.length;j++)left.push(effective(a,j));for(j=0;j<b.length;j++)right.push(effective(b,j));
             for(var offset=0;offset<wanted.textKey.length;offset++){
@@ -119,9 +182,33 @@
                 var spanA=left[ai],spanB=right[bi],text=wanted.textKey;
                 var noPair=k===0&&(offset===text.length-1||text.charAt(offset)==='\r'||text.charAt(offset+1)==='\r');
                 var terminalKern=noPair&&spanA.kerning==='metricsKern'&&spanB.kerning==='opticalKern'&&spanA.kernless===spanB.kernless;
-                if(spanA.complete!==spanB.complete&&!terminalKern)throw Error('Text source style readback mismatch');
+                // Photoshop selects an installed font for a newly entered glyph missing in the current face.
+                var fallback=k===0&&spanA.available&&typeof spanA.font==='string'&&spanA.font!==spanB.font&&
+                    spanA.fontless===spanB.fontless&&allowsFallback(offset,spanB.font,spanA.font);
+                if(spanA.complete!==spanB.complete&&!terminalKern&&!fallback){
+                    var fieldNames={},different=[];
+                    for(var name in spanA.fields)if(spanA.fields.hasOwnProperty(name))fieldNames[name]=true;
+                    for(var name in spanB.fields)if(spanB.fields.hasOwnProperty(name))fieldNames[name]=true;
+                    for(var name in fieldNames)if(fieldNames.hasOwnProperty(name)){
+                        var x=spanA.fields[name],y=spanB.fields[name];
+                        var leftValue=typeof x==='undefined'?'undefined':encode(x);
+                        var rightValue=typeof y==='undefined'?'undefined':encode(y);
+                        if(leftValue!==rightValue)different.push(name+(k===1&&
+                            (typeof x==='number'||typeof x==='boolean'||typeof x==='undefined')&&
+                            (typeof y==='number'||typeof y==='boolean'||typeof y==='undefined')?
+                            '='+leftValue+'/'+rightValue:''));
+                    }
+                    throw Error('Text source style readback mismatch: '+field+' at '+offset+' '+different.sort().join(', '));
+                }
+                if(fallback){
+                    var previous=fallbacks[fallbacks.length-1];
+                    if(previous&&previous[1]===offset&&previous[2]===spanA.font)previous[1]++;
+                    else fallbacks.push([offset,offset+1,spanA.font]);
+                }
             }
         }
+        if(fallbacks.length>1024)throw Error('Too many resolved font fallback ranges');
+        return fallbacks;
     }
     function checkSourceFonts(raw){var runs=raw.textStyleRange;for(var i=0;i<runs.length;i++){var font=signature(runs[i].textStyle).fontPostScriptName;if(typeof font!=='string'||!font)throw Error('Source font identity missing');try{app.fonts.getByName(font);}catch(e){throw Error('Source font unavailable: '+font);}}}
     function layout(value){var shape=value.textShape&&value.textShape[0];return {orientation:value.orientation,transform:value.transform,warp:value.warp&&value.warp.warpStyle&&value.warp.warpStyle._value==='warpNone'?value.warp.warpStyle:value.warp,shape:{'char':shape['char'],orientation:shape.orientation,transform:shape.transform,bounds:shape['char']._value==='box'?shape.bounds:null}};}
@@ -214,7 +301,7 @@
             if(!more.size||Math.abs(more.size.width*px-w)>.01||Math.abs(more.size.height*px-h)>.01||fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01)throw Error('Table intrinsic size or placement mismatch');
             expected=[frame[0],frame[1],frame[0]+fw,frame[1],frame[0]+fw,frame[1]+fh,frame[0],frame[1]+fh];
         }
-        if(prepared.kind==='text'&&Math.abs(frame[2]-frame[0]-source.canvas.width)<.01&&Math.abs(frame[5]-frame[1]-source.canvas.height)<.01&&Math.abs(frame[3]-frame[1])<.01&&Math.abs(frame[6]-frame[0])<.01){created.translate(UnitValue(-frame[0],'px'),UnitValue(-frame[1],'px'));frame=object(property('smartObjectMore')).smartObjectMore.transform;}
+        if(prepared.kind==='text'&&Math.abs(frame[2]-frame[0]-expected[2])<.01&&Math.abs(frame[5]-frame[1]-expected[5])<.01&&Math.abs(frame[3]-frame[1])<.01&&Math.abs(frame[6]-frame[0])<.01){created.translate(UnitValue(-frame[0],'px'),UnitValue(-frame[1],'px'));frame=object(property('smartObjectMore')).smartObjectMore.transform;}
         if(!expected||frame.length!==8)throw Error('Text object frame missing');for(var i=0;i<8;i++)if(Math.abs(frame[i]-expected[i])>.01)throw Error('Text object placement readback mismatch: '+encode({crop:more.crop,frame:frame,expected:expected,size:more.size}));
         if(created.parent.typename!==anchor.parent.typename||created.parent.id!==anchor.parent.id)throw Error('Vector object parent changed');
         finalMetadata();setMetadata(request.xmp);if(metadata()!==request.xmp)throw Error('Text object metadata readback mismatch');
@@ -249,7 +336,10 @@
         if(hasKerns)copy.textItem.position=position;
         applyText(raw);
         if(!hasKerns)copy.textItem.position=position;
-        var actualText=rawText();checkText(actualText,source.layer.text);if(!near(layout(actualText),layout(source.layer.text)))throw Error('Text source layout readback mismatch');
+        var edit=request.edit;
+        var original=prepared.before_text||(edit&&typeof edit.original_text==='string'&&{textKey:edit.original_text});
+        var actualText=rawText();fontFallbacks=checkText(actualText,raw,original,edit);
+        if(!near(layout(actualText),layout(raw)))throw Error('Text source layout readback mismatch');
         if(Math.abs(actualText.textClickPoint.horizontal._value-click.horizontal._value)>.00001||Math.abs(actualText.textClickPoint.vertical._value-click.vertical._value)>.00001)throw Error('Text anchor readback mismatch');
         for(var j=0;j<layers.length;j++)layers[j].visible=false;
         var options=new PDFSaveOptions();options.preserveEditing=false;options.embedColorProfile=true;

@@ -554,28 +554,28 @@
       "operation": "type.size",
       "authorship": "Figma-style extension, not an original component",
       "asset": "native/figma-inspired-assets/type-size.svg",
-      "sha256": "786ec16e8957a9d42d63cdd067fa1725b4b7bab37a2aed08ad784b0096d2bd71",
+      "sha256": "936553cd2d65ee51431edf3e5abae6fc929ecdeabd2e32896398660624e46064",
       "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
     },
     {
       "operation": "type.leading",
       "authorship": "Figma-style extension, not an original component",
       "asset": "native/figma-inspired-assets/type-leading.svg",
-      "sha256": "c15d82d416d2d449697ce08a0a9ba8330982d2c857b0fa1e062eb65cf7618e56",
+      "sha256": "f38b5b6bc0b7691a1bbb0bf568c4083c6f24dc77adbc2a664e4971141da3d168",
       "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
     },
     {
       "operation": "type.tracking",
       "authorship": "Figma-style extension, not an original component",
       "asset": "native/figma-inspired-assets/type-tracking.svg",
-      "sha256": "01557e55a6c22eca36893677b19dd2735f2f95e8fa576dc157caf6d82d6f9d46",
+      "sha256": "adc93aef7436c71a484d01ad792cc3d1d1f7641aad237d6c983356d8f15bc38d",
       "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
     },
     {
       "operation": "type.kerning",
       "authorship": "Figma-style extension, not an original component",
       "asset": "native/figma-inspired-assets/type-kerning.svg",
-      "sha256": "544a90c87fbfa669f709707e0b888a3803ba1dee258b6289e4687464a01b7ea0",
+      "sha256": "a4ecb9501a58ddaac0614b25314882fa3f2e41bcdad6be643be51e7fe1b65919",
       "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
     },
     {
@@ -661,11 +661,249 @@
       "asset": "native/figma-inspired-assets/type-decoration.svg",
       "sha256": "34d9c635d54ce91386b25416ec21c3b455a5ccb320cf99a07a0330f57aae76ed",
       "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "typeset.zoom-out",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-zoom-out.svg",
+      "sha256": "c0621bf18ac7f52a640f08daac4588e40510e2c11507b0f2b28b8e48673ed5f1",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.zoom-in",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-zoom-in.svg",
+      "sha256": "b87b4aed0a14e96ca556b85c22d6918cfe0b2cde8165b030cf78c7d7ce067778",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.fit",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-fit.svg",
+      "sha256": "30cfcc739e439558130917bc2be17585ef1bc21b35d273a995890de879e8e633",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.document-background",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-document-background.svg",
+      "sha256": "8ced87245b093c589c6beda825f2c5f64013017c055f9ce8c3da00acaf188ef3",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.transparency",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-transparency.svg",
+      "sha256": "ca08c7adcd609bced03a43579b9cfc4589c91c3b75d81c0d12b564664576600b",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.find",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-find.svg",
+      "sha256": "3d588d0c4acaa1f7a153480adaf1975df31b7e7d207c3dd68f99259173cd1669",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.clean-text",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-clean-text.svg",
+      "sha256": "b4c03e58d265349a76da25a3b62b907e5ecf4dd7ff0a1442d54dca8be45c466d",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.split-text",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-split-text.svg",
+      "sha256": "68343b7777c8a6718f3a14b6bab1a8cb8cfedea53c1a1a3b7ec2b4522b4c531f",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "list.bullet",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/list-bullet.svg",
+      "sha256": "c6beda3541e255e150c07caad3feb25cb257ad9e06d8af19e9c4c5f3140181c2",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "list.number",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/list-number.svg",
+      "sha256": "bddd0768883d826d67d4fc2a88ccdd183634ea7e99d30784e6813ae355264c4f",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "list.clear",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/list-clear.svg",
+      "sha256": "5bbf75db4602c4c0e2aad521f6a9c6da8c25054a1c40f12d0847c103ee4a13d7",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.table",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-table.svg",
+      "sha256": "137272858c4e3a818ba9c20f7fdc37a4f3091962a1df545e473b94a63be673a9",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.retry",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-retry.svg",
+      "sha256": "70b2066f2bc38b033ca07b2fcac4c2c93e2ac38f5392ccf5a9d3b57d2e1dc6f2",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "typeset.restore-value",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/typeset-restore-value.svg",
+      "sha256": "df4f22a80bfc59476db1ef88aa6a7c83496a73eb052327f171a91ddd633d1a23",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.case",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-case.svg",
+      "sha256": "94d521d8ec509b607964908769e4307a5ef20f03d42a2623dd43b06342b501b4",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.super-subscript",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-super-subscript.svg",
+      "sha256": "d438debc02f70857bc177ea87a45a22ac44f311eed8aba78604e945d5d7d6b1f",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.underline",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-underline.svg",
+      "sha256": "8b5379663983f7dbca10b2af35912f56c5eedaf5590040e92fa72c9ee033a6f6",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.strikethrough",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-strikethrough.svg",
+      "sha256": "ff78934747245e26148a768600b28037e0aa907ad8d6c0fd506ff4bfb3fa34cf",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.italic",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-italic.svg",
+      "sha256": "38fb73b1648746bd14f580b10ce1f852b295f56bf89e1412b07f6c24c0ec68ec",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.ligature",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-ligature.svg",
+      "sha256": "721e132ebfffb1c8e29d3c1a7478b21bf5f2a6cb5249d6b7b0a27c2cfd996863",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "table.add-row",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/table-add-row.svg",
+      "sha256": "4e73cea43bde7e3a4b75d0c94f38f15189b1bce6a0e9f1dd683467f56c1a97ab",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "table.remove-row",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/table-remove-row.svg",
+      "sha256": "c3034c82baab5eab35a1530f54e4842003eb824ac3569c6c0fe5edf3e1443c27",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "table.add-column",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/table-add-column.svg",
+      "sha256": "5d2e9c1aeca1af1ee5951a531e374291129c5ffd1e354e357b48d73c9d21dd3e",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "table.remove-column",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/table-remove-column.svg",
+      "sha256": "225a874b215c6bc7804470d8fcc50798de176e82aa80427e76dcd6c39bc3e197",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "list.outdent",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/list-outdent.svg",
+      "sha256": "9d739df037e26be310648e7d3f4a7b0f73244f789489e1647337591e5e3e50c0",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "list.indent",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/list-indent.svg",
+      "sha256": "19b7a35bff95f08e7c7100f6f22595b0281300a7b5b6fdc82e7ca0dc0edbd5d4",
+      "adaptation": "Familiar typesetting or view-control symbol redrawn on the project nine-unit grid"
+    },
+    {
+      "operation": "type.figure-style",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-figure-style.svg",
+      "sha256": "9211d23bc5e8744d4850af2845a061fb82a652b9c2a1d331e05408929771bd13",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.contextual-ligatures",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-contextual-ligatures.svg",
+      "sha256": "b4605b8b6e5c1e789c76ba0af03e2fce0f1b06445e0f12378d62309b3a79dcc2",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.stylistic-alternates",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-stylistic-alternates.svg",
+      "sha256": "8150bb5a96de54c740a7ec2ec11ebfcf44d939fc19797b15acbc87c472cce314",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.swash",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-swash.svg",
+      "sha256": "b32dbafb7d357e3af51fe4480a9d0e9be0923b0eb921f1a6a2fc1c1158e87695",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.titling",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-titling.svg",
+      "sha256": "75c119a8f1dbbd995c3cf8e1ea4f2e3f35660242e6fe3bdea65284d13bae9d66",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.ornaments",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-ornaments.svg",
+      "sha256": "0bb58268011c63b941201fc7df10f2522716960792a63a4cd37c6e0979797227",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.fractions",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-fractions.svg",
+      "sha256": "30554bb88bf206533ac80a2460b67efe21e04d788915c09cf9d945b5a2f97ace",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
+    },
+    {
+      "operation": "type.ordinals",
+      "authorship": "Figma-style extension, not an original component",
+      "asset": "native/figma-inspired-assets/type-ordinals.svg",
+      "sha256": "82b85d2c3b46505d557668578aecd51c3feb27a6454c13fac0c91c3551278c10",
+      "adaptation": "Nine-unit grid, one-unit linework and original monochrome tones"
     }
   ],
   "extension_source": {
     "file": "native/figma-inspired-icons.json",
-    "sha256": "17da36cfe19f40e8806babe45481c0e47adfc7ebd15e763efe250b18a52367d6",
+    "sha256": "e2a96a49a3b2339f540442ab6bc117f7f4408f2e54ceb29ee906a68dbae16358",
     "reference_nodes": [
       "809:619",
       "346:6",

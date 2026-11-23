@@ -19,7 +19,7 @@
 enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers, FrameCommit, FrameRestore, CycleScreenMode };
 static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame", "layer.frame.commit", "layer.frame.restore", "view.screenMode"};
 struct Binding { Action action=None; std::array<int,6> keys{}; int count=0; };
-struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false; HWND overlay=nullptr,gradient=nullptr,gradientOwner=nullptr,textToolOwner=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; };
+struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false,typesetOpen=false; HWND overlay=nullptr,gradient=nullptr,gradientOwner=nullptr,textToolOwner=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; };
 // Opt-in remote clicks qualify only on a matching release in the same verified
 // PS workspace. No hover, taskbar or injected Alt+Tab activation is added.
 struct RemoteClickIntent {
@@ -529,7 +529,7 @@ static HWND remoteWorkspace(HWND child) {
     return childPid && childPid==rootPid?GetAncestor(root,GA_ROOTOWNER):nullptr;
 }
 static bool textToolAllowsClick(const Config& settings,int index,HWND workspace) {
-    return index==0 && settings.enabled && settings.textToolOwner && workspace==settings.textToolOwner;
+    return settings.enabled && settings.textToolOwner && (settings.typesetOpen || (index==0 && workspace==settings.textToolOwner));
 }
 static bool gradientWorkspace(HWND hwnd,const Config& settings) {
     if(!hwnd || !settings.gradientOwner || GetAncestor(hwnd,GA_ROOTOWNER)!=settings.gradientOwner)return false;
@@ -1024,7 +1024,7 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                     menuWindow(clicked) && photoshopProcessWindowFast(target),lastInputTick);
             }
             bool visible=IsWindowVisible(config.overlay);
-            if (visible && index==1 && scope()) {
+            if (visible && index==1 && scope() && (!config.typesetOpen || menuWindow(root))) {
                 // Explicit right-click cancellation owns the click, so return
                 // focus through Hide rather than outside-click Dismiss.
                 keys.cancelGesture();
@@ -1032,8 +1032,8 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
             }
             const bool hostClick=config.enabled && photoshop(root) && photoshopProcessWindowFast(root);
             if (hostClick){advanceInput();emit(PanelClick,clicked,root);}
-            const bool keepText=visible && config.textToolOwner && hostClick &&
-                textToolAllowsClick(config,index,remoteWorkspace(clicked));
+            const bool keepText=visible && (config.typesetOpen || hostClick) &&
+                textToolAllowsClick(config,index,hostClick?remoteWorkspace(clicked):nullptr);
             if (visible && !keepText && !inside(config.overlay,point) && !menuWindow(root)) {
                 bool scoped=scope();
                 if (!dismissPending) { dismissPending=true; emit(Dismiss); }
@@ -1092,6 +1092,7 @@ static Config parse(const std::string& line) {
     if(std::regex_search(line,match,std::regex("\"gradient_window\"\\s*:\\s*([0-9]+)")))next.gradient=reinterpret_cast<HWND>(std::stoull(match[1]));
     if(std::regex_search(line,match,std::regex("\"gradient_owner\"\\s*:\\s*([0-9]+)")))next.gradientOwner=reinterpret_cast<HWND>(std::stoull(match[1]));
     if(std::regex_search(line,match,std::regex("\"text_tool_owner\"\\s*:\\s*([0-9]+)")))next.textToolOwner=reinterpret_cast<HWND>(std::stoull(match[1]));
+    if(std::regex_search(line,match,std::regex("\"typeset_open\"\\s*:\\s*(true|false)")))next.typesetOpen=match[1]=="true";
     if(std::regex_search(line,match,std::regex("\"configuration_sequence\"\\s*:\\s*([0-9]+)")))next.sequence=std::stoull(match[1]);
     if(std::regex_search(line,match,std::regex("\"preview_guard_owner\"\\s*:\\s*([0-9]+)")))next.guardOwner=reinterpret_cast<HWND>(std::stoull(match[1]));
     if(std::regex_search(line,match,std::regex("\"preview_guard_panel\"\\s*:\\s*([0-9]+)")))next.guardPanel=reinterpret_cast<HWND>(std::stoull(match[1]));
@@ -1337,6 +1338,8 @@ static int selfTest() {
         text.textToolOwner=owner;
         check(textToolAllowsClick(text,0,owner) && !textToolAllowsClick(text,1,owner) &&
             !textToolAllowsClick(text,0,foreign) && !textToolAllowsClick(text,0,nullptr));
+        text.typesetOpen=true;
+        check(textToolAllowsClick(text,0,foreign) && textToolAllowsClick(text,1,owner) && textToolAllowsClick(text,0,nullptr));
         text.enabled=false;check(!textToolAllowsClick(text,0,owner));
     }
     for(int button=0;button<3;++button){
