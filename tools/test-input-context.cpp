@@ -237,6 +237,12 @@ int main(int argc,char** argv) {
         check(SUCCEEDED(manager->SetFocus(document)),"policy TSF initial context");
         check((SendMessageW(control,controlMessage,(12345<<8)|5,1)&0x120)==0x120 &&
             tsf.currentDisabled(),"focus policy did not disable the current TSF context");
+        value.vt=VT_I4;value.lVal=0;
+        check(SUCCEEDED(keyboard->SetValue(client,&value)) && !tsf.currentDisabled(),"focus policy fixture did not reset TSF");
+        VariantClear(&value);
+        dispatchContextEvents();
+        check(tsf.currentDisabled() && !associated(policyCanvas) && GetKeyboardLayout(0)==layout,
+            "focus policy waited for polling after a TSF notification");
         // Pass a held Zoom shortcut through the production queue hook on our own canvas.
         const auto zoomMessage=[&](UINT kind,LPARAM flags){
             check(PostMessageW(policyCanvas,kind,'Z',flags)!=0,"queue Z");

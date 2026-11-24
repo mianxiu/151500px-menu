@@ -1,6 +1,8 @@
 """Caps-owned views of the existing search and single-history text tools."""
 import asyncio
 import json
+import logging
+import time
 from .layer_context import fresh
 from .layer_search import LayerSearch, require_available
 from .text_tools import TextTools
@@ -24,8 +26,7 @@ class MenuTools:
         if epoch is not None and (type(epoch) is not int or epoch<=0):raise ValueError('无效的菜单会话')
         mode=params.get('mode','search')
         if mode not in ('search','split','typeset'):raise ValueError('未知的Caps工具')
-        if mode=='typeset' and not text_canvas.connection(self.app.runtime,self.app.desktop.target):
-            raise RuntimeError('当前 Photoshop 尚未连接画布读取组件')
+        started=time.monotonic()
         require_available(self.app)
         if self.pending or self.app.panel_lock.locked():raise RuntimeError('工具正在处理，本次未接受')
         async with self.app.panel_lock:
@@ -42,6 +43,7 @@ class MenuTools:
             if mode=='typeset':
                 event['view_settings']=typeset_settings.load(self.app.runtime/'typeset-view.json')
                 event['style_library']=typeset_settings.load_styles(self.app.runtime/'typeset-styles.json')
+                logging.info('Typeset epoch=%s stage=open elapsed_ms=%d',epoch,(time.monotonic()-started)*1000)
             self.app.desktop.event(event)
         return {'message':'Caps工具已打开','epoch':epoch}
 
@@ -79,18 +81,23 @@ class MenuTools:
             self.app.desktop.event({**event,'ok':False,'error':'操作进行中，本次请求未接受'})
             return {'message':'操作进行中'}
         self.pending=True
+        action,params=value['action'],value['args']
+        read_trace=action in ('text.read','text.canvas')
+        started=time.monotonic()
+        stage='guard'
         try:
             await guard();require_available(self.app)
             if value['request']<=self.last_request:raise RuntimeError('已忽略重复工具请求')
             self.last_request=value['request']
-            action,params=value['action'],value['args']
+            stage='read'
             if action=='layers.search':
                 result=await self.search.search(params)
                 await guard()
                 await asyncio.to_thread(self.app.desktop.resize_menu_tools,epoch,len(result['items']))
             elif action=='layers.focus':result=await self.search.focus(params,menu_guard=guard)
             elif action=='text.read':
-                result=await self.text.read(params,fast=True)
+                result=await self.text.read(params,fast=True,trace=(epoch,value['request']))
+                stage='target'
                 await guard()
                 target=self.app.desktop.menu_layer_context or {}
                 if any(target.get(key)!=result['target'].get(key) for key in ('session','document_id','layer_ids')):
@@ -115,19 +122,32 @@ class MenuTools:
                 if (not saved or params.get('revision')!=saved['revision'] or set(params)-{'revision','background'}
                         or type(background) is not bool or background and 'table' in saved):
                     raise ValueError('请重新读取普通文字目标')
-                memory,result=await text_canvas.read(self.app.runtime,self.app.desktop.target,saved['target'],background=background)
                 try:
+                    memory,result=await text_canvas.read(self.app.runtime,self.app.desktop.target,saved['target'],background=background,
+                                                         trace=(epoch,value['request']))
+                except text_canvas.CanvasUnavailable as error:
+                    if type(saved.get('canvas_history')) is int and type(error.history) is int and error.history!=saved['canvas_history']:
+                        raise text_canvas.CanvasTargetChanged() from error
+                    raise
+                try:
+                    stage='target'
+                    await guard()
                     if type(saved.get('canvas_history')) is int:
-                        if result.get('history')!=saved['canvas_history']:raise RuntimeError('文字或样式已改变，请重新读取画布')
-                        latest=saved
+                        if result.get('history')!=saved['canvas_history']:raise text_canvas.CanvasTargetChanged()
                     else:
+                        # Older executors create a new revision for each inspect.
+                        # It can replace this revision only after matching the source.
                         latest=(await asyncio.to_thread(self.app.bridge.transport.call,'inspect',text_inspect=True,text_fast=True))['text']
                         keys=('target','name','object_xmp','proof_size','proof_resolution') if saved.get('vector_object') else ('target','name','text','style_source','resolution','proof_size')
-                        if any(latest.get(k)!=saved.get(k) for k in keys):raise RuntimeError('文字或样式已改变，请重新读取画布')
-                    await guard()
-                    saved['revision']=latest['revision']
-                    self.text.plan=None
-                    result['revision']=latest['revision']
+                        if any(latest.get(k)!=saved.get(k) for k in keys):raise text_canvas.CanvasTargetChanged()
+                        await guard()
+                        if latest['revision']!=saved['revision']:
+                            saved['revision']=latest['revision']
+                            self.text.plan=self.text.transient_plan=self.text.proved=None
+                        if type(latest.get('canvas_history')) is int:
+                            if result.get('history')!=latest['canvas_history']:raise text_canvas.CanvasTargetChanged()
+                            saved['canvas_history']=latest['canvas_history']
+                    result['revision']=saved['revision']
                 except BaseException:memory.close();raise
                 asyncio.get_running_loop().call_later(20,memory.close)
             elif action=='text.preview':
@@ -154,11 +174,20 @@ class MenuTools:
                         and all(original.get(k)==current.get(k) for k in ('session','document_id')))
                     if result['continue_editing']:desktop.menu_layer_context=dict(current)
             self.app.desktop.event({**event,'ok':True,'result':result})
+            if read_trace:
+                logging.info('Typeset epoch=%s request=%s action=%s stage=sent elapsed_ms=%d',
+                             epoch,value['request'],action,(time.monotonic()-started)*1000)
             if action in ('text.split','text.apply','text.write','text.vector','text.table','layers.focus'):
                 await self.app.broadcast({'type':'notice','scope':'operation','ok':True,'message':result['message']})
             return result
         except Exception as error:
-            self.app.desktop.event({**event,'ok':False,'error':str(error)})
+            if isinstance(error,text_canvas.CanvasTargetChanged):
+                self.text.snapshot=self.text.plan=self.text.transient_plan=self.text.proved=None
+            state=({'canvas_state':error.state} if isinstance(error,text_canvas.CanvasUnavailable) else {})
+            self.app.desktop.event({**event,'ok':False,'error':str(error),**state})
+            if read_trace:
+                logging.info('Typeset epoch=%s request=%s action=%s stage=%s elapsed_ms=%d outcome=%s',
+                             epoch,value['request'],action,stage,(time.monotonic()-started)*1000,state.get('canvas_state',type(error).__name__))
             if value['action'] in ('text.split','text.apply','text.write','text.vector','text.table','layers.focus'):
                 await self.app.broadcast({'type':'notice','scope':'operation','ok':False,'message':str(error)})
             return {'message':str(error),'error':str(error)}

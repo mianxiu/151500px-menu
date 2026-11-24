@@ -41,32 +41,50 @@ exports.init = function (generator) {
     }
     const ready = {session, token:config.token, pid:process.pid, photoshopPid:process.ppid, version:3};
     publish("ready.json", JSON.stringify(ready));
-    let active = false, lastId = "";
+    let active = false;
+    const seen = new Map();
     async function read(name) {
-        if (active || !/^read-[a-f0-9]{32}\.json$/.test(name)) return;
-        active = true;
+        if (!/^read-[a-f0-9]{32}\.json$/.test(name)) return;
         const id = name.slice(5,-5);
-        let accepted = false;
-        const result = {session,id};
+        const started=process.hrtime();
+        const elapsed=()=>{const [sec,nano]=process.hrtime(started);return Math.round(sec*1000+nano/1e6);};
+        const trace={};
+        let accepted = false, ownsRead = false;
+        const result = {session,id,trace};
         try {
             const req = JSON.parse(fs.readFileSync(path.join(config.folder,name),"utf8"));
-            if (req.session !== session || req.token !== config.token || req.id !== id || !(Date.now() <= req.expires && req.expires <= Date.now()+15000)) return;
-            if(id===lastId)return;
-            lastId=id;accepted = true;
+            const now=Date.now();
+            if (req.session !== session || req.token !== config.token || req.id !== id || !(now <= req.expires && req.expires <= now+15000)) return;
+            for(const [key,expires] of seen)if(expires<now)seen.delete(key);
+            if(seen.has(id))return;
+            seen.set(id,req.expires);accepted=true;
+            if(active)throw Error("上一项背景读取仍在执行，请稍后重试背景");
+            active=ownsRead=true;
             const before = String(await generator.evaluateJSXString(identityScript,true));
             const [doc,layer,history,width,height,rgb] = before.split("|").map(Number);
-            if (doc !== req.doc || layer !== req.layer || !rgb || width<=0 || height<=0 || width*height>100000000) throw Error("画布目标已改变或超出 RGB 8 位取图范围");
+            trace.identity_ms=elapsed();
+            if (doc !== req.doc || layer !== req.layer || !Number.isSafeInteger(history)){
+                result.error_code="target";throw Error("背景读取目标已改变");
+            }
+            Object.assign(result,{doc,layer,history});
+            Object.assign(trace,{source_width:width,source_height:height});
+            if(!rgb || !Number.isFinite(width) || !Number.isFinite(height) || width<=0 || height<=0 || width*height>100000000){
+                result.error_code="limited";
+                throw Error(!rgb?"背景取图仅支持 RGB 8 位文档":"背景取图最多支持 1 亿像素的源画布");
+            }
             const background=req.background===true,maxDimension=background?2048:640;
             const scale = Math.min(1,maxDimension/Math.max(width,height));
             const outW=Math.max(1,Math.round(width*scale)),outH=Math.max(1,Math.round(height*scale));
             const settings={inputRect:{left:0,top:0,right:width,bottom:height},outputRect:{left:0,top:0,right:outW,bottom:outH},clipToDocumentBounds:true,useICCProfile:"sRGB IEC61966-2.1",maxDimension};
             let pix=null,box=null,textFrame=null;
             if(background){
+                const treeStarted=elapsed();
                 const tree=await generator.getDocumentInfo(doc,{compInfo:false,imageInfo:false,layerInfo:true,expandSmartObjects:false,getTextStyles:false,getFullTextStyles:false,selectedLayers:false,getCompLayerSettings:true,getDefaultLayerFX:false});
-                let selected=null,remaining=false;
+                let selected=null,remaining=false,count=0;
                 const hidden=[];
                 function visit(rows,invisible){
                     for(const item of rows){
+                        ++count;
                         const excluded=item.id===layer;
                         if(excluded)selected=item;
                         const hide=invisible || !item.visible || excluded;
@@ -76,12 +94,15 @@ exports.init = function (generator) {
                     }
                 }
                 visit(tree.layers,false);
+                trace.tree_ms=elapsed()-treeStarted;trace.layers=count;
                 if(!selected || !Number.isInteger(selected.index) || selected.type==="layerSection") throw Error("无法识别要排除的文字图层");
                 const b=selected.bounds;
                 if(b && [b.left,b.top,b.right,b.bottom].every(Number.isFinite))
                     box=[b.left/width,b.top/height,b.right/width,b.bottom/height];
                 if(selected.type==="textLayer"){
+                    const geometryStarted=elapsed();
                     const geometry=String(await generator.evaluateJSXString(textGeometryScript,true)).split("|");
+                    trace.geometry_ms=elapsed()-geometryStarted;
                     const [x,y,w,h,em,r,g,blue]=geometry.slice(1).map(Number);
                     if(geometry.length===9&&[x,y,w,h,em,r,g,blue].every(Number.isFinite)&&em>0){
                         if(geometry[0]==="box" && w>0 && h>0)
@@ -91,9 +112,19 @@ exports.init = function (generator) {
                         if(textFrame)Object.assign(textFrame,{em:em/height,color:[r,g,blue].map(v=>Math.max(0,Math.min(255,Math.round(v))))});
                     }
                 }
+                const pixelsStarted=elapsed();
                 if(remaining)pix=await generator.getPixmap(doc,{firstLayerIndex:0,lastLayerIndex:tree.layers[0].index,hidden},settings);
-            }else pix=await generator.getDocumentPixmap(doc,settings);
-            if (String(await generator.evaluateJSXString(identityScript,true))!==before || Date.now()>req.expires) throw Error("取图期间画布已改变或读取过期");
+                trace.pixels_ms=elapsed()-pixelsStarted;
+            }else{
+                const pixelsStarted=elapsed();
+                pix=await generator.getDocumentPixmap(doc,settings);
+                trace.pixels_ms=elapsed()-pixelsStarted;
+            }
+            if (String(await generator.evaluateJSXString(identityScript,true))!==before){
+                result.error_code="target";throw Error("取图期间画布已改变");
+            }
+            if(Date.now()>req.expires)throw Error("背景读取已过期，请重试背景");
+            const publishStarted=elapsed();
             const rgba=Buffer.alloc(outW*outH*4);
             if(pix){
                 const bounds=pix.bounds;
@@ -109,9 +140,13 @@ exports.init = function (generator) {
                 }
             }
             publish(id+".rgba",rgba);
-            Object.assign(result,{doc,layer,history,width:outW,height:outH,background,box,text_frame:textFrame});
+            trace.publish_ms=elapsed()-publishStarted;
+            Object.assign(result,{width:outW,height:outH,background,box,text_frame:textFrame});
         } catch(e) { result.error=String(e); }
-        finally { if(accepted) publish(id+".json",JSON.stringify(result)); active=false; }
+        finally {
+            if(ownsRead)active=false;
+            if(accepted){trace.total_ms=elapsed();publish(id+".json",JSON.stringify(result));}
+        }
     }
     fs.watch(config.folder,(event,name)=>{if(typeof name==="string")read(name);});
 };

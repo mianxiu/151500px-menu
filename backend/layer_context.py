@@ -33,6 +33,14 @@ def validate(value,session,now_ms=None):
     if type(quick) is not int or not 0<=quick<=127 or quick and not ids:
         return unavailable()
     result={**value,'label':LABELS[kind]}
+    xmp=result.pop('text_source_xmp',None)
+    result.pop('text_source',None)
+    if kind=='smart' and len(ids)==1 and not result.get('locked') and isinstance(xmp,str):
+        from .text_object import read,render_hash
+        try:
+            read(xmp);render_hash(xmp)
+        except (ValueError,RecursionError):pass
+        else:result['text_source']=True
     if 'shape_editor' in value:
         from .shape_paint import metadata,editor_matches
         shape=metadata(value['shape_editor'])
@@ -47,7 +55,7 @@ def flags(value):
             (min(255,len(value.get('layer_ids',[])))<<17) |
             (int(bool(value.get('locked')))<<25) |
             (int(value.get('same_parent') is False)<<26) |
-            (value.get('quick_mask',0)<<32))
+            (value.get('quick_mask',0)<<32) | (int(value.get('text_source') is True)<<58))
 
 def require_menu_target(value,name,target):
     if name in ('shape.paint','shape.copyPaint','shape.pastePaint'):

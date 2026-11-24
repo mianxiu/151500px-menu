@@ -1,6 +1,7 @@
 """Bounded, read-only original canvas from the optional Photoshop Generator plug-in."""
 import asyncio
 import json
+import logging
 import mmap
 import os
 import secrets
@@ -8,6 +9,18 @@ import time
 from pathlib import Path
 
 from .settings import atomic_json
+
+
+class CanvasUnavailable(RuntimeError):
+    def __init__(self, message, *, state='failed', history=None):
+        super().__init__(message)
+        self.state=state
+        self.history=history
+
+
+class CanvasTargetChanged(CanvasUnavailable):
+    def __init__(self):
+        super().__init__('画布目标或历史已改变；已保留草稿，请重新读取文字', state='stale')
 
 
 def connection(runtime, hwnd):
@@ -21,7 +34,8 @@ def connection(runtime, hwnd):
                 or win32process.GetWindowThreadProcessId(hwnd)[1] != ready['photoshopPid']):
             return None
         def executable(pid):
-            handle = win32api.OpenProcess(0x410,False,pid)
+            # Windows 10 and later need only query access when no module handle is supplied.
+            handle = win32api.OpenProcess(0x1000,False,pid)
             try:return Path(win32process.GetModuleFileNameEx(handle,0))
             finally:handle.Close()
         host=executable(ready['photoshopPid'])
@@ -32,10 +46,11 @@ def connection(runtime, hwnd):
     return None
 
 
-async def read(runtime, hwnd, target, *, background=False):
+async def read(runtime, hwnd, target, *, background=False, trace=None):
     ready = connection(runtime,hwnd)
-    if not ready:raise RuntimeError('当前 Photoshop 尚未连接画布读取组件')
-    if background and ready['version']<2:raise RuntimeError('请更新画布读取组件后重开 Photoshop')
+    if not ready:raise CanvasUnavailable('当前 Photoshop 尚未连接画布读取组件',state='limited')
+    if background and ready['version']<2:
+        raise CanvasUnavailable('请更新画布读取组件后重开 Photoshop',state='limited')
     folder = Path(runtime)/'text-canvas'
     identity = secrets.token_hex(16)
     request = folder/('read-'+identity+'.json')
@@ -43,21 +58,38 @@ async def read(runtime, hwnd, target, *, background=False):
     pixels = folder/(identity+'.rgba')
     atomic_json(request,{'session':ready['session'],'token':ready['token'],'id':identity,
                          'doc':target['document_id'],'layer':target['active_layer_id'],'background':background,'expires':int(time.time()*1000)+12000})
-    deadline=time.monotonic()+13
+    if trace:logging.info('Typeset epoch=%s request=%s generator request=%s stage=published',*trace,identity)
+    started=time.monotonic()
+    deadline=started+13
     while not result.is_file():
-        if time.monotonic()>=deadline:raise RuntimeError('画布读取未获回执，已保留原读取记录')
+        if time.monotonic()>=deadline:
+            atomic_json(folder/(identity+'-unknown.json'),{'id':identity,'session':ready['session'],'phase':'unknown',
+                                                           'elapsed_ms':round((time.monotonic()-started)*1000)})
+            logging.info('Typeset generator request=%s stage=receipt outcome=unknown elapsed_ms=%d',identity,(time.monotonic()-started)*1000)
+            raise CanvasUnavailable('背景读取未获回执，已保留原读取记录')
         await asyncio.sleep(.015)
     data=json.loads(result.read_text('utf-8'))
     if data.get('session')!=ready['session'] or data.get('id')!=identity:
         raise RuntimeError('画布回执身份不符')
     try:
-        if data.get('error'):raise RuntimeError(data['error'])
+        if connection(runtime,hwnd)!=ready:raise CanvasTargetChanged()
+        trace=data.get('trace')
+        if isinstance(trace,dict):
+            metrics={key:value for key,value in trace.items() if key in
+                     ('source_width','source_height','layers','identity_ms','tree_ms','geometry_ms','pixels_ms','publish_ms','total_ms')
+                     and type(value) in (int,float) and 0<=value<=1000000}
+        else:metrics={}
+        logging.info('Typeset generator request=%s stage=receipt elapsed_ms=%d metrics=%s',identity,(time.monotonic()-started)*1000,metrics)
+        if data.get('error'):
+            if data.get('error_code')=='target':raise CanvasTargetChanged()
+            history=data.get('history') if data.get('doc')==target['document_id'] and data.get('layer')==target['active_layer_id'] else None
+            raise CanvasUnavailable(data['error'],state='limited' if data.get('error_code')=='limited' else 'failed',history=history)
         w,h=data.get('width'),data.get('height')
         limit=2048 if background else 640
         if (data.get('doc')!=target['document_id'] or data.get('layer')!=target['active_layer_id']
                 or data.get('background',False) is not background
                 or type(w) is not int or type(h) is not int or not 1<=w<=limit or not 1<=h<=limit
-                or pixels.stat().st_size!=w*h*4 or connection(runtime,hwnd)!=ready):
+                or pixels.stat().st_size!=w*h*4 or type(data.get('history')) is not int):
             raise RuntimeError('画布会话、目标或尺寸已改变')
         image=pixels.read_bytes()
         if len(image)!=w*h*4:raise RuntimeError('画布像素数据不完整')

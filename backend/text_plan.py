@@ -135,18 +135,25 @@ def compute(source,params):
     params=parameters(params)
     if not isinstance(source,str) or units(source)>20000 or '\0' in source:raise ValueError('原文无效或超过处理上限')
     text=normalize(params['draft']);origins=mapping(source,text);operation=params['operation'];count=0;breaks=None;preview=None;matches=[]
+    draft_origins=None
     def edit(edits):
-        nonlocal text,origins
+        nonlocal text,origins,draft_origins
         if units(text)+sum(units(value)-units(text[start:end]) for start,end,value in edits)>20000:raise ValueError('结果超过20000字符')
         offsets=[0]
         for char in text:offsets.append(offsets[-1]+units(char))
-        parts=[];mapped=[];cursor=0
+        parts=[];mapped=[];draft_mapped=[];cursor=0
         for start,end,replacement in edits:
             parts.append(text[cursor:start]);mapped.extend(origins[offsets[cursor]:offsets[start]])
+            draft_mapped.extend(range(offsets[cursor],offsets[start]))
             parts.append(replacement);origin=origins[min(offsets[start],max(0,len(origins)-2))]
-            mapped.extend([origin]*units(replacement));cursor=end
+            length=units(replacement)
+            mapped.extend([origin]*length)
+            draft_mapped.extend([offsets[min(start,max(0,len(text)-1))]]*length)
+            cursor=end
         parts.append(text[cursor:]);mapped.extend(origins[offsets[cursor]:-1])
         mapped.append(origins[-1] if cursor<len(text) else mapped[-1] if mapped else 0)
+        draft_mapped.extend(range(offsets[cursor],offsets[-1]+1))
+        draft_origins=draft_mapped
         text=''.join(parts);origins=mapped
     def substitute(pattern,replacement):
         nonlocal count
@@ -226,6 +233,7 @@ def compute(source,params):
     result={'value':value,'origins':origins,'count':count,'changed':changed,
             'kind':'split' if operation=='split' else 'replace','characters':len(text),
             'preview':preview if preview is not None else text,'matches':matches}
+    if draft_origins is not None:result['draft_origins']=draft_origins
     if breaks is not None:result.update(breaks=breaks,layout=params['layout'])
     return result
 

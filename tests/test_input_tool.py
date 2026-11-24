@@ -236,6 +236,30 @@ class ToolObservationTests(unittest.TestCase):
             self.assertEqual(self.reader.read()['classID'],'typeCreateOrEditTool')
         self.assertEqual(sent.call_count,1);self.assertFalse(self.reader.path.exists())
 
+    def test_both_workers_observe_cold_start_recovery_without_consuming_each_others_retry(self):
+        ime=self.reader.reconciler()
+        focus=self.reader.reconciler()
+        with patch.object(self.reader.transport,'observe',side_effect=RuntimeError('UXP starting')),patch('backend.input_tool.time.monotonic',return_value=10):
+            with self.assertRaisesRegex(RuntimeError,'starting'):self.reader.read()
+            self.assertFalse(ime());self.assertFalse(focus())
+        with patch('backend.input_tool.time.monotonic',return_value=11),patch('backend.input_tool.publish_request') as publish:
+            self.assertTrue(ime());self.assertTrue(focus())
+            self.assertFalse(focus());self.assertFalse(ime())
+            publish.assert_not_called()
+
+    def test_completed_observation_wakes_both_workers_without_republishing(self):
+        request=self.pending()
+        ime=self.reader.reconciler()
+        focus=self.reader.reconciler()
+        with patch('backend.input_tool.publish_request') as publish:
+            self.assertFalse(ime());self.assertFalse(focus())
+            self.assertTrue(self.reader.path.exists())
+            self.reply(request)
+            self.assertTrue(focus());self.assertTrue(ime())
+            self.assertFalse(ime());self.assertFalse(focus())
+            self.assertFalse(self.reader.path.exists())
+            publish.assert_not_called()
+
     def test_startup_failure_with_existing_unknown_never_schedules_republication(self):
         original=self.pending();before=self.reader.path.read_bytes()
         with patch.object(self.reader.transport,'observe',side_effect=RuntimeError('UXP starting')),patch('backend.input_tool.publish_request') as sent:

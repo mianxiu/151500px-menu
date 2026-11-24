@@ -156,6 +156,51 @@ class UxpPublicationTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(),b'old');self.assertFalse(source.exists())
 
 class UxpDiscoveryTests(unittest.TestCase):
+    def test_timed_out_text_read_keeps_its_identity_and_cannot_supply_the_retry(self):
+        folder=self.heartbeat(24)
+        self.transport.config.write_text('{"token":"test"}','utf-8')
+        heartbeat_path=folder/'probe-last.json'
+        heartbeat=json.loads(heartbeat_path.read_text('utf-8'))
+        heartbeat.update(session='s',probe_version='0.3.138')
+        heartbeat_path.write_text(json.dumps(heartbeat),'utf-8')
+        original=None
+
+        def receipt(request,text):
+            response={key:request[key] for key in ('id','session','operation')}
+            response.update(schema=1,phase='completed',text={'text':text})
+            path=folder/('text-read-'+request['id']+'-response.json')
+            path.write_text(json.dumps(response),'utf-8')
+            return path
+
+        def publish(source,destination):
+            nonlocal original
+            request=json.loads(source.read_text('utf-8'))
+            self.assertTrue(request['text_read_receipt'])
+            source.replace(destination)
+            if original is None:
+                original=request
+            else:
+                self.assertNotEqual(original['id'],request['id'])
+                receipt(original,'old')
+                receipt(request,'new')
+
+        with patch('backend.uxp_bridge.publish_request',side_effect=publish) as published:
+            self.transport.response_timeout=0
+            with self.assertRaisesRegex(UxpResultUnknown,'未获回执'):
+                self.transport.call('inspect',text_inspect=True,text_fast=True)
+            archived=folder/('text-read-'+original['id']+'-request.json')
+            self.assertEqual(json.loads(archived.read_text('utf-8')),original)
+            self.transport.response_timeout=1
+            result=self.transport.call('inspect',text_inspect=True,text_fast=True)
+        self.assertEqual(published.call_count,2)
+        self.assertEqual(result['text']['text'],'new')
+        self.assertTrue(archived.exists())
+        unknown=folder/('text-read-'+original['id']+'-unknown.json')
+        self.assertEqual(json.loads(unknown.read_text('utf-8'))['phase'],'unknown')
+        self.assertTrue((folder/('text-read-'+original['id']+'-response.json')).exists())
+        self.assertFalse((folder/('text-read-'+result['id']+'-response.json')).exists())
+        self.assertIsNone(self.transport.pending.value)
+
     def test_utf8_text_maximum_fits_wire_limit_without_disabling_byte_boundary(self):
         folder=self.heartbeat(26);self.transport.config.write_text(json.dumps({'token':'a'*64}),'utf-8')
         (folder/'probe-last.json').write_text(json.dumps({'session':'s','probe_version':'0.3.59','photoshop_version':'26.0.0','plugin_time_ms':time.time()*1000}),'utf-8')

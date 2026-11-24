@@ -15,6 +15,31 @@ SOURCE={'schema':1,'canvas':{'width':600,'height':400,'resolution':300,'mode':'R
 
 
 class TextObjectTests(unittest.TestCase):
+    def test_translated_double_size_point_and_paragraph_frames(self):
+        from backend.text_tools import object_text_geometry
+        canvas={'width':600,'height':400,'resolution':300}
+        frame=[100,120,1300,120,1300,920,100,920]
+        doc=[1600,1200]
+        style={'size':'12','color':'#AA20FF'}
+        raw={'textClickPoint':{'horizontal':{'_unit':'percentUnit','_value':25},
+                               'vertical':{'_unit':'percentUnit','_value':50}},
+             'textShape':[{'char':{'_value':'paint'}}]}
+        size,point=object_text_geometry(raw,canvas,frame,doc,style)
+        self.assertIsNone(size)
+        self.assertFalse(point['wrap'])
+        self.assertAlmostEqual(point['box'][0]*doc[0],400)
+        self.assertAlmostEqual(point['box'][1]*doc[1],420)
+        self.assertAlmostEqual(point['em']*doc[1],100)
+        self.assertEqual(point['color'],[170,32,255])
+        raw['textShape'][0]={'char':{'_value':'box'},'bounds':{'left':10,'top':20,'right':210,'bottom':100}}
+        size,paragraph=object_text_geometry(raw,canvas,frame,doc,style)
+        self.assertTrue(paragraph['wrap'])
+        self.assertEqual(size,[200,80])
+        self.assertAlmostEqual(paragraph['box'][0]*doc[0],420)
+        self.assertAlmostEqual((paragraph['box'][2]-paragraph['box'][0])*doc[0],400)
+        self.assertAlmostEqual(paragraph['em']*doc[1],100)
+        self.assertIsNone(object_text_geometry(raw,canvas,[100,120,1300,121,1300,920,100,920],doc,style))
+
     def test_resolved_font_metadata_validates_utf16_ranges(self):
         raw=text_object.write('',SOURCE);doc=minidom.parseString(raw)
         node=doc.createElementNS(text_object.NAMESPACE,'pxText:fontFallbacks')

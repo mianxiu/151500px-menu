@@ -2,7 +2,7 @@
 const {app} = require('photoshop');
 const uxp = require('uxp');
 const token = require('./probe-config.js');
-const probeVersion = '0.3.137';
+const probeVersion = '0.3.139';
 const session = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
 // Independent read-only mailbox; never enters modal execution or blocks commands.
 const inputTool=(()=>{
@@ -243,15 +243,22 @@ async function refreshMenuContext(folder,now) {
   }
   const readDone=Date.now();contextReadAt=generation===contextGeneration?readDone:0;
   const needsShape=!context.locked && !context.background && (context.kind==='shape-fill' && context.layer_ids.length===1 || context.layer_ids.length>=2 && context.layer_ids.length<=128);
+  const needsText=context.kind==='smart' && context.layer_ids.length===1 && !context.locked;
   const basic={...context,shape_editor:{available:false},schema:1,plugin_time_ms:readDone,
-    menu_request_id:request.id,menu_phase:needsShape?'basic':'completed',timings_ms:{selection_ms:readDone-started}};
+    menu_request_id:request.id,menu_phase:needsShape||needsText?'basic':'completed',timings_ms:{selection_ms:readDone-started}};
   // Publish ordinary capabilities before optional vector/pattern metadata.
   // A slow or failed color read must not leave every layer action disabled.
   await record(folder,'menu-context-result.json',basic);
   await record(folder,'layer-context.json',basic);
   menuRefreshId=request.id;
   observation.menu={selection_ms:readDone-started,completed_at_ms:readDone,phase:basic.menu_phase};
-  if(needsShape) {
+  if(needsText){
+    let xmp=null;
+    try{await checkpoint(true);xmp=await labels.observeTextSource(context);await checkpoint(true);}
+    catch(error){if(error.menuReadInterrupted)return true;}
+    if(generation===contextGeneration)
+      await record(folder,'menu-context-result.json',{...basic,text_source_xmp:xmp,menu_phase:'completed'});
+  }else if(needsShape) {
     let shape={available:false},error='';
     try {await checkpoint(true);shape=await labels.observeShape(context,true,null,checkpoint,true);await checkpoint(true);}
     catch(e){if(e.menuReadInterrupted)return true;error=String(e).slice(0,200);}
@@ -485,6 +492,9 @@ async function probe(reason) {
     // fresh read-only snapshots after a normal Photoshop restart.
     if(request.session && request.session!==session){await idleRead();return;}
     const modifying=['set_label','new_document'].includes(request.operation);
+    const textReceipt=request.session===session && /^[0-9a-f]{32}$/.test(request.id) &&
+      request.operation==='inspect' && request.text_inspect===true && request.text_fast===true && request.text_read_receipt===true
+      ?'text-read-'+request.id+'-response.json':null;
     if(modifying) {
       if(!/^[0-9a-f]{32}$/.test(request.id))return;
       // A durable accepted/final receipt survives plugin reload. Its presence
@@ -493,6 +503,12 @@ async function probe(reason) {
       catch(_){}
     }
     if(request.expires_at_ms<Date.now()) {
+      if(textReceipt){
+        const rejected={schema:1,session,id:request.id,probe_version:probeVersion,operation:request.operation,
+          phase:'failed',error:'文字读取开始前已过期，请重新读取文字',not_executed:true,completed_at_ms:Date.now()};
+        await record(folder,textReceipt,rejected);
+        seen.add(request.id);lastRequest=request.id;return;
+      }
       if(!modifying){await idleRead();return;}
       // A valid, unseen request can expire behind a slow read. Give its
       // original identity a durable rejection instead of silently dropping it
@@ -563,7 +579,10 @@ async function probe(reason) {
       else if(request.operation==='inspect'&&request.gradient_view_target!==undefined)
         response.gradient_view=await labels.inspectGradientView(request.gradient_view_target);
       else if(request.operation==='inspect'&&request.text_fonts===true)response.fonts=await labels.readTextFonts();
-      else if(request.operation==='inspect'&&request.text_inspect===true)response.text=await labels.readText(request.text_fast===true);
+      else if(request.operation==='inspect'&&request.text_inspect===true){
+        if(textReceipt)response.text_trace={};
+        response.text=await labels.readText(request.text_fast===true,response.text_trace);
+      }
       else if (request.operation === 'inspect') {
         response.target = labels.documentTarget();
         response.document_count = response.target.document_ids.length;
@@ -658,7 +677,7 @@ async function probe(reason) {
       await executionStage('persist-result');
       await finishResponse(folder,response);
     }
-    else await record(folder, 'probe-response.json', response);
+    else await record(folder, textReceipt||'probe-response.json', response);
     lastRequest = request.id;
     if(['shape.preview','shape.legacy.preview'].includes(request.command))lastHeartbeat=0;
     // Capture gets a quiet period while its write follows; after modification

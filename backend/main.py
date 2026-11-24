@@ -905,7 +905,8 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_c
                 from .input_tool import ToolObservation
                 tool_observer=ToolObservation(app.bridge.transport)
                 app.desktop.input_language_tool=tool_observer.read
-                app.desktop.input_language_reconcile=tool_observer.reconcile
+                app.desktop.input_language_reconcile=tool_observer.reconciler()
+                app.desktop.input_focus_reconcile=tool_observer.reconciler()
                 app.desktop.input_tool_event=tool_observer.event
                 app.desktop.input_tool_event_detail=tool_observer.event_detail
                 app.desktop.input_tool_state=tool_observer.state

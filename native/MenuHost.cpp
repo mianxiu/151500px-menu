@@ -275,6 +275,7 @@ static bool homepageCapable=true;
 static bool layerAware=false,layerBackground=false,layerLocked=false,layerCrossParents=false;
 static unsigned layerMask=15;
 static int layerKind=0,layerCount=0;
+static bool textSourceLayer=false;
 static unsigned quickMask=0;
 static const std::array<const char*,7> quickActions={"layer.new","layer.solid","layer.group","adjustment.curves","adjustment.hueSaturation","adjustment.colorBalance","adjustment.blackWhite"};
 static const std::array<const char*,7> quickLabels={"新建空白图层","新建纯色填充图层","选中图层打组","新建曲线调整图层","新建色相饱和度调整图层","新建色彩平衡调整图层","新建黑白调整图层"};
@@ -310,7 +311,8 @@ static bool returnInputsIdle() {
         !(GetAsyncKeyState(VK_RBUTTON)&0x8000) && !(GetAsyncKeyState(VK_MBUTTON)&0x8000);
 }
 static bool canExecute() {return !menuToolsVisible() && !maskPreviewStarted && (panelKind==4?homepageCapable && !taskBusy:allowed) && !busyFeedback && !inputFocused && panelKind!=3;}
-static bool toolEnabled(int i) {return canExecute() && panelKind!=4 && (i==0?layerSearchReady:textSplitReady && layerAware && (layerKind==4 || layerKind==5) && layerCount==1 && !layerLocked);}
+static bool hasTextToolTarget(){return layerAware && (layerKind==4 || (layerKind==5 && textSourceLayer)) && layerCount==1;}
+static bool toolEnabled(int i) {return canExecute() && panelKind!=4 && (i==0?layerSearchReady:textSplitReady && hasTextToolTarget() && !layerLocked);}
 static bool shapeToolsEnabled() {return panelKind==1 && shapeToolsReady && layerAware && layerCount && layerKind && canExecute();}
 static bool capsEnabled(int i) {
     if(i==9 || i==10)return (i!=9 || layerCount>1) && (i==9 || !layerCrossParents) && individualSmartReady && capsReady && canExecute() && panelKind!=3 && panelKind!=4 && layerAware && layerCount && layerKind && !layerLocked && !layerBackground;
@@ -652,6 +654,7 @@ static std::string previewProgressStage;
 static std::wstring shapeBenchmarkOutput;
 static bool selfTest=false;
 static std::vector<std::string> testedActions;
+static Json testedMenuToolRequest;
 static Json testedGradientOpen;
 static size_t labelTestActionCount=0;
 static ImVec2 bottomRow;
@@ -692,7 +695,7 @@ static void stopGradientSample(){
 }
 static void sendMenuTool(const char* action,const Json& params) {
     if(stabilityInspection)return;
-    if(selfTest){testedActions.emplace_back(action);return;}
+    if(selfTest){testedActions.emplace_back(action);if(std::strcmp(action,"menu.tools.request")==0)testedMenuToolRequest=params;return;}
     if(backendParent)AllowSetForegroundWindow(backendParent);
     std::cout<<Json{{"type","action"},{"action",action},{"session",menuEpoch},{"params",params}}.dump()<<std::endl;
 }
@@ -711,6 +714,18 @@ static bool createTarget() {
     if (FAILED(swapChain->GetBuffer(0,IID_PPV_ARGS(&buffer)))) return false;
     HRESULT result=device->CreateRenderTargetView(buffer,nullptr,&target); buffer->Release();
     return SUCCEEDED(result);
+}
+static SIZE queuedTypesetResize{};
+static void resizeTargets(UINT width,UINT height){
+    if(!device || !width || !height)return;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if(SUCCEEDED(swapChain->GetDesc(&desc)) && desc.BufferDesc.Width==width && desc.BufferDesc.Height==height)return;
+    context->OMSetRenderTargets(0,nullptr,nullptr);
+    releaseTarget();
+    const auto resized=swapChain->ResizeBuffers(0,width,height,DXGI_FORMAT_UNKNOWN,
+        DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+    if(FAILED(resized))std::cerr<<"Menu swap chain resize failed: "<<std::hex<<resized<<std::dec<<std::endl;
+    createTarget();
 }
 static void setOpacity(float opacity) {
     if (compositionVisual && opacity!=compositionOpacity) {
@@ -1399,6 +1414,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
                 layerAware=true;layerMask=(flags>>8)&15;layerKind=(flags>>12)&15;
                 layerBackground=(flags&(1u<<16))!=0;layerCount=(flags>>17)&255;
                 layerLocked=(flags&(1u<<25))!=0;layerCrossParents=(flags&(1u<<26))!=0;quickMask=(flags>>32)&127;
+                textSourceLayer=(flags&(1ull<<58))!=0;
                 shapeEditor.prepare(value.at("shape"));hoverTip.reset();tipVisual.reset();renderedHit=pendingHit=-1;pieReady=false;
                 if(hoverReturn || busyWake){menuEpoch=value.at("next_epoch").get<LPARAM>();shapeReturning=hoverReturnConfirmed=busyMenuWake=false;
                     busyFeedback=taskHasResult=taskFailed=false;completionStarted=0;notice.clear();taskError.clear();previewProgress.clear();
@@ -1455,6 +1471,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         layerAware=(wp&64)!=0;layerMask=(wp>>8)&15;layerKind=(wp>>12)&15;
         layerBackground=(wp&(1u<<16))!=0;layerCount=(wp>>17)&255;
         layerLocked=(wp&(1u<<25))!=0;layerCrossParents=(wp&(1u<<26))!=0;
+        textSourceLayer=(wp&(1ull<<58))!=0;
         quickMask=static_cast<unsigned>((wp>>32)&127);
         contextMode=(wp&8)!=0;menuEpoch=lp;setHoldMode((wp&16)!=0);
         return 0;
@@ -1476,6 +1493,7 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if (msg==WM_SHOWWINDOW) {
         opened=wp!=0;
         const bool keepTypeset=menuTools.active && menuTools.mode=="typeset" && !holdFinished;
+        if(!opened)menuTools.closeFontSamples();
         if(gradientWindow){
             setOpacity(opened && gradientFramePresented?1.f:0.f);
             if(!opened){
@@ -1509,15 +1527,10 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp)) return true;
     switch (msg) {
     case WM_SIZE:
-        if (device && wp!=SIZE_MINIMIZED) {
-            DXGI_SWAP_CHAIN_DESC desc{};
-            if (SUCCEEDED(swapChain->GetDesc(&desc)) &&
-                desc.BufferDesc.Width==LOWORD(lp) && desc.BufferDesc.Height==HIWORD(lp)) return 0;
-            context->OMSetRenderTargets(0,nullptr,nullptr);
-            releaseTarget();
-            if (SUCCEEDED(swapChain->ResizeBuffers(0,LOWORD(lp),HIWORD(lp),DXGI_FORMAT_UNKNOWN,
-                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT))) createTarget();
-        }
+        if(wp==SIZE_MINIMIZED)queuedTypesetResize={};
+        else if(!gradientWindow && menuToolsVisible() && menuTools.mode=="typeset")
+            queuedTypesetResize={LOWORD(lp),HIWORD(lp)};
+        else {queuedTypesetResize={};resizeTargets(LOWORD(lp),HIWORD(lp));}
         return 0;
     case WM_DPICHANGED: {
         if(gradientWindow){if(gradientPanel.overlay)invalidateGradientView();return 0;}
@@ -2172,7 +2185,7 @@ static void drawCapsBar() {
 }
 static void drawToolBar() {
     toolRow={};
-    if(panelKind==3 || panelKind==4 || !layerAware || (layerKind!=4 && layerKind!=5) || layerCount!=1)return;
+    if(panelKind==3 || panelKind==4 || !hasTextToolTarget())return;
     const char* label=layerKind==5?"文字源":"画布排版";
     const float h=menuControlHeight*scale;
     const auto extent=menuFont(MenuTextRole::Control)->CalcTextSizeA(basicLabelSize(),FLT_MAX,0,label);
@@ -3090,6 +3103,10 @@ int main() {
                 frameGranted=result==WAIT_OBJECT_0;
             }
             if(!pumpMessages())break;
+            if(queuedTypesetResize.cx){
+                const auto size=queuedTypesetResize;queuedTypesetResize={};
+                resizeTargets(size.cx,size.cy);
+            }
             if ((selfTest || previewLifecycle) && frames==14) {
                 RECT rect;GetWindowRect(window,&rect);
                 SetWindowPos(window,nullptr,0,0,rect.right-rect.left+40,rect.bottom-rect.top+40,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
@@ -4079,7 +4096,8 @@ int main() {
                                 [&](int row,ImVec2 at,ImVec2 end){centers[row]={(at.x+end.x)*.5f,(at.y+end.y)*.5f};editor.drawFontSample(faces[row].second,editor.chosenFontSample(),at,end);});}
                             ImGui::End();ImGui::Render();finishPlatformFrame();
                         };
-                        faceFrame();faceFrame();
+                        faceFrame();
+                        for(int frame=0;frame<100 && editor.fontSamples.size()<2;++frame){Sleep(10);faceFrame();}
                         if(editor.fontSamples.size()!=2)throw std::runtime_error("The font menu skipped visible samples");
                         if(editor.fontSamples.at("ArialMT").image && !editor.fontSamples.at("Arial-BoldMT").image)
                             throw std::runtime_error("An installed font weight failed to preview");
@@ -4090,7 +4108,8 @@ int main() {
                         editor.setFont(faces[picked].second);
                         if(editor.styleChanges().at("fontPostScriptName")!="Arial-BoldMT" || editor.styleChanges().at("range")!=Json({6,17}))
                             throw std::runtime_error("Selecting a font sample lost the chosen face or text range");
-                        ImGui::ClearActiveID();std::cout<<"Font menu passed: current selection samples, visible row cache, hover hit, face and weight selection\n";
+                        editor.closeFontSamples();
+                        ImGui::ClearActiveID();std::cout<<"Font menu passed: background raster, visible row cache, hover hit, face and weight selection\n";
                     }
                     {
                         MenuToolsPanel editor;editor.active=editor.ready=true;editor.mode="typeset";editor.revision="box";
@@ -4158,6 +4177,35 @@ int main() {
                             throw std::runtime_error("Typeset vector update action failed: pending="+std::to_string(editor.pending)+
                                 " action="+editor.pendingAction+" records="+std::to_string(testedActions.size()-count)+" plan="+editor.planId);
                         editor.pending=false;
+                        editor.proofAvailable=true;
+                        for(int tab:{1,2,4}){
+                            editor.textTab=tab;editor.textDirty=false;editor.planId="current-result";editor.resultKind="replace";
+                            editor.resultPreview="Processed result";boxFrame();boxFrame();
+                            bool shown=false;
+                            for(auto* child:GImGui->Windows)
+                                if(child->Active && strstr(child->Name,"##resize-text-test/") && strstr(child->Name,"##text-result"))shown=true;
+                            if(!shown)throw std::runtime_error("A canvas background hid the right-hand result");
+                            const auto request=editor.request;
+                            ImGui::ActivateItemByID(body->GetID("更新矢量智能对象"));boxFrame();
+                            if(!editor.pending || editor.pendingAction!="text.vector" || editor.request!=request+1 ||
+                               testedMenuToolRequest.at("args").at("plan_id")!="current-result")
+                                throw std::runtime_error("Right-hand result could not be confirmed directly: tab="+std::to_string(tab)+
+                                    " request="+std::to_string(editor.request)+" action="+editor.pendingAction);
+                            editor.pending=false;
+                        }
+                        editor.scopedStyles=true;
+                        editor.styleAnchor=editor.draft;
+                        editor.styleDraft.set("size",{5,10},22);
+                        editor.resultValue="• Text frame contents";
+                        editor.resultDraftOrigins={0,0};
+                        for(int i=0;i<=int(std::strlen(editor.draft));++i)editor.resultDraftOrigins.push_back(i);
+                        editor.continueTextResult();
+                        if(!editor.draftListChanged || editor.textTab!=0 || editor.styleDraft.overrideFor("size",{9,14})!=22)
+                            throw std::runtime_error("Continue editing did not carry the list options and scoped styles");
+                        editor.restoreDraft(false);
+                        if(editor.draftListChanged || std::string(editor.draft)!="Text frame contents" || editor.styleDraft.overrideFor("size",{5,10})!=22)
+                            throw std::runtime_error("Undo did not restore the text and list options together");
+                        editor.scopedStyles=false;editor.textDirty=false;boxFrame();
                         const auto right=frame->Pos.x+frame->Size.x;
                         const auto left=frame->Pos.x;
                         const float y=frame->Pos.y+frame->Size.y*.5f;
@@ -5572,10 +5620,12 @@ int main() {
                                holdActionAt({(select.left+select.right)/2,(select.top+select.bottom)/2})!=0 ||
                                holdActionAt({(typeset.left+typeset.right)/2,(typeset.top+typeset.bottom)/2})!=71)
                                 throw std::runtime_error("Typeset and adjacent selection lost their left/right positions or hit targets");
-                            layerKind=5;numberFrame(ImGuiKey_None,false);
+                            layerKind=5;textSourceLayer=false;numberFrame(ImGuiKey_None,false);
+                            if(toolRow.right || toolEnabled(1))throw std::runtime_error("An ordinary smart object exposed a text source");
+                            textSourceLayer=true;numberFrame(ImGuiKey_None,false);
                             if(toolRow.right!=typeset.right || toolRow.top!=typeset.top || holdRows[0].left!=select.left)
                                 throw std::runtime_error("Opening an existing text object moved the side controls");
-                            layerKind=4;
+                            layerKind=4;textSourceLayer=false;
                         }
                         layerCount=2;numberFrame(ImGuiKey_None,false);
                         if(toolRow.right || toolEnabled(1))throw std::runtime_error("Multi-selection enabled single-text tools");
@@ -5676,6 +5726,42 @@ int main() {
                         throw std::runtime_error("Selection or visibility changed the applied draft");
                     std::strcpy(menuTools.draft,"Zabcde");menuTools.changedText();
                     if(menuTools.styleChanges().at("range")!=Json({2,4}))throw std::runtime_error("A draft insertion moved a style off its original characters");
+                    menuTools.receive(Json{{"type","menu.tools.opened"},{"epoch",menuEpoch},{"mode","typeset"}});
+                    menuTools.receive(Json{{"type","menu.tools.result"},{"epoch",menuEpoch},{"request",menuTools.request},{"action","text.read"},{"ok",true},
+                        {"result",{{"text","before"},{"name","source"},{"revision","r"},{"canvas_edit_available",true}}}});
+                    if(!menuTools.draftInCanvas() || !menuTools.pending || menuTools.canWriteText())
+                        throw std::runtime_error("Background pending did not leave a local editor with writes blocked");
+                    std::strcpy(menuTools.draft,"edited");menuTools.changedText();
+                    menuTools.selectionStart=1;menuTools.selectionEnd=4;menuTools.cursorPos=4;
+                    const int canvasRequest=menuTools.request;
+                    const int draftGeneration=menuTools.draftGeneration;
+                    menuTools.receive(Json{{"type","menu.tools.result"},{"epoch",menuEpoch},{"request",canvasRequest},
+                        {"action","text.canvas"},{"ok",false},{"canvas_state","limited"},{"error","Background unavailable"}});
+                    if(!menuTools.draftInCanvas() || menuTools.canvasState!=MenuToolsPanel::CanvasState::limited ||
+                        menuTools.selectionStart!=1 || menuTools.selectionEnd!=4 || menuTools.cursorPos!=4 ||
+                        std::string(menuTools.draft)!="edited" || menuTools.draftGeneration!=draftGeneration)
+                        throw std::runtime_error("Background failure replaced the open draft or selection");
+                    menuTools.requestCanvas();
+                    if(menuTools.request!=canvasRequest+1 || menuTools.pendingAction!="text.canvas")
+                        throw std::runtime_error("Retry did not use a new background-only request");
+                    menuTools.receive(Json{{"type","menu.tools.result"},{"epoch",menuEpoch},{"request",canvasRequest},
+                        {"action","text.canvas"},{"ok",false},{"canvas_state","stale"}});
+                    if(!menuTools.pending || menuTools.canvasState!=MenuToolsPanel::CanvasState::waiting)
+                        throw std::runtime_error("Old background response completed the retry");
+                    menuTools.planId="current-plan";
+                    const std::string mapping="482f10338ea04965b7ba3e3f69940748";
+                    const auto mappingName="Local\\151500px-menu-canvas-"+mapping;
+                    const auto pixels=CreateFileMappingA(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,4,mappingName.c_str());
+                    if(!pixels)throw std::runtime_error("Could not create the background self-test mapping");
+                    menuTools.receive(Json{{"type","menu.tools.result"},{"epoch",menuEpoch},{"request",menuTools.request},
+                        {"action","text.canvas"},{"ok",true},{"result",{{"revision","r"},{"mapping",mapping},{"width",1},{"height",1}}}});
+                    CloseHandle(pixels);
+                    if(menuTools.canvasState!=MenuToolsPanel::CanvasState::ready || menuTools.planId!="current-plan" ||
+                        menuTools.draftGeneration!=draftGeneration || std::string(menuTools.draft)!="edited")
+                        throw std::runtime_error("Same-revision background invalidated a newer local draft or plan");
+                    menuTools.receive(Json{{"type","menu.tools.opened"},{"epoch",menuEpoch},{"mode","typeset"}});
+                    if(!menuTools.pending || menuTools.pendingAction!="text.read" || menuTools.thumbnail || !menuTools.revision.empty())
+                        throw std::runtime_error("Reopening typeset retained the previous canvas");
                     menuTools.reset();menuTools.active=menuTools.ready=true;menuTools.mode="search";
                     menuTools.changeSearch(1);
                     if(menuTools.searchDue(1.17) || !menuTools.searchDue(1.19))throw std::runtime_error("Search debounce failed");

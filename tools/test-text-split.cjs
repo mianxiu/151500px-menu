@@ -25,6 +25,7 @@ const ps={app:{activeDocument:{id:1,width:400,height:400,resolution:72}},core:{g
  throw Error(c._obj);
 })}};
 Object.defineProperty(ps.app.activeDocument,'activeLayers',{get:()=>[{id:active,opacity:layers.find(l=>l.layerID===active).opacity*100/255}]});
+ps.constants={DocumentMode:{RGB:'RGB'},BitsPerChannelType:{EIGHT:8}};
 const context={ps,session:'s',capture,tree};vm.createContext(context);vm.runInContext(source.slice(source.lastIndexOf('function createTextTools('))+'\nthis.tools=createTextTools(ps,session,capture,tree);',context);
 const tools=context.tools;
 async function request(breaks=[3,6,8]){const read=await tools.read();return {target:read.target,text:{revision:read.revision,breaks},expires_at_ms:Date.now()+5000};}

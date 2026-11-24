@@ -230,6 +230,15 @@ class InputMethod(InputLanguage):
         if not legacy.policy.owned and not legacy.policy.pending:
             self.legacy=None;self.report['legacy_pending']=False;return True
         sample={**sample,'state':'unknown'}
+        owned=legacy.policy.owned
+        if (owned and not legacy.policy.pending and sample.get('identity')==owned['identity']
+                and sample.get('layout')==owned['wanted']):
+            layouts=(W.HANDLE*64)()
+            count=self.user.GetKeyboardLayoutList(len(layouts),layouts)
+            if not 0<count<=len(layouts) or owned['original'] not in list(layouts)[:count]:
+                self.report.update(state='legacy-layout-recovery',legacy_pending=False,legacy_scope='original-layout-unavailable')
+                return False
+        self.report.pop('legacy_scope',None)
         request=legacy.policy.step(sample,None,None,time.monotonic())
         if request:
             if request['switch']:raise ValueError('Legacy new layout switch prohibited')
@@ -410,8 +419,7 @@ class InputMethod(InputLanguage):
             self.ime=ImeContext(self.user)
             try:
                 self.load(path)
-                layouts=(W.HANDLE*64)();count=self.user.GetKeyboardLayoutList(64,layouts)
-                saved=read_layout_journal(self.desktop.runtime/'input-language-owned.json',list(layouts)[:count])
+                saved=read_layout_journal(self.desktop.runtime/'input-language-owned.json')
                 if saved['owned'] or saved['pending']:
                     self.legacy=InputLanguage(self.desktop);self.legacy.policy.owned=saved['owned'];self.legacy.policy.pending=saved['pending']
                     self.legacy_saved=json.loads(json.dumps(saved))
@@ -436,6 +444,9 @@ class InputMethod(InputLanguage):
                 try:
                     serial,epoch,protected,_=self.snapshot();sample=self.sample()
                     if not self.desktop.settings['enabled'] and self.focus_policy:self.stop_focus_policy()
+                    if not self.legacy_step(sample):
+                        delay=.25
+                        continue
                     # Attach and arm the synchronous focus policy before any UXP
                     # or tool read: PS startup must not delay shortcut protection.
                     if (self.context_schema==2 and not old_context and self.desktop.settings['enabled'] and
@@ -466,7 +477,6 @@ class InputMethod(InputLanguage):
                         self.protect() if event[2]=='enter' else self.edit_end()
                         self.report['tool_events']=self.report.get('tool_events',0)+1
                         continue
-                    if not self.legacy_step(sample):continue
                     if self.policy.owned and not self.policy.pending and process_exited(self.policy.owned['identity']):self.retire(path,'original-process-exited')
                     scope=tuple(sample.get('identity',[]))
                     mouse=bool(self.user.GetAsyncKeyState(1)&0x8000)

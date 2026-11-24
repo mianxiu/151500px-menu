@@ -2,12 +2,54 @@
 import asyncio
 import hashlib
 import json
+import math
 import re
+import tempfile
 import uuid
+from pathlib import Path
 from . import text_object
 from .paths import ROOT
 from .text_plan import compute
 from .settings import atomic_json
+
+FIXTURE_LAYER_STATE='''
+function fixtureLayers(root){
+    var rows=[];
+    function walk(group,parent){for(var i=0;i<group.layers.length;i++){
+        var l=group.layers[i],isGroup=l.typename==='LayerSet';
+        rows.push([l.id,parent,l.visible,isGroup?'group':String(l.kind),
+            !isGroup&&l.kind===LayerKind.TEXT?l.textItem.contents:null]);
+        if(isGroup)walk(l,l.id);
+    }}
+    walk(root,0);return encode(rows);
+}
+'''
+
+def object_frame(snapshot):
+    frame=snapshot.get('object_frame')
+    if not isinstance(frame,list) or len(frame)!=8 or any(type(value) not in (float,int) or not math.isfinite(value) for value in frame):
+        raise RuntimeError('文字对象的实际置入四角无效')
+    return frame
+
+
+def check_frame(actual,expected):
+    if any(abs(value-wanted)>.02 for value,wanted in zip(actual,expected)):
+        raise RuntimeError('文字对象置入位置不一致：'+json.dumps({'actual':actual,'expected':expected}))
+
+
+def owned_document(doc_id,names):
+    name_changed='&&'.join('app.activeDocument.name!=='+json.dumps(name) for name in names)
+    return (f'if(!app.documents.length||app.activeDocument.id!=={doc_id}||({name_changed}))'
+            "throw Error('Owned fixture target changed');var d=app.activeDocument;")
+
+
+def native_test_files(run):
+    root=Path(tempfile.gettempdir()).resolve()
+    longest=root/'pmt-12345678'/f'151500px text acceptance {run} 300.psd'
+    if len(str(longest))>240:
+        raise RuntimeError('Photoshop 原生验收需要较短的 Windows 临时目录')
+    return Path(tempfile.mkdtemp(prefix='pmt-',dir=root))
+
 
 def compile_rejection(record):
     """A returned top-level parser error cannot have entered this fixed wrapper."""
@@ -69,6 +111,9 @@ async def native(test,code):
 
 async def run(test):
     bridge=test.app.bridge
+    in_place=test.report.get('profile')=='text-object-in-place'
+    files=native_test_files(test.report['run_id'])
+    test.report['native_test_files']=str(files)
     async def read():
         test.check()
         return (await test.test_read(text_inspect=True))['text']
@@ -82,8 +127,12 @@ async def run(test):
         if style:params['typography']=style
         if model:params.update(object_source=model,object_render=text_object.render_hash(snapshot['object_xmp']))
         await asyncio.to_thread(test.app.desktop.focus_search_result)
-        value=await bridge.execute_text_object(snapshot['target'],params,before_dispatch=test.before_dispatch)
-        if json.loads(value['result']).get('verified') is not True:raise RuntimeError('文字对象生成核验失败')
+        value=await bridge.execute_text_object(snapshot['target'],params,before_dispatch=test.before_dispatch,
+                                               **({'in_place_fixture':name} if in_place else {}))
+        receipt=json.loads(value['result'])
+        if receipt.get('verified') is not True:raise RuntimeError('文字对象生成核验失败')
+        if in_place and (receipt.get('source_workspace')!='in-place' or not receipt.get('retained_history_count')):
+            raise RuntimeError('原位导出或历史凭据缺失')
         return value
 
     for index,dpi in enumerate((72,300),1):
@@ -106,21 +155,67 @@ async def run(test):
         test.report['text_fixture']=fixture
         test.report['cleanup']='retained-text-object-fixture'
         await test.save()
-        owned='if(!app.documents.length||app.activeDocument.id!=='+str(fixture['document_id'])+'||app.activeDocument.name!=='+json.dumps(name)+")throw Error('Owned fixture target changed');var d=app.activeDocument;"
+        names=[name,name+'.psd'] if in_place else [name]
+        owned=owned_document(fixture['document_id'],names)
+        if in_place:
+            # Only the verified fixture is saved to this fresh path.
+            saved_path=files/(name+'.psd')
+            baseline=await test.step('text-object-saved-baseline',lambda:native(test,owned+FIXTURE_LAYER_STATE+'''
+                var text=d.activeLayer,group=d.layerSets.add();
+                var visible=group.artLayers.add(),hidden=group.artLayers.add();hidden.visible=false;d.activeLayer=text;
+                var file=new File('''+json.dumps(saved_path.as_posix())+''');
+                if(file.exists)throw Error('Original fixture path already exists');
+                var options=new PhotoshopSaveOptions(),dialogs=app.displayDialogs;options.layers=true;
+                try{app.displayDialogs=DialogModes.NO;d.saveAs(file,options,false,Extension.LOWERCASE);}
+                finally{app.displayDialogs=dialogs;}
+                if(d.activeLayer.id!==text.id||!file.exists||!d.saved||!visible.visible||hidden.visible)throw Error('Isolated saved baseline failed');
+                return {layer:text.id,history_count:d.historyStates.length,saved:d.saved,layers:fixtureLayers(d)};
+            '''))
         snap=await read()
         if snap['target']['document_id']!=fixture['document_id']:raise RuntimeError('隔离文字目标不一致')
         await test.step('text-object-create',lambda:write(snap,snap['text'],{'tracking':35}))
         created=await read();model=text_object.read(created['object_xmp'])
         if model['schema']!=1 or model['layer']['text']['textKey']!=snap['text'] or any(row['textStyle'].get('tracking')!=35 for row in model['layer']['text']['textStyleRange']):raise RuntimeError('PS原生文字源或字距不一致')
+        original_frame=object_frame(created)
         original_id=created['target']['active_layer_id'];original_xmp=created['object_xmp']
-        scaled=await test.step('text-object-scale',lambda:native(test,owned+"var l=d.activeLayer.duplicate();d.activeLayer=l;l.resize(125,125,AnchorPosition.MIDDLECENTER);l.translate(UnitValue(17,'px'),UnitValue(9,'px'));return {copy_id:l.id};"))
+        if in_place:
+            await test.step('text-object-create-undo',lambda:native(test,owned+FIXTURE_LAYER_STATE+'''
+                var states=d.historyStates,newest=d.activeHistoryState;
+                if(states.length!=='''+str(baseline['history_count']+1)+''')throw Error('Create did not add exactly one history step');
+                d.activeHistoryState=states[states.length-2];
+                if(fixtureLayers(d)!=='''+json.dumps(baseline['layers'])+''')
+                    throw Error('Undo did not restore the original fixture layer tree, text and visibility');
+                var selectionRestored=d.activeLayer.id==='''+str(baseline['layer'])+''',savedRestored=d.saved==='''+json.dumps(baseline['saved'])+''';
+                d.activeHistoryState=newest;
+                if(d.activeLayer.id!=='''+str(original_id)+''')throw Error('Redo did not restore the created object');
+                return {one_undo:true,redo:true,original_selection_restored:selectionRestored,original_saved_restored:savedRestored};
+            '''))
+        # Scale about the placement centre and translate the copy. Layer.resize
+        # may anchor on visible layer bounds, so measure translation separately.
+        scaled=await test.step('text-object-scale',lambda:native(test,owned+'''
+            var l=d.activeLayer.duplicate();d.activeLayer=l;
+            var s=stringIDToTypeID;
+            function frame(){var r=new ActionReference();r.putProperty(s('property'),s('smartObjectMore'));r.putIdentifier(s('layer'),l.id);
+                var values=executeActionGet(r).getObjectValue(s('smartObjectMore')).getList(s('transform')),points=[];
+                for(var i=0;i<values.count;i++)points.push(values.getDouble(i));return points;}
+            l.resize(200,200,AnchorPosition.MIDDLECENTER);var before=frame();
+            l.translate(UnitValue(17,'px'),UnitValue(9,'px'));return {copy_id:l.id,before_move:before};
+        '''))
         copied=await read()
         if copied['target']['active_layer_id']!=scaled['copy_id']:raise RuntimeError('缩放副本选择不一致')
+        copied_frame=object_frame(copied)
+        before_move=object_frame({'object_frame':scaled['before_move']})
+        for index in range(0,8,2):
+            if (abs((before_move[index]-before_move[0])-2*(original_frame[index]-original_frame[0]))>.02 or
+                abs((before_move[index+1]-before_move[1])-2*(original_frame[index+1]-original_frame[1]))>.02):
+                raise RuntimeError('文字对象副本的实际缩放比例与 200% 不一致')
+        check_frame(copied_frame,[value+offset for value,offset in zip(before_move,[17,9]*4)])
         await test.step('text-object-update',lambda:write(copied,snap['text'].replace('old','new'),{'tracking':-10}))
         updated=await read();updated_id=updated['target']['active_layer_id']
+        check_frame(object_frame(updated),copied_frame)
         updated_text=text_object.read(updated['object_xmp'])['layer']['text']
         if updated_text['textKey']!=snap['text'].replace('old','new') or any(row['textStyle'].get('tracking')!=-10 for row in updated_text['textStyleRange']):raise RuntimeError('更新正文或字距不一致')
-        path=test.folder/(test.report['run_id']+'-'+str(dpi)+'.psd')
+        path=files/('reopen-'+str(dpi)+'.psd')
         await test.step('text-object-undo-save-close',lambda:native(test,owned+'''
             var s=stringIDToTypeID;
             function metadata(){var r=new ActionReference();r.putProperty(s('property'),s('XMPMetadataAsUTF8'));r.putIdentifier(s('layer'),d.activeLayer.id);return executeActionGet(r).getString(s('XMPMetadataAsUTF8'));}
@@ -130,7 +225,10 @@ async def run(test):
             d.activeHistoryState=newest;if(metadata()!==after)throw Error('Redo mismatch');
             select('''+str(original_id)+''');if(metadata()!=='''+json.dumps(original_xmp)+''')throw Error('Original instance changed');select('''+str(updated_id)+''');
             var file=new File('''+json.dumps(path.as_posix())+''');if(file.exists)throw Error('Persistence identity reused');
-            var options=new PhotoshopSaveOptions();options.layers=true;d.saveAs(file,options,true,Extension.LOWERCASE);d.close(SaveOptions.DONOTSAVECHANGES);
+            var options=new PhotoshopSaveOptions(),dialogs=app.displayDialogs;options.layers=true;
+            try{app.displayDialogs=DialogModes.NO;d.saveAs(file,options,true,Extension.LOWERCASE);}
+            finally{app.displayDialogs=dialogs;}
+            d.close(SaveOptions.DONOTSAVECHANGES);
             d=app.open(file);select('''+str(updated_id)+''');if(metadata()!==after)throw Error('Saved source mismatch');d.close(SaveOptions.DONOTSAVECHANGES);
             var ids=[];for(var i=0;i<app.documents.length;i++)ids.push(app.documents[i].id);
             if(encode(ids)!=='''+json.dumps(json.dumps(fixture['documents'],separators=(',',':')))+''')throw Error('Original document inventory changed');
@@ -153,6 +251,8 @@ async def cleanup(test):
         raise ValueError('Original document identity missing')
     name='151500px text acceptance '+run_id+' '+str((72,300)[round_number-1])
     restore=("for(var i=0;i<app.documents.length;i++)if(app.documents[i].id==="+str(original)+"){app.activeDocument=app.documents[i];break;}" if original is not None else '')
-    result=await native(test,"if(!app.documents.length||app.activeDocument.id!=="+str(doc_id)+"||app.activeDocument.name!=="+json.dumps(name)+")throw Error('Owned fixture target changed');app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);var ids=[];for(var i=0;i<app.documents.length;i++)ids.push(app.documents[i].id);if(encode(ids)!=="+json.dumps(json.dumps(documents,separators=(',',':')))+")throw Error('Original inventory mismatch');"+restore+"app.currentTool="+json.dumps(tool)+";return {closed_owned_document:true,original_active_restored:true};")
+    names=[name,name+'.psd'] if test.report.get('profile')=='text-object-in-place' else [name]
+    name_changed='&&'.join('app.activeDocument.name!=='+json.dumps(item) for item in names)
+    result=await native(test,"if(!app.documents.length||app.activeDocument.id!=="+str(doc_id)+"||("+name_changed+"))throw Error('Owned fixture target changed');app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);var ids=[];for(var i=0;i<app.documents.length;i++)ids.push(app.documents[i].id);if(encode(ids)!=="+json.dumps(json.dumps(documents,separators=(',',':')))+")throw Error('Original inventory mismatch');"+restore+"app.currentTool="+json.dumps(tool)+";return {closed_owned_document:true,original_active_restored:true};")
     test.report.pop('text_fixture')
     return result

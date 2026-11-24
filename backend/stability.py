@@ -20,6 +20,8 @@ from .stability_failures import describe
 
 class Stopped(RuntimeError):pass
 
+TEXT_OBJECT_PROFILES=('text-object','text-object-in-place')
+
 STAGE_LABELS={'fixture':'正在创建隔离临时文档','idle-read':'正在检查闲置后的图层读取',
     'isolated-read':'正在检查隔离文档的图层读取','shape-commit-undo':'正在核验形状写入与一次撤销',
     'text-object-fixture':'正在创建隔离文字文档','text-object-create':'正在生成矢量文字对象',
@@ -103,7 +105,7 @@ class StabilityTest:
         """Only a verified fixture owned by this original run is eligible."""
         if 'retained' not in self.report.get('cleanup',''):return None
         fixture=self.report.get('text_fixture',{})
-        if (self.report.get('profile')=='text-object' and type(fixture.get('document_id')) is int and
+        if (self.report.get('profile') in TEXT_OBJECT_PROFILES and type(fixture.get('document_id')) is int and
                 self.report.get('native_request',{}).get('phase') in ('returned','not-started')):
             session=self.report.get('versions',{}).get('session')
             if session:return {'session':session,'document_id':fixture['document_id']}
@@ -129,7 +131,7 @@ class StabilityTest:
         await self.app.broadcast({'type':'stability','data':self.snapshot()})
 
     async def start(self,profile='standard'):
-        if profile not in ('standard','extended','quiet','text-object','color-native','gradient-editor'):raise ValueError('未知测试模式')
+        if profile not in ('standard','extended','quiet','color-native','gradient-editor',*TEXT_OBJECT_PROFILES):raise ValueError('未知测试模式')
         if self.report.get('native_request',{}).get('phase') in ('submitted','unknown'):
             raise RuntimeError('原生验收请求退出仍未知，未开始新的测试')
         if self.report.get('text_fixture'):
@@ -207,7 +209,7 @@ class StabilityTest:
                 self.report.update(phase='cleaned',message='原颜色验收文档已核验并关闭',
                     cleanup='verified-closed-and-original-restored',cleanup_phase='completed',cleanup_evidence=evidence)
                 return
-            if self.report.get('profile')=='text-object':
+            if self.report.get('profile') in TEXT_OBJECT_PROFILES:
                 from .text_object_acceptance import cleanup
                 evidence=await cleanup(self)
                 self.report.update(phase='cleaned',message='原文字验收文档已核验并关闭',
@@ -280,7 +282,7 @@ class StabilityTest:
         # reply still cannot authorize a new cleanup mutation. Fail closed;
         # a timeout, heartbeat or menu close is not execution-exit proof.
         self.report['read_request_pending']=True
-        binding={} if self.report.get('profile') in ('text-object','color-native','gradient-editor') else {'stability_run':self.report['run_id']}
+        binding={} if self.report.get('profile') in ('color-native','gradient-editor',*TEXT_OBJECT_PROFILES) else {'stability_run':self.report['run_id']}
         try:value=await asyncio.to_thread(self.app.bridge.transport.call,'inspect',**binding,**payload)
         except UxpRequestFailed:
             self.report['read_request_pending']=False
@@ -449,7 +451,7 @@ class StabilityTest:
                 await run(self)
                 self.report.update(phase='completed',message='渐变隔离验收完成，报告已保存')
                 return
-            if self.report.get('profile')=='text-object':
+            if self.report.get('profile') in TEXT_OBJECT_PROFILES:
                 if version(heartbeat.get('probe_version'))<(0,3,100):raise RuntimeError('文字对象验收需要UXP0.3.100')
                 from .text_object_acceptance import run
                 await run(self)

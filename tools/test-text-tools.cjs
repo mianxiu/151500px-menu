@@ -41,7 +41,7 @@ const original={layerID:11,name:'mixed',layerKind:3,layerLocking:{protectAll:fal
  paragraphStyleRange:[{_obj:'paragraphStyleRange',from:0,to:5,paragraphStyle:{align:'left'}},{_obj:'paragraphStyleRange',from:5,to:9,paragraphStyle:{align:'center'}}],
  antiAlias:{_value:'antiAliasCrisp'},textClickPoint:{x:1,y:2},orientation:'horizontal',textShape:[{char:{_value:'paint'},transform:{xx:1,yy:1}}],warp:{style:'none'},kerningRange:[]}};
 let row=clone(original),target={session:'s',document_id:1,active_layer_id:11,layer_ids:[11]},before,history=0,commits=0,writes=0,failWrite=false,wrongStyle=false,rollbackFail=false,materializeParagraphs=false,wrongXmp=false,fallbackGlyph=false;
-let sceneHistory=72, savedProof=null, proofSaveError=false, normalizeFontTags=false;
+let sceneHistory=72, savedProof=null, proofSaveError=false, normalizeFontTags=false, changeSmartHistory=false;
 const ps={app:{activeDocument:{resolution:72}},core:{getActiveTool:async()=>({classID:"moveTool",isModal:false}),executeAsModal:async fn=>fn({isCancelled:false,hostControl:{suspendHistory:async()=>{history++;before=clone(row);return 'h';},resumeHistory:async(_,commit)=>{if(commit)commits++;else{if(rollbackFail)throw Error('rollback');row=before;}}}})},action:{batchPlay:async commands=>commands.map(c=>{
  assert.equal(c._options.dialogOptions,'silent');
  if(c._obj==='get'&&c._target[0]._ref==='historyState')return {ID:sceneHistory};
@@ -54,6 +54,10 @@ const ps={app:{activeDocument:{resolution:72}},core:{getActiveTool:async()=>({cl
  }
  if(c._obj==='multiGet')return clone(row);
  if(c._obj==='get'&&c._target[0]._property==='XMPMetadataAsUTF8')return {XMPMetadataAsUTF8:row.XMPMetadataAsUTF8||''};
+ if(c._obj==='get'&&c._target[0]._property==='smartObject'){
+  if(changeSmartHistory)sceneHistory++;
+  return {smartObject:row.smartObject};
+ }
  if(c._obj==='get'&&c._target[0]._property==='smartObjectMore')return {smartObjectMore:row.smartObjectMore};
  if(c._obj==='set'&&c.to?._obj==='layer'){assert.equal(c._target[0]._property,'XMPMetadataAsUTF8');if(!wrongXmp)row.XMPMetadataAsUTF8=c.to.XMPMetadataAsUTF8;return {};}
  if(c._obj==='set'){
@@ -84,6 +88,25 @@ async function request(find,replacement){const read=await tools.read();return {t
 (async()=>{
  ps.constants={DocumentMode:{RGB:'rgb'},BitsPerChannelType:{EIGHT:8}};
  Object.assign(ps.app.activeDocument,{width:600,height:400,mode:'rgb',bitsPerChannel:8,colorProfileName:'sRGB IEC61966-2.1'});
+ const metadata='<x:xmpmeta xmlns:source="https://15100px.menu/ns/text-object/1.0/" />';
+ const smart={...target,kind:'smart',locked:false};
+ row={layerID:11,layerKind:5,name:'embedded PDF',XMPMetadataAsUTF8:metadata,
+  smartObject:{placed:{_value:'vectorData'},linked:false},smartObjectMore:{transform:[0,0,600,0,600,400,0,400]}};
+ assert.equal(await tools.menuSource(smart),metadata);
+ assert.equal(await tools.menuSource({...smart,layer_ids:[12]}),null);
+ row.smartObject.linked=true;
+ assert.equal(await tools.menuSource(smart),null);
+ row.smartObject.linked=false;
+ changeSmartHistory=true;
+ assert.equal(await tools.menuSource(smart),null);
+ changeSmartHistory=false;
+ ps.app.activeDocument.width=6000;
+ ps.app.activeDocument.height=4000;
+ const largeObject=await tools.read(true);
+ assert.equal(largeObject.object_proof,undefined);
+ assert.deepEqual(clone(largeObject.object_canvas_size),[6000,4000]);
+ Object.assign(ps.app.activeDocument,{width:600,height:400});
+ row=clone(original);
  let preparedRequest=await request('猫','XY');
  const cells=[['项目','数量'],['Alpha','12']];
  const table=await tools.prepareObject(preparedRequest,{revision:preparedRequest.text.revision,cells});

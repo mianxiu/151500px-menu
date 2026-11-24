@@ -1,7 +1,9 @@
 """One selected text layer, read-only preview and explicit single-history commit."""
 import asyncio
 import math
+import re
 import secrets
+from bisect import bisect_left
 from .layer_search import require_available
 from .operation_target import validate_target
 from .text_plan import compute,evaluate,normalize,parameters,units
@@ -184,8 +186,25 @@ def validate_style_scope(style,saved,args):
         raise ValueError('高级段落排版需要更新执行插件并重新读取文本')
     if style.keys() & set(INDENTS) and not saved.get('paragraph_indents_supported'):
         raise ValueError('请重新读取支持段落缩进的普通文字层')
-    if 'range' in style and (not saved.get('style_scope_supported') or args.get('operation')!='edit'):
-        raise ValueError('局部排版需在排版页确认，请先完成其他正文处理')
+    if 'range' in style and not saved.get('style_scope_supported'):
+        raise ValueError('局部排版需要更新执行插件并重新读取文本')
+
+
+def map_typography(styles,draft,origins):
+    encoded=draft.encode('utf-16-le')
+    length=len(encoded)//2
+    result=[]
+    for style in styles:
+        if 'range' not in style:
+            result.append(style)
+            continue
+        start,end=style['range']
+        if end>length+1 or any(at<length and encoded[at*2+1]&0xfc==0xdc for at in (start,end)):
+            raise ValueError('排版选区已改变，请重新选择')
+        if origins is not None:
+            start,end=bisect_left(origins,start),bisect_left(origins,end)
+        if start<end:result.append({**style,'range':[start,end]})
+    return result
 
 
 def font_in_run(style,fallback):
@@ -232,7 +251,7 @@ def box_horizontal_shift(value):
     return value
 
 
-def object_text_box(raw,canvas,frame,document):
+def object_text_geometry(raw,canvas,frame,document,style):
     if (not isinstance(frame,list) or len(frame)!=8 or any(type(value) not in (int,float) or not math.isfinite(value) for value in frame)
             or not isinstance(document,list) or len(document)!=2 or any(type(value) is not int or value<=0 for value in document)):
         return None
@@ -245,17 +264,32 @@ def object_text_box(raw,canvas,frame,document):
     if width<=0 or height<=0 or max(abs(y1-top),abs(x3-left),abs(x2-x1),abs(y2-y3))>.01:return None
     click=raw.get('textClickPoint',{})
     anchors=[click.get(key,{}) for key in ('horizontal','vertical')]
-    bounds=shape.get('bounds',{})
-    if any(anchor.get('_unit')!='percentUnit' or type(anchor.get('_value')) not in (int,float) for anchor in anchors):return None
-    if any(type(bounds.get(key)) not in (int,float) for key in ('left','top','right','bottom')):return None
-    size=[bounds['right']-bounds['left'],bounds['bottom']-bounds['top']]
-    if not all(1<=side<=100000 for side in size):return None
+    if any(anchor.get('_unit')!='percentUnit' or type(anchor.get('_value')) not in (int,float)
+           or not math.isfinite(anchor['_value']) for anchor in anchors):return None
+    try:source_em=float(style['size'])*canvas['resolution']/72
+    except (TypeError,ValueError,KeyError):return None
+    if not math.isfinite(source_em) or source_em<=0:return None
+    red,green,blue=(0,0,0)
+    color=style.get('color','')
+    if re.fullmatch(r'#[0-9A-Fa-f]{6}',color):
+        red,green,blue=(int(color[i:i+2],16) for i in (1,3,5))
     x,y=(anchor['_value']/100 for anchor in anchors)
-    box=[(left+(x+value/canvas['width'])*width)/document[0] for value in (bounds['left'],bounds['right'])]
-    vertical=[(top+(y+value/canvas['height'])*height)/document[1] for value in (bounds['top'],bounds['bottom'])]
-    box.insert(1,vertical[0]);box.append(vertical[1])
-    if not text_canvas.valid_box(box):return None
-    return size,{'box':box,'wrap':True,'em':0,'color':[0,0,0]}
+    wrap=shape['char']['_value']=='box'
+    if wrap:
+        bounds=shape.get('bounds',{})
+        if any(type(bounds.get(key)) not in (int,float) for key in ('left','top','right','bottom')):return None
+        l,t,r,b=(bounds[key] for key in ('left','top','right','bottom'))
+        size=[r-l,b-t]
+        if not all(1<=side<=100000 for side in size):return None
+    else:
+        l,t=0,-source_em
+        r=max(0,(1-x)*canvas['width'])+source_em
+        b=max(source_em,(1-y)*canvas['height'])
+        size=None
+    box=[(left+(x+l/canvas['width'])*width)/document[0],(top+(y+t/canvas['height'])*height)/document[1],
+         (left+(x+r/canvas['width'])*width)/document[0],(top+(y+b/canvas['height'])*height)/document[1]]
+    result={'box':box,'wrap':wrap,'em':source_em*height/canvas['height']/document[1],'color':[red,green,blue]}
+    return (size,result) if text_canvas.valid_text_frame(result) else None
 
 
 def kerning_edits(rows):
@@ -310,12 +344,13 @@ class TextTools:
     def available(self):
         require_available(self.app)
 
-    async def read(self,args,*,fast=False):
+    async def read(self,args,*,fast=False,trace=None):
         self.available()
         if self.reading:raise RuntimeError('文字读取进行中，请等待结果')
         self.reading=True;self.snapshot=None;self.plan=None;self.proved=None
         try:
             result=await asyncio.to_thread(self.app.bridge.transport.call,'inspect',text_inspect=True,
+                                           **({'read_trace':trace} if trace else {}),
                                            **({'text_fast':True} if fast else {}))
             snapshot=result.get('text')
             if isinstance(snapshot,dict) and 'object_xmp' in snapshot:
@@ -344,20 +379,22 @@ class TextTools:
                     public['typography_supported']=snapshot['typography_supported']=False
                 else:
                     raw=model['layer']['text'] if model else snapshot['style_source']
+                    ranges=style_ranges(raw,model['canvas']['resolution'] if model else snapshot['resolution'])
                     if model and model['schema']==1:
                         shapes=raw.get('textShape',[])
                         supported=(len(shapes)==1 and raw.get('orientation',{}).get('_value')=='horizontal'
                                    and raw.get('warp',{}).get('warpStyle',{}).get('_value')=='warpNone'
-                                   and shapes[0].get('char',{}).get('_value')=='box'
+                                   and shapes[0].get('char',{}).get('_value') in ('paint','box')
                                    and shapes[0].get('columnCount',1)==shapes[0].get('rowCount',1)==1)
-                        public['paragraph_indents_supported']=snapshot['paragraph_indents_supported']=supported
+                        public['paragraph_indents_supported']=snapshot['paragraph_indents_supported']=(
+                            supported and shapes[0]['char']['_value']=='box')
                         public['paragraph_alignment_supported']=snapshot['paragraph_alignment_supported']=raw.get('orientation',{}).get('_value')=='horizontal'
-                        if supported and snapshot.get('box_resize_available'):
-                            geometry=object_text_box(raw,model['canvas'],snapshot.get('object_frame'),snapshot.get('proof_size'))
+                        if supported:
+                            geometry=object_text_geometry(raw,model['canvas'],snapshot.get('object_frame'),
+                                snapshot.get('object_canvas_size',snapshot.get('proof_size')),ranges['textStyle'][0]['values'])
                             if geometry:
-                                public['box_size']=snapshot['box_size']=geometry[0]
-                                public['object_text_frame']=geometry[1]
-                    ranges=style_ranges(raw,model['canvas']['resolution'] if model else snapshot['resolution'])
+                                size,public['object_text_frame']=geometry
+                                if size and snapshot.get('box_resize_available'):public['box_size']=snapshot['box_size']=size
                     public['styles']=summarize_ranges(ranges)
                     if snapshot.get('typography_runs_supported'):public['style_ranges']=ranges
                     if snapshot.get('opentype_supported'):
@@ -460,6 +497,8 @@ class TextTools:
         if self.snapshot is not saved:raise ValueError('文字读取已改变，请重新预览')
         split=result['kind']=='split'
         payload={key:result[key] for key in ({'value','origins','count','breaks','layout'} if split else {'value','origins','count'})}
+        draft_origins=result.get('draft_origins')
+        if styles:styles=map_typography(styles,normalize(params['draft']),draft_origins)
         if styles:payload[style_key]=styles if style_key=='typography_runs' else styles[0]
         if kern:payload['kerning']=kern
         if box:payload['box_size']=box
@@ -473,7 +512,9 @@ class TextTools:
             payload['list_options']=value
         identity=secrets.token_hex(16);self.plan=(identity,payload,'text.split' if split else 'text.replace')
         self.transient_plan=identity if transient else None
-        return {key:result[key] for key in ('preview','value','count','changed','kind','characters','matches')}|{'plan_id':identity}
+        response={key:result[key] for key in ('preview','value','count','changed','kind','characters','matches')}|{'plan_id':identity}
+        if draft_origins is not None:response['draft_origins']=draft_origins
+        return response
 
     async def proof(self,args,menu_guard):
         saved=self.snapshot

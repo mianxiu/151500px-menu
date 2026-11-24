@@ -151,7 +151,7 @@ class InputFocusTests(unittest.TestCase):
         time.sleep(.16);self.assertEqual(self.desktop.input_language_tool.call_count,calls)
         self.assertEqual(self.guard.shortcut_context()['state'],'unknown')
         self.desktop.input_language_tool.side_effect=None
-        self.desktop.input_language_reconcile=Mock(side_effect=lambda:True)
+        self.desktop.input_focus_reconcile=Mock(side_effect=lambda:True)
         self.guard.wake.set();self.wait(lambda:self.guard.shortcut_context()['state']=='non-input')
         self.assertEqual(self.desktop.input_language_tool.call_count,calls+1)
         self.assertNotIn('tool_error_type',self.guard.report)

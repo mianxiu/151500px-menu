@@ -61,6 +61,7 @@ class ToolObservation:
         self.last_retired_unknown=None
         self.retirement=None
         self.retirement_scope=None;self.retirement_retry_after=0
+        self.recheck_generation=0
 
     def snapshot(self):
         return {**self.report,'last_failure':dict(self.last_failure) if self.last_failure else None,
@@ -142,6 +143,7 @@ class ToolObservation:
             any(path.read_bytes()!=data for path,data in raw.items() if path.name not in diagnostic_names)):
             raise ToolReadError('retirement-blocked','旧工具观察或宿主发生变化，保留原保护')
         self.path.unlink()
+        self.recheck_generation+=1
         self.retirement={'state':'retired-unknown','reason':'original-producer-exited'}
         self.last_retired_unknown={'state':'unknown','request_id':request['id'],'original_producer_exited':True,
                                    'original_republished':False,'retired_at_ms':round(time.time()*1000)}
@@ -194,13 +196,28 @@ class ToolObservation:
             return None
 
     def reconcile(self):
-        if self.path.exists():
-            try:self.read(publish=False,wait=False,identity=self.identity)
-            except RuntimeError:pass
-            return not self.path.exists()
-        if self.retry_after is not None and time.monotonic()>=self.retry_after:
-            self.retry_after=None;return True
-        return False
+        with self.lock:
+            if self.path.exists():
+                try:self.read(publish=False,wait=False,identity=self.identity)
+                except RuntimeError:pass
+                return not self.path.exists()
+            if self.retry_after is not None and time.monotonic()>=self.retry_after:
+                self.retry_after=None;self.recheck_generation+=1;return True
+            return False
+
+    def reconciler(self):
+        """Each worker observes recovery of the shared mailbox independently."""
+        seen=self.recheck_generation
+        def recheck():
+            nonlocal seen
+            if not self.lock.acquire(blocking=False):return False
+            try:
+                self.reconcile()
+                if self.path.exists() or self.retry_after is not None or seen==self.recheck_generation:return False
+                seen=self.recheck_generation
+                return True
+            finally:self.lock.release()
+        return recheck
 
     def read(self,publish=True,wait=True,identity=None):
         with self.lock:
@@ -230,6 +247,7 @@ class ToolObservation:
             if publish and not self.path.exists():self.retry_after=time.monotonic()+1
             raise
         if tuple(int(v) for v in heartbeat['probe_version'].split('.'))<(0,3,66):
+            if publish and not self.path.exists():self.retry_after=time.monotonic()+1
             raise ToolReadError('executor-too-old','ENG工具编辑状态需要UXP0.3.66；未尝试切换')
         token=json.loads(self.transport.config.read_text('utf-8-sig'))['token']
         request=None
@@ -290,6 +308,7 @@ class ToolObservation:
                     if failure:
                         atomic_json(self.path.with_name('input-tool-last-failure.json'),{'request':request,'failure':failure,'completed_at_ms':stamp})
                     self.path.unlink()
+                    self.recheck_generation+=1
                     if failure:
                         self.retry_after=time.monotonic()+.2
                         raise ToolReadError(failure['reason'],'ENG工具状态失败／失鲜，未切换',failure)

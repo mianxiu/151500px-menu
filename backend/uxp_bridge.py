@@ -126,7 +126,7 @@ class UxpTransport:
             self._observation_until=now+.5
             return folder,heartbeat
 
-    def call(self, operation, preview=None, native_preview=None, **payload):
+    def call(self, operation, preview=None, native_preview=None, *, read_trace=None, **payload):
         import msvcrt
         if self.pending.value or self.pending.error:raise RuntimeError('上一项 UXP 结果待核对，未提交新请求')
         token=json.loads(self.config.read_text('utf-8-sig'))['token']
@@ -238,6 +238,11 @@ class UxpTransport:
                     raise RuntimeError('实时预览需要更新并加载UXP0.3.43，以核验脚本退出并恢复PS原生操作；未提交操作')
                 if preview is not None and getattr(preview,'trace',False):payload['preview_trace']=True
                 request={**payload,'id':identity,'token':token,'session':heartbeat.get('session'),'operation':operation,'expires_at_ms':int(time.time()*1000)+5000}
+                text_read=(operation=='inspect' and payload.get('text_inspect') is True and payload.get('text_fast') is True
+                           and version(heartbeat.get('probe_version'))>=(0,3,138))
+                response_path=folder/('text-read-'+identity+'-response.json' if text_read else 'probe-response.json')
+                text_request=folder/('text-read-'+identity+'-request.json') if text_read else None
+                if text_read:request['text_read_receipt']=True
                 if payload.get('command') in ('text.proof','text.replace') and version(heartbeat.get('probe_version'))>=(0,3,121) and len(json.dumps(request).encode())>4000:
                     request['external_text']=True
                 if text_object or request.get('external_text'):
@@ -259,17 +264,36 @@ class UxpTransport:
                     preview.execution_check=execution_check
                 try:
                     if preview is not None:preview.bind(folder,request)
+                    if text_request is not None:
+                        from .settings import atomic_json
+                        atomic_json(text_request,request)
                     temporary.write_text(encoded,'utf-8');publish_request(temporary,folder/'probe-request.json')
                 except Exception:
                     if modifying:self.pending.clear()
+                    if text_request is not None:text_request.unlink(missing_ok=True)
                     raise
                 interactive=operation=='set_label' and (payload.get('command') in ('editStyle','shape.preview','shape.legacy.preview') or payload.get('command')=='layer.frame' and payload.get('frame_preview') is True)
-                deadline=None if interactive else time.monotonic()+self.response_timeout
+                started=time.monotonic()
+                deadline=None if interactive else started+(min(self.response_timeout,30) if text_read else self.response_timeout)
+                if text_read and read_trace:
+                    logging.info('Typeset epoch=%s request=%s UXP request=%s stage=published',*read_trace,identity)
                 checked=0;native_started=False;native_error_at=None
                 while deadline is None or time.monotonic()<deadline:
                     try:
-                        response=self.pending.read_result(allow_unknown=True) if modifying else json.loads((folder/'probe-response.json').read_text('utf-8-sig'))
+                        response=self.pending.read_result(allow_unknown=True) if modifying else json.loads(response_path.read_text('utf-8-sig'))
                         if response is not None and response.get('id')==identity:
+                            if text_read:
+                                if response.get('schema')!=1 or any(response.get(k)!=request[k] for k in ('session','operation')) or response.get('phase') not in ('completed','failed'):
+                                    raise UxpResultUnknown('文字读取回执身份或状态不符，已保留原读取记录')
+                                raw_trace=response.get('text_trace')
+                                trace={key:raw_trace[key] for key in ('target_ms','descriptor_ms','source_width','source_height','characters')
+                                       if isinstance(raw_trace,dict) and type(raw_trace.get(key)) is int and 0<=raw_trace[key]<=1000000}
+                                logging.info('Typeset UXP request=%s stage=receipt elapsed_ms=%d outcome=%s metrics=%s',
+                                             identity,(time.monotonic()-started)*1000,response['phase'],trace)
+                                # Independent files only belong to this read.
+                                for path in (response_path,text_request):
+                                    try:path.unlink(missing_ok=True)
+                                    except OSError:logging.warning('Could not clean completed text read request=%s',identity)
                             if preview is not None:getattr(preview,'execution_finished',preview.execution_check)()
                             if response.get('phase')!='completed':
                                 if response.get('result_unknown'):raise UxpResultUnknown(response.get('error','新建结果未知，请检查 Photoshop'))
@@ -317,6 +341,13 @@ class UxpTransport:
                             if current.get('session')!=request['session']:raise UxpResultUnknown('PS会话已改变，'+operation_name+'结果待核对；不重发')
                         except (OSError,ValueError):pass
                     time.sleep(.008)
+                if text_read:
+                    from .settings import atomic_json
+                    atomic_json(folder/('text-read-'+identity+'-unknown.json'),{
+                        'id':identity,'session':request['session'],'operation':operation,'phase':'unknown',
+                        'elapsed_ms':round((time.monotonic()-started)*1000)})
+                    logging.info('Typeset UXP request=%s stage=receipt outcome=unknown elapsed_ms=%d',identity,(time.monotonic()-started)*1000)
+                    raise UxpResultUnknown('Photoshop 正文和样式读取未获回执，已保留原读取记录')
                 raise UxpResultUnknown('UXP 回应超时，结果待核对；已阻止新操作，不自动重发')
             finally:
                 lease.seek(0);msvcrt.locking(lease.fileno(),msvcrt.LK_UNLCK,1)
@@ -676,7 +707,7 @@ class UxpBridge(PhotoshopBridge):
             if proof_frame:proof_frame[0].close()
             raise
 
-    async def execute_text_object(self,target,params,before_dispatch=None,proof_scale=None,proof_history=None,proof_isolated=False):
+    async def execute_text_object(self,target,params,before_dispatch=None,proof_scale=None,proof_history=None,proof_isolated=False,*,in_place_fixture=None):
         from .text_tools import replace_parameters
         from . import text_object
         params=dict(params);existing=params.pop('object_source',None);render=params.pop('object_render',None)
@@ -720,7 +751,8 @@ class UxpBridge(PhotoshopBridge):
                     rejected={**{k:request[k] for k in ('id','session','operation','token')},'schema':1,'phase':'failed','error':str(error),'not_executed':True,'result_unknown':False,'execution_exit':{'engine':'backend-preflight','not_started':True,'exited':True}}
                     atomic_json(folder/('legacy-result-'+request['id']+'.json'),rejected)
                     return json.dumps(rejected)
-                return invoke(application,folder,{**request,'edit':edit},ready,model,xml)
+                options={'in_place_fixture':in_place_fixture} if in_place_fixture is not None else {}
+                return invoke(application,folder,{**request,'edit':edit,**options},ready,model,xml)
             try:
                 response=self.transport.call('set_label',command='text.object',target=self._captured_target,text=params,native_preview=native,
                     **({'object_proof':True,'proof_scale':proof_scale} if proof_scale is not None else {}),

@@ -60,13 +60,15 @@ class StabilityTests(unittest.IsolatedAsyncioTestCase):
         paint.assert_awaited_once_with(live_preview=False)
 
     async def test_text_object_profile_reserves_existing_lock_without_external_scripts(self):
-        gate=asyncio.Event()
-        with patch.object(self.test,'run',gate.wait):
-            result=await self.test.start('text-object')
-            self.assertEqual(result['rounds'],2);self.assertTrue(self.app.operation_lock.locked())
-            self.assertFalse(self.test.report['scope']['native_menu_lifecycle'])
-            gate.set();await self.test.task
-        self.test.active=False;self.app.operation_lock.release()
+        for profile in ('text-object','text-object-in-place'):
+            gate=asyncio.Event()
+            with patch.object(self.test,'run',gate.wait):
+                result=await self.test.start(profile)
+                self.assertEqual(result['profile'],profile)
+                self.assertEqual(result['rounds'],2);self.assertTrue(self.app.operation_lock.locked())
+                self.assertFalse(self.test.report['scope']['native_menu_lifecycle'])
+                gate.set();await self.test.task
+            self.test.active=False;self.app.operation_lock.release()
 
     async def test_text_object_native_unknown_and_retained_fixture_block_restarts(self):
         for record in ({'native_request':{'phase':'unknown'}},{'text_fixture':{'document_id':7}}):
@@ -134,6 +136,29 @@ class StabilityTests(unittest.IsolatedAsyncioTestCase):
             await self.test.test_read(text_inspect=True)
         call.assert_called_once_with('inspect',text_inspect=True)
         self.assertFalse(self.test.report['read_request_pending'])
+
+    async def test_in_place_fixture_enters_saved_baseline_with_fixed_target(self):
+        from backend.text_object_acceptance import run
+        self.test.report={'profile':'text-object-in-place','run_id':'a'*32,'steps':[],'skipped':[]}
+        self.test.check=lambda:None
+        fixture={'document_id':71,'layer_id':8,'original':59,'documents':[59],'tool':'moveTool'}
+        native=AsyncMock(side_effect=[fixture,RuntimeError('fixture saved-baseline sentinel')])
+        with patch('backend.text_object_acceptance.native',native):
+            with self.assertRaisesRegex(RuntimeError,'fixture saved-baseline sentinel'):
+                await run(self.test)
+        guard=native.call_args.args[1]
+        self.assertIn('app.activeDocument.id!==71',guard)
+        name='151500px text acceptance '+'a'*32+' 72'
+        for expected in (name,name+'.psd'):
+            self.assertIn('app.activeDocument.name!=='+json.dumps(expected),guard)
+        output=Path(self.test.report['native_test_files'])
+        self.addCleanup(output.rmdir)
+        self.assertLessEqual(len(str(output/(name+'.psd'))),240)
+        self.assertIn(json.dumps((output/(name+'.psd')).as_posix()),guard)
+        self.assertIn('finally{app.displayDialogs=dialogs;}',guard)
+        self.assertEqual(self.test.report['text_fixture'],fixture)
+        self.assertEqual([entry['stage'] for entry in self.test.report['steps']],
+                         ['text-object-fixture','text-object-saved-baseline'])
 
     def test_nonfixture_json_result_does_not_break_status_or_become_cleanup_owner(self):
         self.test.report={'cleanup':'retained-text-object-fixture','steps':[

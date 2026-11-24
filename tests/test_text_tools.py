@@ -34,7 +34,7 @@ class TextToolsTests(unittest.IsolatedAsyncioTestCase):
             await tools.preview(args)
             self.assertEqual(tools.plan[1]['typography'],{**args['typography'],'firstLineIndent':-3.5})
             tools.snapshot['list_xmp']=write('',OPTIONS)
-            with self.assertRaisesRegex(ValueError,'列表层级'):await tools.preview(args)
+            with self.assertRaisesRegex(ValueError,'列表使用自身的段落对齐、缩进与断字设置'):await tools.preview(args)
             await tools.preview({**args,'typography':{'endIndent':5}})
             self.assertEqual(tools.plan[1]['typography'],{'endIndent':5})
         for values in ({'startIndent':-1},{'endIndent':-1},{'firstLineIndent':-1297},{'endIndent':'nan'}):
@@ -62,6 +62,25 @@ class TextToolsTests(unittest.IsolatedAsyncioTestCase):
         for invalid in ([[1,True]],[[0,0]],[[1,0],[1,None]],[[1,1001]]):
             with self.assertRaises(ValueError):await tools.preview({**args,'kerning':invalid})
 
+    async def test_processed_result_keeps_scoped_styles_between_replacements(self):
+        from backend.text_plan import compute
+        tools=TextTools(SimpleNamespace());tools.available=Mock()
+        tools.snapshot={'revision':'r','text':'x😀BxC','typography_supported':True,
+                        'typography_runs_supported':True,'style_scope_supported':True}
+        args={'operation':'replace','revision':'r','draft':'x😀BxC','find':'x','replacement':'ZZ','regex':False,'ignore_case':False,
+              'typography_runs':[{'range':[1,4],'size':18},{'range':[5,7],'tracking':52}]}
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            result=await tools.preview(args)
+            self.assertEqual(result['value'],'ZZ😀BZZC')
+            self.assertEqual(result['draft_origins'],[0,0,1,2,3,4,4,5,6])
+            self.assertEqual(tools.plan[1]['typography_runs'],[
+                {'range':[2,5],'size':18},{'range':[7,9],'tracking':52}])
+            await tools.preview({**args,'replacement':'','typography_runs':[{'range':[0,1],'size':18}]})
+            self.assertNotIn('typography_runs',tools.plan[1])
+            with self.assertRaisesRegex(ValueError,'排版选区已改变'):
+                await tools.preview({**args,'typography_runs':[{'range':[2,4],'size':18}]})
+            self.assertIsNone(tools.plan)
+
     async def test_hovered_font_plan_cannot_be_written_or_converted(self):
         tools=TextTools(SimpleNamespace());tools.available=Mock()
         tools.snapshot={'revision':'r','text':'AV','typography_supported':True,'proof_available':True}
@@ -81,9 +100,9 @@ class TextToolsTests(unittest.IsolatedAsyncioTestCase):
             bridge=SimpleNamespace(execute_text=AsyncMock(return_value={}),busy=False,layer_context={}),broadcast=AsyncMock())
         tools=TextTools(app);tools.available=Mock()
         tools.snapshot={'revision':'r','text':'ab','target':{},'typography_supported':True}
-        raw={'textStyleRange':[{'textStyle':{'size':{'_unit':'pixelsUnit','_value':50},'fontPostScriptName':'Alpha'}},
-                               {'textStyle':{'size':{'_unit':'pointsUnit','_value':12},'fontPostScriptName':'Beta'}}],
-             'paragraphStyleRange':[{'paragraphStyle':{}}]}
+        raw={'textStyleRange':[{'from':0,'to':1,'textStyle':{'size':{'_unit':'pixelsUnit','_value':50},'fontPostScriptName':'Alpha'}},
+                               {'from':1,'to':2,'textStyle':{'size':{'_unit':'pointsUnit','_value':12},'fontPostScriptName':'Beta'}}],
+             'paragraphStyleRange':[{'from':0,'to':2,'paragraphStyle':{}}]}
         summary=style_summary(raw,300)
         self.assertEqual(summary['size'],'12');self.assertEqual(summary['fontPostScriptName'],'混合')
         with patch('backend.text_tools.evaluate',side_effect=compute):

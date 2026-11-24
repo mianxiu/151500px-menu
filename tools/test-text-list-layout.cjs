@@ -14,7 +14,11 @@ const ps={app:{activeDocument:{resolution:300},fonts:{getByName:name=>({postScri
  if(c._obj==='select'){assert.equal(c.makeVisible,false);active=c._target[0]._id;return {};}
  throw Error(c._obj);
 })}};
-let source=fs.readFileSync('uxp/offline-probe/labels.js','utf8');source=source.slice(source.lastIndexOf('function createTextTools(')).replace('return {read,replace,split,prepareObject,finishObject};','return {formatList,stylesMatch};');
+let source=fs.readFileSync('uxp/offline-probe/labels.js','utf8');
+source=source.slice(source.lastIndexOf('function createTextTools('));
+const exportedTools=/return \{read,replace,split,[^\r\n]*\};/;
+assert.match(source,exportedTools);
+source=source.replace(exportedTools,'return {formatList,stylesMatch};');
 const context={ps,session:'s',capture:async()=>({...target,active_layer_id:active,layer_ids:[active]})};vm.createContext(context);vm.runInContext(source+'\nthis.tools=createTextTools(ps,session,capture);',context);
 const tools=context.tools,params={enabled:true,paragraphs:[{from:0,to:9,start:12,first:3,prefix:3},{from:9,to:20,start:24,first:-2,prefix:13}]};
 (async()=>{

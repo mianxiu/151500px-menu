@@ -810,7 +810,8 @@ class Desktop:
                 current=self.menu_epoch
                 if mode in ('split','typeset'):
                     value=self.menu_layer_context or {}
-                    if value.get('kind') not in ('text','smart') or len(value.get('layer_ids',[]))!=1 or value.get('locked'):
+                    if (value.get('kind') not in ('text','smart') or len(value.get('layer_ids',[]))!=1 or value.get('locked')
+                            or value.get('kind')=='smart' and value.get('text_source') is not True):
                         raise RuntimeError('请单选未锁定的文字图层或文字对象后打开文本工具')
                 self.hold_active=False;self.menu_tools_active=True
                 self.text_tool_owner=self.target if mode in ('split','typeset') else None
@@ -1088,15 +1089,21 @@ class Desktop:
             from .layer_context import fresh,unavailable
             self.menu_layer_context=dict(self.layer_context) if fresh(self.layer_context) else unavailable()
         self.menu_context_pending=None
-        if hold and panel.get('kind')=='layers' and self.menu_context_requester:
+        menu_read=hold and panel.get('kind')=='layers'
+        cached=self.menu_layer_context or {}
+        text_only=(not menu_read and panel.get('kind') in ('generic','canvas','layers') and cached.get('kind')=='smart'
+                   and not cached.get('locked') and len(cached.get('layer_ids',[]))==1)
+        if self.menu_context_requester and (menu_read or text_only):
             # Reserve an identity-protected refresh, but do not touch UXP files
             # before showing. Windows read-sharing retries run on the existing
             # layer monitor, outside the window/input lock.
             self.menu_context_pending={'epoch':self.menu_epoch+1,'unpublished':True,'deadline':time.monotonic()+10}
+            if text_only:
+                self.menu_context_pending['text_target']={key:cached.get(key) for key in ('session','document_id','layer_ids')}
             self.layer_wake.set()
             self.menu_context_delivery={'phase':'queued','epoch':self.menu_epoch+1}
             from .layer_context import unavailable
-            self.menu_layer_context=unavailable()
+            if menu_read:self.menu_layer_context=unavailable()
         from .shape_paint import metadata
         shape=metadata((self.menu_layer_context or {}).get('shape_editor'))
         self.color_editor_active=shape_editor_allowed(panel,shape,hold,self.menu_layer_context)
@@ -1107,7 +1114,7 @@ class Desktop:
         anchor, editor_right = bounds[2]//2, False
         if hold:
             home = panel.get('kind') == 'home'
-            color_editor = self.color_editor_active or bool(self.menu_context_pending)
+            color_editor = self.color_editor_active or bool(menu_read and self.menu_context_pending)
             right_inset = (self.canvas_pie_right_inset or self.pie_right_inset
                            if panel.get('kind') == 'canvas' else self.pie_right_inset)
             bounds, anchor, editor_right = pie_layout(rect, work, cursor, scale, home=home, color_editor=color_editor,
@@ -1218,6 +1225,7 @@ class Desktop:
                 request['deadline']=min(request['deadline'],pending['deadline'])
                 if pending.get('hover_return'):request['hover_return']=True
                 if pending.get('busy_wake'):request['busy_wake']=True
+                if 'text_target' in pending:request['text_target']=pending['text_target']
                 self.menu_context_pending=request
             else:self.menu_context_pending=None
 
@@ -1287,8 +1295,12 @@ class Desktop:
                     value.get(key)!=(self.menu_layer_context or {}).get(key) for key in ('session','document_id','layer_ids')):
                 self.menu_context_pending=None;return
             panel=self.panel_context.current
-            if panel.get('kind')!='layers' or panel.get('input_focused') or not self._scope():return
-            active=shape_editor_allowed(panel,shape,True,value)
+            text_target=pending.get('text_target')
+            if text_target and (value.get('kind')!='smart' or any(value.get(key)!=expected for key,expected in text_target.items())):
+                self.menu_context_pending=None;return
+            if (panel.get('kind') not in (('generic','canvas','layers') if text_target else ('layers',))
+                    or panel.get('input_focused') or not self._scope()):return
+            active=not text_target and shape_editor_allowed(panel,shape,True,value)
             envelope={'epoch':pending['epoch'],'flags':flags(value),'shape':shape if active else {'available':False}}
             if pending.get('hover_return'):envelope.update(hover_return=True,next_epoch=self.menu_epoch+1)
             if pending.get('busy_wake'):envelope.update(busy_wake=True,next_epoch=self.menu_epoch+1)

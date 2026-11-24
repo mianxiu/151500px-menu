@@ -817,7 +817,7 @@ module.exports = function createLabels(ps, session, options={}) {
     return {samples,equivalent:Object.values(samples).every(sample=>signature(sample.value)===signature(samples.dom.value)),
       constant_contract:{layer_kinds:Object.fromEntries(Object.entries(ps.constants.LayerKind))}};
   }
-  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,isolationID:layerView.isolationID,inspectLayerView:layerView.inspect,inspectGradientView:layerView.gradient,readText:textTools.read,readTextFonts:textTools.fonts,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
+  return {isShapeTool:command=>shapeTools.has(command),extendedLabelColors:extendedColors,isolationID:layerView.isolationID,inspectLayerView:layerView.inspect,inspectGradientView:layerView.gradient,readText:textTools.read,readTextFonts:textTools.fonts,observeTextSource:textTools.menuSource,searchLayers:layerSearch.search,previewLayer:layerSearch.preview,styleReadComparison,labelInheritanceComparison,feedbackReadComparison,nativeReadComparison,selectionContextNative:(checkpoint,full=false)=>nativeSelectionContext(ps,session,readSelectionContext,checkpoint,!full,nativePlan),stability,capture,captureSelection,setLabel,documentTarget,createDocument,selectionContext,selectionContextFresh,selectionMatches,interfacePreferences,observeShape:async(...args)=>{
     if(!nativeSelection)return shapePaint.observe(...args);
     // Only explicit optional editor reads enter a short read-only modal scope.
     // Idle selection polling uses batchPlay and never occupies modal execution.
@@ -2364,6 +2364,19 @@ function createTextTools(ps,session,capture,readTree,options={}) {
   }
   const ref=target=>[{_ref:'layer',_id:target.active_layer_id},{_ref:'document',_id:target.document_id}];
   const historyRequest=()=>({_obj:'get',_target:[{_ref:'historyState',_enum:'ordinal',_value:'targetEnum'}],_options:{dialogOptions:'silent'}});
+  async function menuSource(context) {
+    if(context.kind!=='smart'||context.locked||context.layer_ids.length!==1)return null;
+    const active=await capture();
+    if(active.document_id!==context.document_id||active.layer_ids.length!==1||active.active_layer_id!==context.layer_ids[0])return null;
+    const property=key=>({_obj:'get',_target:[{_ref:'property',_property:key},...ref(active)],_options:{dialogOptions:'silent'}});
+    const [before,metadata,embedded,after]=await batch([historyRequest(),property('XMPMetadataAsUTF8'),property('smartObject'),historyRequest()]);
+    const xmp=metadata.XMPMetadataAsUTF8,object=embedded.smartObject;
+    if(typeof xmp!=='string'||xmp.length>2097152||!xmp.includes('https://15100px.menu/ns/text-object/1.0/')||
+       object?.placed?._value!=='vectorData'||object.linked===true||!Number.isSafeInteger(before.ID)||before.ID!==after.ID||
+       !sameTarget(await capture(),active))return null;
+    const [current]=await batch([historyRequest()]);
+    return current.ID===before.ID?xmp:null;
+  }
   async function descriptor(target,objects=false,stamp=null) {
     if(target?.session!==session||target.layer_ids.length!==1)throw Error('请单选一个文字图层');
     const read=[{_obj:'multiGet',_target:{_ref:ref(target)},extendedReference:[['layerID','name','layerKind','layerLocking','textKey']],options:{failOnMissingProperty:false,failOnMissingElement:false},_options:{dialogOptions:'silent'}},
@@ -2387,7 +2400,8 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       return clone(row);
     }
     if(!row.textKey||typeof row.textKey.textKey!=='string')throw Error('请单选一个文字图层');
-    if(row.textKey.textKey.length>20000||JSON.stringify(row.textKey).length>524288)throw Error('文本或样式超出本次处理上限');
+    if(row.textKey.textKey.length>20000)throw Error('正文超过 20,000 个 UTF-16 代码单元');
+    if(JSON.stringify(row.textKey).length>524288)throw Error('文字样式描述超过 524,288 个 UTF-16 代码单元');
     kernings(row.textKey);
     if(!sameTarget(await capture(),target))throw Error('文字目标已改变，请重新读取');
     const result=clone(row);
@@ -2867,19 +2881,28 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     fontCatalog=Array.from(rows.values()).sort((a,b)=>a[0].localeCompare(b[0])||a[1].localeCompare(b[1]));
     return fontCatalog;
   }
-  async function read(fast=false) {
+  async function read(fast=false,trace=null) {
     snapshot=null;
-    const target=await capture(),stamp=fast?{}:null,row=await descriptor(target,true,stamp);
+    const now=()=>typeof performance!=='undefined'&&typeof performance.now==='function'?performance.now():Date.now();
+    let started=now(),target;
+    try {target=await capture();}
+    finally {if(trace)trace.target_ms=Math.round(now()-started);}
+    const stamp=fast?{}:null;
+    let row;
+    started=now();
+    try {row=await descriptor(target,true,stamp);}
+    finally {if(trace)trace.descriptor_ms=Math.round(now()-started);}
     const revision=session+':text:'+String(++serial);
     snapshot={target,row,revision,time:Date.now()};
     const doc=ps.app.activeDocument,supportsProof=canProof(doc);
+    if(trace)Object.assign(trace,{source_width:doc.width,source_height:doc.height,characters:row.textKey?.textKey?.length??0});
     const capabilities={advanced_typography:true,typography_runs_supported:true,opentype_supported:true,kerning_supported:row.layerKind===5||canKern(row.textKey),
       box_shift_supported:row.layerKind===5||row.textKey.textClickPoint?.horizontal?._unit==='percentUnit',text_rgb:doc.mode===ps.constants.DocumentMode.RGB &&
       doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT && doc.colorProfileName==='sRGB IEC61966-2.1',
       ...(fast?{canvas_history:stamp.history,fonts_available:true,...(fontCatalog?{fonts:fontCatalog}:{})}:
         {fonts:(await availableFonts()).map(([family,style,id])=>[[family,style].filter(Boolean).join(' '),id])})};
     const objectProof=supportsProof?{object_proof:true,isolated_proof:true,proof_size:[doc.width,doc.height],proof_resolution:doc.resolution}: {};
-    if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8,typography_supported:true,style_scope_supported:true,extended_typography:true,...capabilities,...objectProof,box_resize_available:true,object_frame:row.smartObjectMore?.transform};
+    if(row.layerKind===5)return {target,revision,name:row.name,object_xmp:row.XMPMetadataAsUTF8,typography_supported:true,style_scope_supported:true,extended_typography:true,...capabilities,...objectProof,box_resize_available:true,object_frame:row.smartObjectMore?.transform,object_canvas_size:[doc.width,doc.height]};
     return {target,revision,proof_available:supportsProof,proof_encoding:'png',...capabilities,...objectProof,
       text:row.textKey.textKey,name:row.name,list_xmp:row.XMPMetadataAsUTF8,list_paragraphs:paragraphLayout(row.textKey),
       typography_supported:true,style_scope_supported:true,extended_typography:true,paragraph_alignment_supported:row.textKey.orientation?._value==='horizontal',paragraph_indents_supported:canIndent(row.textKey),box_size:boxSize(row.textKey),resolution:ps.app.activeDocument.resolution,style_source:{textStyleRange:row.textKey.textStyleRange,paragraphStyleRange:row.textKey.paragraphStyleRange,kerningRange:row.textKey.kerningRange||[]}};
@@ -3196,7 +3219,7 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     },{commandName:'拆分文字图层',timeOut:0});}
     catch(error){if(uncertain){const unknown=Error('文字拆分恢复结果待核对');unknown.resultUnknown=true;throw unknown;}throw error;}
   }
-  return {read,replace,split,prepareObject,finishObject,fonts:availableFonts};
+  return {read,replace,split,prepareObject,finishObject,menuSource,fonts:availableFonts};
 }
 
 function createLayerView(ps,session,capture) {

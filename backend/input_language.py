@@ -22,7 +22,7 @@ def process_exited(identity):
     finally:handle.Close()
 
 
-def read_layout_journal(journal,installed):
+def read_layout_journal(journal,installed=None):
     import json
     if not journal.exists():return {'owned':None,'pending':None}
     if journal.stat().st_size>16384:raise ValueError('size')
@@ -32,7 +32,8 @@ def read_layout_journal(journal,installed):
         if row is None:continue
         if (set(row)!={'root','identity','focus','wanted','original','switch','time'} or
             any(type(row[k]) is not int or row[k]<=0 for k in ['root','focus','wanted','original']) or
-            row['wanted'] not in installed or row['original'] not in installed or type(row['switch']) is not bool or
+            installed is not None and (row['wanted'] not in installed or row['original'] not in installed) or
+            type(row['switch']) is not bool or
             not isinstance(row['time'],(int,float)) or not math.isfinite(row['time']) or
             not isinstance(row['identity'],list) or len(row['identity'])!=4 or row['identity'][0]!=row['root'] or
             any(type(row['identity'][i]) is not int or row['identity'][i]<=0 for i in [0,1,3]) or

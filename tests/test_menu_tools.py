@@ -3,8 +3,10 @@ import io
 import json
 import os
 import subprocess
+from tempfile import TemporaryDirectory
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -12,11 +14,27 @@ from backend.menu_tools import MenuTools
 from backend.text_tools import TextTools
 from backend.layer_search import LayerSearch
 from backend.desktop import Desktop, typeset_bounds
-from backend.text_canvas import valid_text_frame
+from backend.text_canvas import CanvasUnavailable, connection, valid_text_frame
 from backend.paths import ROOT
 
 
 class CanvasGeometryTests(unittest.TestCase):
+    def test_generator_connection_uses_limited_process_query_and_verifies_both_paths(self):
+        code='a'*32
+        ready={'version':3,'token':code,'photoshopPid':11,'pid':12}
+        host=r'C:\Photoshop\Photoshop.exe'
+        worker=r'C:\Photoshop\node.exe'
+        with TemporaryDirectory() as runtime:
+            state=Path(runtime)/'text-canvas';state.mkdir()
+            (state/'ready.json').write_text(json.dumps(ready),'utf-8')
+            (state/'pairing').write_text(code,'ascii')
+            with patch('win32process.GetWindowThreadProcessId',return_value=(4,11)), \
+                 patch('win32api.OpenProcess') as opened, \
+                 patch('win32process.GetModuleFileNameEx',side_effect=(host,worker,host,r'C:\Other\node.exe')):
+                self.assertEqual(connection(runtime,51),ready)
+                self.assertIsNone(connection(runtime,51))
+                self.assertEqual([call.args for call in opened.call_args_list],[(0x1000,False,11),(0x1000,False,12)]*2)
+
     def test_high_dpi_window_can_move_when_the_initial_size_fills_photoshop(self):
         rect=(1920,0,3840,1080)
         work=(1920,0,3840,1040)
@@ -38,14 +56,50 @@ class MenuToolsTests(unittest.IsolatedAsyncioTestCase):
         self.app.bridge=SimpleNamespace(transport=SimpleNamespace(call=call))
         memory=Mock()
         frame={'history':34}
+        plan=self.tools.text.plan=object()
         with patch('backend.menu_tools.text_canvas.read',new=AsyncMock(return_value=(memory,frame))):
             accepted=await self.tools.request(self.request('text.canvas',args={'revision':'first'}))
             self.assertEqual(accepted['revision'],'first')
+            self.assertIs(self.tools.text.plan,plan)
             frame['history']=35
             refused=await self.tools.request(self.request('text.canvas',request=2,args={'revision':'first'}))
             self.assertIn('error',refused)
+            self.assertEqual(self.app.desktop.event.call_args.args[0]['canvas_state'],'stale')
+            self.assertIsNone(self.tools.text.snapshot)
+            self.assertIsNone(self.tools.text.plan)
         call.assert_not_called()
         memory.close.assert_called_once()
+
+    async def test_typeset_can_open_without_generator(self):
+        self.app.runtime=Path('test')
+        with patch('backend.menu_tools.text_canvas.connection',return_value=None), \
+             patch('backend.menu_tools.typeset_settings.load',return_value={}), \
+             patch('backend.menu_tools.typeset_settings.load_styles',return_value={}):
+            result=await self.tools.open({'menu_epoch':6,'params':{'mode':'typeset'}})
+        self.assertEqual(result['epoch'],7)
+        self.assertEqual(self.app.desktop.event.call_args.args[0]['mode'],'typeset')
+
+    async def test_failed_background_retries_without_rereading_draft_and_old_epoch_is_rejected(self):
+        self.app.runtime=Path('test')
+        self.app.desktop.target=1
+        saved=self.tools.text.snapshot={'target':{},'revision':'r','canvas_history':34}
+        plan=self.tools.text.plan=object()
+        memory=Mock()
+        read=AsyncMock(side_effect=[CanvasUnavailable('background missing'),(memory,{'history':34})])
+        with patch('backend.menu_tools.text_canvas.read',new=read):
+            result=await self.tools.request(self.request('text.canvas',args={'revision':'r'}))
+            self.assertIn('error',result)
+            self.assertEqual(self.app.desktop.event.call_args.args[0]['canvas_state'],'failed')
+            self.assertIs(self.tools.text.snapshot,saved)
+            self.assertIs(self.tools.text.plan,plan)
+            result=await self.tools.request(self.request('text.canvas',request=2,args={'revision':'r'}))
+            self.assertEqual(result['revision'],'r')
+            self.assertIs(self.tools.text.plan,plan)
+            self.tools.epoch=8
+            self.tools.last_request=0
+            result=await self.tools.request(self.request('text.canvas',request=3,args={'revision':'r'}))
+            self.assertIn('error',result)
+            self.assertEqual(read.await_count,2)
 
     async def test_original_canvas_rebinds_revision_only_for_unchanged_text(self):
         target={'session':'s','document_id':1,'active_layer_id':2,'layer_ids':[2]}

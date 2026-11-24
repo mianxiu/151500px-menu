@@ -289,12 +289,35 @@ class ImeWorkerTests(unittest.TestCase):
 
     def test_legacy_unknown_layout_request_blocks_new_ime_changes_without_reissue(self):
         owner=legacy_tests.ExitedLanguageOwnerTests().owner();owner['identity'][2]='old-process'
-        self.start(legacy={'owned':owner,'pending':{**owner,'switch':False}})
+        self.start(legacy={'owned':owner,'pending':{**owner,'switch':False}},policy=True)
         self.wait(lambda:self.c.report.get('legacy_pending'))
-        self.assertEqual(self.posts,[]);self.user.PostMessageW.assert_not_called()
+        self.assertEqual(self.posts,[]);self.assertEqual(self.policy_calls,[]);self.user.PostMessageW.assert_not_called()
         self.desktop.stop.set();self.c.wake.set();self.c.thread.join(2)
         saved=json.loads((self.desktop.runtime/'input-language-owned.json').read_text())
         self.assertEqual(saved['pending']['identity'],owner['identity']);self.assertEqual(self.posts,[])
+
+    def test_exited_layout_missing_from_this_machine_does_not_block_new_policy(self):
+        owner=legacy_tests.ExitedLanguageOwnerTests().owner()
+        owner['identity'][2]='old-process'
+        owner['original']=0x4110411
+        original={'owned':owner,'pending':{**owner,'switch':False,'wanted':owner['original']}}
+        self.start(legacy=original,legacy_exited=True,policy=True)
+        self.wait(lambda:self.c.focus_policy)
+        self.assertEqual(self.policy_calls,[True])
+        self.assertEqual(json.loads((self.desktop.runtime/'input-language-owned.json').read_text()),original)
+        self.assertTrue(self.c.report['legacy_unknown_preserved'])
+        self.user.PostMessageW.assert_not_called()
+
+    def test_live_legacy_owner_with_missing_layout_never_requests_restore(self):
+        owner=legacy_tests.ExitedLanguageOwnerTests().owner()
+        owner.update(identity=[1,2,'created',3],wanted=0x8040804,original=0x4110411)
+        original={'owned':owner,'pending':None}
+        with patch('backend.input_language.process_exited',return_value=False):
+            self.start(legacy=original,policy=True)
+            self.wait(lambda:self.c.report.get('legacy_scope')=='original-layout-unavailable')
+            self.assertEqual(self.policy_calls,[])
+            self.assertEqual(json.loads((self.desktop.runtime/'input-language-owned.json').read_text()),original)
+            self.user.PostMessageW.assert_not_called()
 
     def test_exited_legacy_pending_stays_unknown_and_intact_while_new_process_gets_ime(self):
         owner=legacy_tests.ExitedLanguageOwnerTests().owner();owner['identity'][2]='old-process'

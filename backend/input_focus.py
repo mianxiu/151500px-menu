@@ -181,7 +181,7 @@ class InputFocus(InputLanguage):
                     need_tool=(sample.get('workspace') and sample.get('state')=='unknown' and
                                control_state(row,sample.get('pid'))!='input' and
                                (row.get(30003) in CONTAINERS or self.accessibility is None and self.snapshot()[3] is not None))
-                    reconcile=getattr(self.desktop,'input_language_reconcile',None)
+                    reconcile=getattr(self.desktop,'input_focus_reconcile',None)
                     if tool and 'created_at_ms' in tool and time.time()*1000-tool['created_at_ms']>2500:examined=None
                     if need_tool and key==examined and tool is None and not self.busy() and not sample.get('blocked') and reconcile and reconcile():examined=None
                     if need_tool and (key!=examined or refresh!=refreshed) and not self.busy() and not sample.get('blocked'):

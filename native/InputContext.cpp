@@ -20,7 +20,7 @@ static HANDLE owner=nullptr;
 static DWORD ownerId=0;
 static ULONG_PTR nonce=0;
 static ULONGLONG deadline=0;
-static bool restoreFailed=false,changing=false;
+static bool restoreFailed=false,changing=false,contextChangeQueued=false;
 static bool restored=false;
 static ULONG_PTR revision=1;
 static InputContextTsf tsf;
@@ -123,7 +123,8 @@ static bool menuActive() {
 
 static void contextChanged() {
     // Defer mutation until the TSF notification callback has returned.
-    if(!changing && control && disabledWindow)PostMessageW(control,contextChangedMessage,0,0);
+    if(!changing && !contextChangeQueued && control && (disabledWindow || (focusPolicy && focusCount)))
+        contextChangeQueued=PostMessageW(control,contextChangedMessage,0,0)!=FALSE;
 }
 
 static HIMC associated(HWND window) {
@@ -534,7 +535,11 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
         }
         return state(focus)|8;
     }
-    if(message==contextChangedMessage){verifyContext();return 0;}
+    if(message==contextChangedMessage){
+        contextChangeQueued=false;
+        if(!focusPolicy || (owner && WaitForSingleObject(owner,0)==WAIT_TIMEOUT))verifyContext();
+        return 0;
+    }
     if(message==WM_TIMER) {
         if(frameKeyOwned && !(GetAsyncKeyState('F')&0x8000))frameEnd(true,true);
         const bool exited=!owner || WaitForSingleObject(owner,0)!=WAIT_TIMEOUT;
@@ -701,7 +706,7 @@ static bool attach(HWND rootWindow,DWORD ownerProcess,ULONG_PTR nonceValue) {
                        reinterpret_cast<LPCWSTR>(&attach),&pinned);
     WNDCLASSW wc{};wc.lpfnWndProc=procedure;wc.hInstance=module;wc.lpszClassName=controlClass;RegisterClassW(&wc);
     root=rootWindow;ownerId=ownerProcess;owner=candidate;nonce=nonceValue;revision=1;tsf.notify=contextChanged;
-    focusCount=0;focusPolicy=false;policyRestoreFailed=false;policyReason=0;policyTick=0;
+    focusCount=0;focusPolicy=false;policyRestoreFailed=false;contextChangeQueued=false;policyReason=0;policyTick=0;
     canvasTextEditing=false;entryPending=false;compositionActive=false;
     typeToolActive=false;typeToolKnown=false;
     canvasEntryTick=canvasExitTick=0;canvasEntryTrigger=canvasExitTrigger=CanvasNone;

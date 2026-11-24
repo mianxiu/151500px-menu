@@ -1,5 +1,6 @@
 #include "MenuTextGroups.h"
 #include "FontSampleRaster.h"
+#include "FontSampleWork.h"
 #include "TextStyleDraft.h"
 #include <optional>
 #include <set>
@@ -26,6 +27,7 @@ struct MenuToolsPanel {
     ID3D11Device* fontSampleDevice=nullptr;
     int fontSampleFrame=-1,fontSampleDrawn=0,fontSampleWidth=0,fontSampleHeight=0;
     float fontSampleEm=0;
+    uint64_t fontSampleScope=0;
     ImGuiTextFilter fontFilter;
     bool fontsAvailable=false,fontsRequested=false;
     std::string fontCandidate,fontPreview;
@@ -34,6 +36,11 @@ struct MenuToolsPanel {
     bool canvasAvailable=false,proofAvailable=false,objectProofAvailable=false,proofCurrent=false;
     bool isolatedProofAvailable=false;
     bool canvasEditAvailable=false,canvasTextFrame=false,canvasTextActive=false,canvasWrap=true,canvasPanning=false,boxShiftSupported=false;
+    enum class CanvasState {idle,waiting,ready,limited,failed,stale};
+    CanvasState canvasState=CanvasState::idle;
+    std::string canvasMessage;
+    bool fallbackDraftActive=false,firstEditable=false;
+    ULONGLONG openedAt=0;
     std::array<float,4> textBox{};
     std::array<float,2> sourceBoxSize{},draftBoxSize{};
     float draftBoxOffset=0;
@@ -102,10 +109,12 @@ struct MenuToolsPanel {
         float boxOffset;
         std::map<std::string,Json> typingStyles;
         int typingAt;
+        Json list;
+        bool listChanged;
     };
     std::vector<DraftState> undoDrafts,redoDrafts;
     DraftState draftState(const char* text)const {
-        return {text,styleDraft,kerningEdits,draftBoxSize,draftBoxOffset,nextCharacterStyles,nextCharacterAt};
+        return {text,styleDraft,kerningEdits,draftBoxSize,draftBoxOffset,nextCharacterStyles,nextCharacterAt,draftList,draftListChanged};
     }
     void checkpointDraft(const char* prior=nullptr) {
         if(!scopedStyles)return;
@@ -122,10 +131,11 @@ struct MenuToolsPanel {
         styleAnchor=kerningAnchor=draft;
         styleDraft=std::move(state.styles);kerningEdits=std::move(state.kerning);draftBoxSize=state.box;draftBoxOffset=state.boxOffset;
         nextCharacterStyles=std::move(state.typingStyles);nextCharacterAt=state.typingAt;
+        draftList=std::move(state.list);draftListChanged=state.listChanged;
         selectionStart=selectionEnd=cursorPos=std::min(cursorPos,int(state.text.size()));
         while(cursorPos>0 && (static_cast<unsigned char>(draft[cursorPos])&0xc0)==0x80)--cursorPos;
         selectionStart=selectionEnd=lastSelectionStart=lastSelectionEnd=cursorPos;
-        ++draftBufferId;restoreDraftFocus=canvasTextActive;
+        ++draftBufferId;restoreDraftFocus=canvasTextActive || fallbackDraftActive;
         editorStyleRange={-1,-1,-1,-1};kerningFieldAt=-1;kerningFieldInvalid=false;
         changedText();
     }
@@ -409,6 +419,7 @@ struct MenuToolsPanel {
     bool restoreDraftFocus=false;
     int textTab=0,replaceMode=0,caseMode=0,tidyMode=0,listMode=0,splitMode=0,splitLayout=0,draftGeneration=0,previewGeneration=0,resultCount=0;
     std::string pendingAction,planId,resultValue,resultPreview,resultKind;
+    std::vector<int> resultDraftOrigins;
     std::vector<MenuControls::TextRange> textMatches;std::string matchSource;
     bool textDirty=false;double textChanged=0;
     static std::pair<int,int> pairSpan(std::string_view text,int at){
@@ -464,7 +475,7 @@ struct MenuToolsPanel {
         }
         styleAnchor=draft;
     }
-    void changedText(){remapKerning();remapStyleRange();proofCurrent=false;proofAttempt.clear();sharpAttempt=sharpProofScale=1;++draftGeneration;planId.clear();resultValue.clear();resultPreview.clear();resultKind.clear();textMatches.clear();matchSource.clear();error.clear();textDirty=true;textChanged=ImGui::GetTime();}
+    void changedText(){remapKerning();remapStyleRange();proofCurrent=false;proofAttempt.clear();sharpAttempt=sharpProofScale=1;++draftGeneration;planId.clear();resultValue.clear();resultPreview.clear();resultKind.clear();resultDraftOrigins.clear();textMatches.clear();matchSource.clear();error.clear();textDirty=true;textChanged=ImGui::GetTime();}
     void changedStyle(){
         styleBytes=selectedStyleBytes(styleScope);styleAnchor=draft;
         styleEndOfText=styleBytes[1]>int(styleAnchor.size());
@@ -473,6 +484,19 @@ struct MenuToolsPanel {
     }
     void setDraft(const std::string& value){std::snprintf(draft,sizeof(draft),"%s",value.c_str());kerningEdits.clear();kerningFieldAt=-1;kerningFieldInvalid=false;++draftBufferId;indentCommand=selectionStart=selectionEnd=lastSelectionStart=lastSelectionEnd=cursorPos=0;restoreDraftFocus=false;changedText();}
     int draftUnits(int bytes)const{return bytes>0?MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,draft,bytes,nullptr,0):0;}
+    static std::vector<int> textUnitPositions(std::string_view value){
+        std::vector<int> positions;
+        for(int at=0;at<int(value.size());){
+            unsigned code=0;
+            const int bytes=ImTextCharFromUtf8(&code,value.data()+at,value.data()+value.size());
+            positions.push_back(at);
+            if(bytes==4)positions.push_back(at);
+            at+=std::max(1,bytes);
+        }
+        positions.push_back(int(value.size()));
+        positions.push_back(int(value.size())+1);
+        return positions;
+    }
     bool hasStyles()const{return (scopedStyles?!styleDraft.edits.empty():!styleChanges().empty()) || !kerningEdits.empty() || sourceBoxSize!=draftBoxSize || draftBoxOffset!=0;}
     static int draftCallback(ImGuiInputTextCallbackData* data) {
         auto& panel=*static_cast<MenuToolsPanel*>(data->UserData);
@@ -504,8 +528,8 @@ struct MenuToolsPanel {
         panel.selectionStart=data->SelectionStart;panel.selectionEnd=data->SelectionEnd;panel.cursorPos=data->CursorPos;
         return 0;
     }
-    bool textDue(double now)const{return textDirty && active && ready && !pending && !resizeHandle && !revision.empty() && !kerningFieldInvalid && (kerningEdits.empty() || textTab==0) && (textTab!=1 || find[0]) && (textTab!=3 || splitMode==0 || separator[0]) && now-textChanged>=.12;}
-    bool canWriteText()const{return !pending && !revision.empty() && !kerningFieldInvalid && invalidComposition.empty() && draft[0];}
+    bool textDue(double now)const{return textDirty && active && ready && !pending && !resizeHandle && !revision.empty() && canvasState!=CanvasState::stale && !kerningFieldInvalid && (kerningEdits.empty() || textTab==0) && (textTab!=1 || find[0]) && (textTab!=3 || splitMode==0 || separator[0]) && now-textChanged>=.12;}
+    bool canWriteText()const{return !pending && !revision.empty() && canvasState!=CanvasState::stale && !kerningFieldInvalid && invalidComposition.empty() && draft[0];}
     static bool composingText(){
         const auto focused=GetFocus();
         if(!focused)return false;
@@ -866,8 +890,16 @@ struct MenuToolsPanel {
         }
     }
 
-    void reset(){clearPreview();clearProof();*this=MenuToolsPanel{};}
+    void reset(){closeFontSamples();clearPreview();clearProof();*this=MenuToolsPanel{};}
     void open(const char* value){reset();opening=true;mode=value;sendMenuTool("menu.tools.open",Json{{"mode",value}});}
+    void traceTypeset(const char* stage)const{
+        if(mode=="typeset" && openedAt && !selfTest && !stabilityInspection)
+            std::cerr<<"Typeset epoch="<<menuEpoch<<" request="<<request<<" stage="<<stage
+                     <<" elapsed_ms="<<GetTickCount64()-openedAt<<std::endl;
+    }
+    void markEditable(bool available){
+        if(mode=="typeset" && available && !firstEditable){firstEditable=true;traceTypeset("editable");}
+    }
     void submit(const char* action,Json args) {
         if(!ready || pending)return;
         pending=true;pendingAction=action;if(pendingAction=="text.preview"){previewGeneration=draftGeneration;planId.clear();textMatches.clear();}
@@ -898,6 +930,8 @@ struct MenuToolsPanel {
             if(!event.value("ok",true)){reset();active=true;error=event.value("error",std::string("面板未能打开"));requireText(error);return;}
             reset();active=ready=focus=true;mode=event.at("mode").get<std::string>();
             if(mode=="typeset"){
+                openedAt=GetTickCount64();
+                traceTypeset("opened");
                 loadViewSettings(event.value("view_settings",Json::object()));
                 styleLibrary=event.value("style_library",Json::object());
             }
@@ -921,16 +955,33 @@ struct MenuToolsPanel {
             else if(!loadPreview(event.at("result")) && previewMessage.empty())previewMessage="预览像素不可用";
             previewTarget=selected;previewVisible=true;requireText(previewMessage);return;
         }
-        if(!active || !pending || event.value("request",-1)!=request)return;
+        if(!active || !pending || event.value("request",-1)!=request || event.value("action",std::string())!=pendingAction)return;
         pending=false;
         if((pendingAction=="text.preview" || pendingAction=="text.proof") && previewGeneration!=draftGeneration)return;
         if(event.value("action",std::string())=="layers.search" && searchDirty)return;
-        if(!event.value("ok",false)){error=event.value("error",std::string("操作失败"));requireText(error);return;}
+        if(!event.value("ok",false)){
+            const auto message=event.value("error",std::string("操作失败"));
+            requireText(message);
+            if(pendingAction=="text.canvas"){
+                const auto state=event.value("canvas_state",std::string());
+                canvasState=state=="stale"?CanvasState::stale:state=="limited"?CanvasState::limited:CanvasState::failed;
+                if(canvasState==CanvasState::stale){clearPreview();clearProof();canvasTextFrame=false;changedText();}
+                canvasMessage=message;
+                traceTypeset("background-unavailable");
+            }else{
+                error=message;
+                if(pendingAction=="text.read")traceTypeset("text-unavailable");
+            }
+            return;
+        }
         const auto action=event.value("action",std::string());const auto& result=event.at("result");
         if(action=="layers.search") {
             results=result;
             for(const auto& row:results.at("items")){requireText(row.at("name"));requireText(row.at("document_name"));}
         } else if(action=="text.read") {
+            traceTypeset("text-received");
+            clearPreview();
+            canvasState=CanvasState::idle;canvasMessage.clear();fallbackDraftActive=false;
             vectorObject=result.value("vector_object",false);
             clearProof();proofAvailable=result.value("proof_available",false);
             objectProofAvailable=result.value("object_proof",false);proofAttempt.clear();
@@ -1000,18 +1051,24 @@ struct MenuToolsPanel {
         } else if(action=="text.fonts"){
             loadFonts(result.value("fonts",Json::array()));
         } else if(action=="text.canvas"){
-            if(revision!=result.at("revision").get<std::string>()){
-                revision=result.at("revision").get<std::string>();changedText();
+            const auto actualRevision=result.value("revision",std::string());
+            if(actualRevision.empty()){
+                canvasState=CanvasState::failed;canvasMessage="画布回执缺少文字版本，请重试背景";return;
             }
-            if(!loadCanvas(result))error="画布图像已过期，请重新读取";
+            if(revision!=actualRevision){revision=actualRevision;changedText();}
+            if(!loadCanvas(result)){
+                canvasState=CanvasState::failed;canvasMessage="画布图像已过期，请重试背景";
+                traceTypeset("background-image-unavailable");
+            }
             else{
+                canvasState=CanvasState::ready;canvasMessage.clear();traceTypeset("background-received");
                 const auto frame=objectTextFrame.is_object()?objectTextFrame:result.value("text_frame",Json(nullptr));
-                canvasTextFrame=frame.is_object() || (vectorObject && result.contains("box") && result.at("box").is_array());
+                canvasTextFrame=frame.is_object();
                 if(canvasTextFrame){
-                    canvasWrap=!frame.is_object() || frame.at("wrap").get<bool>();
-                    textBox=(frame.is_object()?frame.at("box"):result.at("box")).get<decltype(textBox)>();
-                    canvasEm=frame.is_object()?frame.at("em").get<float>():0;
-                    const auto color=frame.is_object()?frame.at("color").get<std::array<int,3>>():std::array<int,3>{};
+                    canvasWrap=frame.at("wrap").get<bool>();
+                    textBox=frame.at("box").get<decltype(textBox)>();
+                    canvasEm=frame.at("em").get<float>();
+                    const auto color=frame.at("color").get<std::array<int,3>>();
                     canvasInk=ImGui::ColorConvertFloat4ToU32({color[0]/255.f,color[1]/255.f,color[2]/255.f,1.f});
                 }
             }
@@ -1040,8 +1097,18 @@ struct MenuToolsPanel {
                 validated.emplace_back(int(start),int(end));last=int(end);
             }
             textMatches=std::move(validated);
-            planId=result.at("plan_id").get<std::string>();resultValue=result.at("value").get<std::string>();
+            resultValue=result.at("value").get<std::string>();
             std::replace(resultValue.begin(),resultValue.end(),'\r','\n');
+            resultDraftOrigins=result.value("draft_origins",std::vector<int>());
+            if(result.contains("draft_origins")){
+                const int originalUnits=int(textUnitPositions(matchSource).size())-2;
+                if(resultDraftOrigins.size()+1!=textUnitPositions(resultValue).size() || resultDraftOrigins.empty() ||
+                    resultDraftOrigins.front()<0 || resultDraftOrigins.back()!=originalUnits ||
+                    !std::is_sorted(resultDraftOrigins.begin(),resultDraftOrigins.end())){
+                    planId.clear();resultDraftOrigins.clear();error="结果位置无效，请重新预览";return;
+                }
+            }
+            planId=result.at("plan_id").get<std::string>();
             resultPreview=result.at("preview").get<std::string>();resultKind=result.at("kind").get<std::string>();resultCount=result.at("count").get<int>();requireText(resultPreview);
         } else if(action=="text.table" || result.value("continue_editing",false)){
             source.clear();revision.clear();clearPreview();clearProof();
@@ -1079,21 +1146,26 @@ struct MenuToolsPanel {
         ImGui::EndDisabled();
     }
     void requestCanvas(){
-        clearPreview();
-        canvasTextFrame=false;resizeHandle=0;
-        submit("text.canvas",Json{{"revision",revision},{"background",canvasEditAvailable}});
+        if(pending || revision.empty() || canvasState==CanvasState::stale)return;
+        canvasState=CanvasState::waiting;canvasMessage.clear();
+        submit("text.canvas",Json{{"revision",revision},{"background",!tableObject && (canvasEditAvailable || !canvasAvailable)}});
+    }
+    bool draftInCanvas()const{
+        return mode=="typeset" && textTab!=6 && !revision.empty() && (!thumbnail || fallbackDraftActive);
     }
     bool editingOnCanvas()const{
-        return mode=="typeset" && canvasTextFrame && thumbnail && textTab!=6;
+        return mode=="typeset" && canvasTextFrame && thumbnail && textTab!=6 && !fallbackDraftActive;
     }
-    void drawDraft(float height) {
+    bool drawDraft(float height) {
         ImGui::PushID(int(menuEpoch));
         ImGui::PushID(draftBufferId);
         if(restoreDraftFocus)ImGui::SetKeyboardFocusHere();
         if(MenuControls::multiline("##draft",draft,sizeof(draft),height,draftCallback,this)){
             checkpointDraft(styleAnchor.c_str());changedText();
         }
+        const bool active=ImGui::IsItemActive();
         ImGui::PopID();ImGui::PopID();
+        return active;
     }
     void maybeProof(bool available,const std::string& key,Json args){
         const auto now=ImGui::GetTime();
@@ -1134,6 +1206,9 @@ struct MenuToolsPanel {
         const auto first=text.find_first_not_of(L' ');
         return first==std::wstring::npos?L"Aa":text.substr(first);
     }
+    void closeFontSamples(){
+        if(fontSampleScope){fontSampleWork().cancel(fontSampleScope);fontSampleScope=0;}
+    }
     void drawFontSample(const std::string& id,const std::wstring& sample,ImVec2 at,ImVec2 end){
         const int width=int(std::round(end.x-at.x)),height=int(std::round(end.y-at.y));
         const float em=ImGui::GetFontSize();
@@ -1142,18 +1217,18 @@ struct MenuToolsPanel {
         if(frame!=fontSampleFrame){
             fontSampleFrame=frame;fontSampleDrawn=0;
             if(fontSamples.size()>96 || fontSampleText!=sample || fontSampleWidth!=width || fontSampleHeight!=height ||
-               fontSampleEm!=em || fontSampleDevice!=device)fontSamples.clear();
+               fontSampleEm!=em || fontSampleDevice!=device){closeFontSamples();fontSamples.clear();}
             fontSampleText=sample;fontSampleWidth=width;fontSampleHeight=height;fontSampleEm=em;fontSampleDevice=device;
+            if(fontSampleScope)fontSampleWork().nextFrame(fontSampleScope,frame);
         }
         auto found=fontSamples.find(id);
         if(found==fontSamples.end() && fontSampleDrawn<3){
+            if(!fontSampleScope)fontSampleScope=fontSampleWork().begin();
+            auto rendered=fontSampleWork().request(fontSampleScope,frame,id,wideText(id),sample,width,height,em);
+            if(!rendered)return;
             ++fontSampleDrawn;
-            const int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,id.data(),int(id.size()),nullptr,0);
-            if(count<=0)return;
-            std::wstring face(count,L'\0');MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,id.data(),int(id.size()),face.data(),count);
-            std::vector<unsigned char> pixels;
-            FontSample image;image.status=fontRaster.render(face,sample,width,height,em,pixels);
-            if(image.status==FontSampleRaster::Result::pixels && !loadPixels(width,height,pixels.data(),image.image.GetAddressOf()))
+            FontSample image;image.status=rendered->status;
+            if(image.status==FontSampleRaster::Result::pixels && !loadPixels(width,height,rendered->pixels.data(),image.image.GetAddressOf()))
                 image.status=FontSampleRaster::Result::unavailable;
             found=fontSamples.emplace(id,std::move(image)).first;
         }
@@ -1236,7 +1311,7 @@ struct MenuToolsPanel {
         ImGui::PopID();
     }
     void drawTypography(float scale) {
-        if(!sourceStyles.is_object() || revision.empty() || tableObject){updateFontPreview({});return;}
+        if(!sourceStyles.is_object() || revision.empty() || tableObject){closeFontSamples();updateFontPreview({});return;}
         std::string hoveredFont;
         ImGui::BeginDisabled(textTab==3 || textTab==6);
         const char* scopes[]={"整层","文字选区","当前段落"};
@@ -1558,12 +1633,43 @@ struct MenuToolsPanel {
         }
         ImGui::EndDisabled();
         updateFontPreview(mode=="typeset" && (scopedStyles || proofAvailable) && textTab==0?std::move(hoveredFont):std::string());
+        if(fontSampleFrame!=ImGui::GetFrameCount())closeFontSamples();
     }
     bool canWriteTable(bool available)const{
-        return available && (tableObject || (draft==sourceDisplay && !hasStyles() && !draftListChanged));
+        return available && canvasState!=CanvasState::stale && (tableObject || (draft==sourceDisplay && !hasStyles() && !draftListChanged));
     }
     bool needsTableProof()const{
         return mode=="typeset" && objectProofAvailable && (!tableObject || cells!=savedCells || wantedProofScale>1 || backgroundMode);
+    }
+    bool showTextResult()const{
+        return !editingOnCanvas() || (textTab>=1 && textTab<=4);
+    }
+    void continueTextResult(){
+        checkpointDraft();
+        if(textTab==4){
+            const auto params=textParams();
+            draftList=nullptr;
+            if(listMode!=2){
+                draftList=Json::object();
+                for(const char* key:{"kind","marker","custom_marker","numbering","start"})draftList[key]=params.at(key);
+            }
+            draftListChanged=true;
+        }
+        const auto value=resultValue;
+        if(!resultDraftOrigins.empty()){
+            const auto before=textUnitPositions(draft),after=textUnitPositions(value);
+            const auto remap=[&](int byte,bool){
+                const auto unit=std::lower_bound(before.begin(),before.end(),byte)-before.begin();
+                const auto mapped=std::lower_bound(resultDraftOrigins.begin(),resultDraftOrigins.end(),unit)-resultDraftOrigins.begin();
+                return after[mapped];
+            };
+            if(scopedStyles){
+                styleDraft.remap(remap);nextCharacterStyles.clear();nextCharacterAt=-1;
+                editorStyleRange={-1,-1,-1,-1};
+            }else if(styleBytes[0]>=0){styleBytes={remap(styleBytes[0],false),remap(styleBytes[1],true)};}
+            styleAnchor=value;
+        }
+        setDraft(value);textTab=0;
     }
     void drawTypesetAction(float scale,bool available,bool alignRight=false){
         if(revision.empty())return;
@@ -1587,7 +1693,10 @@ struct MenuToolsPanel {
     }
     void drawText(float scale,bool available,bool pinnedAction=false) {
         ImGui::BeginDisabled(pending);
-        if(MenuControls::button("重新读取（覆盖草稿）",scale)){source.clear();revision.clear();changedText();submit("text.read",Json::object());}
+        if(MenuControls::button(revision.empty()?"重新读取文字":"重新读取文字（覆盖草稿）",scale)){
+            source.clear();revision.clear();canvasState=CanvasState::idle;canvasMessage.clear();
+            clearPreview();clearProof();changedText();submit("text.read",Json::object());
+        }
         ImGui::EndDisabled();
         if(revision.empty()){
             MenuTextStyle text(MenuTextRole::Secondary);
@@ -1624,9 +1733,10 @@ struct MenuToolsPanel {
             if(!pinnedAction)drawTypesetAction(scale,available);
             return;
         }
-        if(!editingOnCanvas() && !(mode=="typeset" && !thumbnail && pending && pendingAction=="text.canvas")){
+        if(!editingOnCanvas() && !draftInCanvas()){
             {MenuTextStyle text(MenuTextRole::Body);ImGui::TextUnformatted("编辑文字");}
             drawDraft(110*scale);
+            markEditable(available);
         }
         if(textTab==1) {
             const char* modes[]={"普通查找","正则表达式"};if(MenuControls::segments("##replace-mode",modes,replaceMode,scale))changedText();
@@ -1664,20 +1774,16 @@ struct MenuToolsPanel {
             {MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextWrapped("匹配 %d 处 · 强调色为匹配内容",resultCount);}
             MenuControls::textPreview("##text-matches",matchSource.c_str(),80*scale,textMatches);
         }
-        const bool resultOnCanvas=mode=="typeset" && proofAvailable && thumbnail && textTab!=3;
-        if(!resultOnCanvas || proofAttempt.empty() || proofCurrent || error.empty()){
+        {
             MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextWrapped("%s",textStatus().c_str());
         }
-        if(!resultOnCanvas && (!editingOnCanvas() || (textTab>=1 && textTab<=4)))
+        const bool showResult=showTextResult();
+        if(showResult)
             MenuControls::textPreview("##text-result",planId.empty()?draft:resultPreview.c_str(),130*scale,{},textTab==4 && !planId.empty() && listMode!=2);
         const bool processed=textTab!=3 && !planId.empty() && resultKind=="replace";
         const bool typeset=mode=="typeset";
-        ImGui::BeginDisabled(planId.empty() || pending);
-        if(textTab!=3 && (!editingOnCanvas() || (textTab>=1 && textTab<=4)) && MenuControls::button("将结果继续编辑",scale)){
-            checkpointDraft();
-            if(textTab==4){const auto params=textParams();draftList=nullptr;if(listMode!=2){draftList=Json::object();for(const char* key:{"kind","marker","custom_marker","numbering","start"})draftList[key]=params.at(key);}draftListChanged=true;}
-            setDraft(resultValue);textTab=0;
-        }
+        ImGui::BeginDisabled(!processed || pending);
+        if(textTab!=3 && showResult && MenuControls::button("将结果继续编辑",scale))continueTextResult();
         ImGui::EndDisabled();
         if(typeset){
             if(!pinnedAction)drawTypesetAction(scale,available);
@@ -1732,7 +1838,7 @@ struct MenuToolsPanel {
                 saveViewSettings();send("hide");ImGui::EndChild();reset();return;
             }
             const auto& io=ImGui::GetIO();
-            if(scopedStyles && available && hostForeground && !composingText() && (canvasTextActive || !ImGui::IsAnyItemActive()) &&
+            if(scopedStyles && available && hostForeground && !composingText() && (canvasTextActive || fallbackDraftActive || !ImGui::IsAnyItemActive()) &&
                io.KeyCtrl && !io.KeyAlt && !io.KeySuper){
                 if(ImGui::IsKeyPressed(ImGuiKey_Z,false))restoreDraft(io.KeyShift);
                 else if(!io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Y,false))restoreDraft(true);
@@ -1806,7 +1912,7 @@ struct MenuToolsPanel {
                 ImGui::SameLine();
                 ImGui::BeginChild("##layout-canvas",{centerWidth,bodyHeight},
                     ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
-                const bool canIsolate=thumbnail && canvasTextFrame && textTab!=3 && textTab!=6;
+                const bool canIsolate=editingOnCanvas() && textTab!=3;
                 const float iconWidth=figmaDisplayIconWidth*scale;
                 const bool joined=canIsolate && ImGui::GetContentRegionAvail().x>=7*iconWidth+2*gap;
                 const char* zoomLabels[]={"缩小","放大","适合窗口"};const int zoomGlyphs[]={75,76,77};int zoomAction=-1;
@@ -1839,17 +1945,28 @@ struct MenuToolsPanel {
                     if(MenuControls::button("重做",scale))restoreDraft(true);
                     ImGui::EndDisabled();
                 }
-                if(thumbnail && textTab!=3 && textTab!=6){
+                if(thumbnail && !fallbackDraftActive && textTab!=3 && textTab!=6){
                     MenuTextStyle status(MenuTextRole::Secondary);
                     ImGui::AlignTextToFramePadding();
                     ImGui::Text("本地草稿 · %.0f%%",canvasZoom*100);
                     ImGui::SameLine();ImGui::Dummy({0,menuControlHeight*scale});
                 }
+                if(canvasState==CanvasState::limited || canvasState==CanvasState::failed){
+                    ImGui::BeginDisabled(pending || !hostForeground);
+                    if(MenuControls::button("重试背景",scale))requestCanvas();
+                    ImGui::EndDisabled();
+                }
+                if(canvasState==CanvasState::waiting || !canvasMessage.empty()){
+                    MenuTextStyle status(MenuTextRole::Secondary);
+                    ImGui::TextWrapped("%s",canvasState==CanvasState::waiting?"正在读取背景…":canvasMessage.c_str());
+                }
                 const int shownBackground=canIsolate?backgroundMode:0;
                 const auto extent=ImGui::GetContentRegionAvail(),p=ImGui::GetCursorScreenPos();
-                if(!thumbnail && pending && pendingAction=="text.canvas" && textTab!=6 && !revision.empty())
-                    drawDraft(std::max(h,extent.y-gap));
-                if(thumbnail && extent.x>1 && extent.y>1){
+                if(draftInCanvas()){
+                    fallbackDraftActive=drawDraft(std::max(h,extent.y-gap));
+                    markEditable(available && hostForeground);
+                }else if(thumbnail && extent.x>1 && extent.y>1){
+                    if(editingOnCanvas())markEditable(available && hostForeground);
                     const ImVec2 end={p.x+extent.x,p.y+extent.y};
                     const auto& io=ImGui::GetIO();
                     const bool hovered=ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows|ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)

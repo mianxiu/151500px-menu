@@ -1,8 +1,8 @@
 {
   "manifestVersion": 5,
   "id": "com.15100px.menu.offline-probe",
-  "name": "151500px-menu v0.3.137",
-  "version": "0.3.137",
+  "name": "151500px-menu v0.3.139",
+  "version": "0.3.139",
   "main": "main.js",
   "host": {
     "app": "PS",

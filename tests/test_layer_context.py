@@ -26,6 +26,20 @@ class LayerContextTests(unittest.TestCase):
         self.assertTrue(packed&64);self.assertEqual((packed>>8)&15,15)
         self.assertEqual((packed>>12)&15,2);self.assertEqual((packed>>17)&255,1)
         self.assertEqual((flags(unavailable())>>8)&15,0)
+    def test_only_verified_object_metadata_enables_text_source(self):
+        from backend import text_object
+        from tests.test_text_object import SOURCE
+        xmp=text_object.write('',SOURCE).replace('</rdf:Description>',
+            '<pxText:render xmlns:pxText="'+text_object.NAMESPACE+'">'+'a'*64+'</pxText:render></rdf:Description>')
+        candidate={**self.value,'kind':'smart','text_source_xmp':xmp}
+        confirmed=validate(candidate,'one',self.now)
+        self.assertNotIn('text_source_xmp',confirmed)
+        self.assertTrue(flags(confirmed)&(1<<58))
+        for changes in ({'text_source_xmp':None,'text_source':True},{'locked':True},
+                        {'layer_ids':[2,3]},{'kind':'pixel'},
+                        {'text_source_xmp':xmp.replace('MicrosoftYaHei','ChangedFont')}):
+            result=validate({**candidate,**changes},'one',self.now)
+            self.assertFalse(flags(result)&(1<<58))
     def test_quick_capabilities_use_high_bits_and_frozen_selection(self):
         value={**self.value,'quick_mask':127}
         self.assertEqual(flags(value)>>32,127)
