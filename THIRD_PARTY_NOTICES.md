@@ -10,6 +10,7 @@
 | SolidJS | MIT；licenses/solid-js.txt | https://github.com/solidjs/solid |
 | seroval / seroval-plugins | MIT；licenses/seroval.txt、seroval-plugins.txt | https://github.com/lxsmnsyc/seroval |
 | Tornado | Apache 2.0；licenses/tornado.txt | https://github.com/tornadoweb/tornado |
+| pypdf 7.1.1 | BSD 3-Clause；licenses/pypdf.txt | https://github.com/py-pdf/pypdf |
 | pywin32 的 win32 / COM 模块 | 原始许可；licenses/pywin32-win32.txt、pywin32-com.txt | https://github.com/mhammond/pywin32 |
 | comtypes / Windows UI Automation COM 封装 | 原始许可；licenses/comtypes.txt | https://github.com/enthought/comtypes |
 | CPython 3.11 运行时 | Python 原始许可及附带声明；licenses/python.txt | https://www.python.org/ |

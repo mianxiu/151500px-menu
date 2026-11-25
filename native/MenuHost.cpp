@@ -1490,6 +1490,15 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         return 0;
     }
     if (msg==WM_APP+10) { contextMode=wp!=0;resetMenu();return 0; }
+    if(msg==WM_NCHITTEST && !gradientWindow && menuTools.active && menuTools.mode=="typeset" && !menuTools.maximized &&
+       !menuTools.windowResize){
+        RECT bounds{};
+        const POINT point={short(LOWORD(lp)),short(HIWORD(lp))};
+        if(GetWindowRect(hwnd,&bounds)){
+            const RECT frame=MenuToolsPanel::typesetFrame(bounds,ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd));
+            if(!PtInRect(&frame,point))return HTTRANSPARENT;
+        }
+    }
     if (msg==WM_SHOWWINDOW) {
         opened=wp!=0;
         const bool keepTypeset=menuTools.active && menuTools.mode=="typeset" && !holdFinished;

@@ -38,7 +38,8 @@ class CanvasGeometryTests(unittest.TestCase):
     def test_high_dpi_window_can_move_when_the_initial_size_fills_photoshop(self):
         rect=(1920,0,3840,1080)
         work=(1920,0,3840,1040)
-        self.assertEqual(typeset_bounds(rect,work,2),(2040,65,1680,910))
+        self.assertEqual(typeset_bounds(rect,work,2),(1944,24,1872,992))
+        self.assertEqual(typeset_bounds((-1920,-80,0,1080),(-1920,0,0,1040),1),(-1908,12,1896,1016))
 
     def test_document_geometry_never_accepts_invalid_coordinates_or_colors(self):
         frame={'box':[.25,-.1,.9,.4],'wrap':True,'em':.03,'color':[0,0,255]}
@@ -226,6 +227,32 @@ class MenuToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result,{'message':'done'})
         self.assertTrue(self.app.desktop.event.call_args.args[0]['ok'])
         self.app.desktop.require_menu_tools.assert_called_with(7)
+
+    async def test_double_click_opens_verified_search_object_in_new_editor_epoch(self):
+        self.app.runtime=Path('test')
+        target={'session':'s','document_id':2,'layer_ids':[3]}
+        self.app.desktop.layer_context={**target,'kind':'smart','locked':False,'plugin_time_ms':time.time()*1000}
+        self.app.desktop.open_menu_tools.return_value=8
+        self.tools.search.destination=Mock(return_value=({'session':'s'},{
+            'document_id':2,'layer_id':3,'type':'smart-object','text_source':True}))
+        self.tools.search.focus=AsyncMock()
+        self.tools.text.read=AsyncMock(return_value={'target':target,'vector_object':True})
+        with patch('backend.menu_tools.typeset_settings.load',return_value={}),patch('backend.menu_tools.typeset_settings.load_styles',return_value={}):
+            result=await self.tools.request(self.request('layers.edit-text',args={'search_id':'id','index':0}))
+        self.assertEqual(result['epoch'],8)
+        self.assertEqual(self.app.desktop.open_menu_tools.call_args.args,('typeset',7))
+        self.assertTrue(self.app.desktop.open_menu_tools.call_args.kwargs['selected_text']['text_source'])
+        self.assertEqual(self.app.desktop.event.call_args.args[0]['mode'],'typeset')
+
+    async def test_double_click_does_not_open_stale_or_unverified_search_target(self):
+        expected={'document_id':2,'layer_id':3,'type':'smart-object','text_source':True}
+        self.app.desktop.layer_context={'session':'s','document_id':2,'layer_ids':[9],
+            'kind':'smart','locked':False,'plugin_time_ms':time.time()*1000}
+        self.tools.search.destination=Mock(return_value=({'session':'s'},expected))
+        self.tools.search.focus=AsyncMock()
+        result=await self.tools.request(self.request('layers.edit-text'))
+        self.assertIn('error',result)
+        self.app.desktop.open_menu_tools.assert_not_called()
 
     async def test_pending_request_is_rejected_without_queue(self):
         self.tools.pending=True;self.tools.search.search=AsyncMock()

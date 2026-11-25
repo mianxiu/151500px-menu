@@ -11,7 +11,7 @@ const name = '151500px text acceptance ' + 'a'.repeat(32) + ' 72';
 const saveSourcePdf = source.slice(source.indexOf('    function saveSourcePdf('), source.indexOf('    function renderSource('));
 for (const failSave of [false, true]) {
     const layers = [{visible: true}, {visible: true}];
-    const ctx = {layers, pdf: {}, PDFSaveOptions: class {}, Extension: {LOWERCASE: 'lowercase'},
+    const ctx = {layers, pdf: {}, nativeTimes: {}, PDFSaveOptions: class {}, Extension: {LOWERCASE: 'lowercase'},
         work: {saveAs() {
             assert.ok(layers.every(layer => !layer.visible));
             if (failSave) throw new Error('Save failed');

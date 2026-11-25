@@ -186,6 +186,7 @@ async function request(find,replacement){const read=await tools.read();return {t
  row.XMPMetadataAsUTF8='saved list options';preparedRequest=await request('猫','XY');
  assert.equal((await tools.prepareObject(preparedRequest,{...preparedRequest.text,list_xmp:'saved list options'})).source.schema,1);
  row.layerKind=5;row.smartObjectMore={transform:[0,0,600,0,600,400,0,400]};
+ row.smartObject={placed:{_value:'vectorData'},linked:false};
  let objectRead=await tools.read();
  const objectParams={revision:objectRead.revision,find:'猫',replacement:'XY',object_render:'a'.repeat(64),object_source:{schema:1,canvas:nativeSource.source.canvas,layer:{text:clone(original.textKey),xmp:''}}};
  assert.equal((await tools.prepareObject({target,expires_at_ms:Date.now()+5000},objectParams)).source.schema,1);

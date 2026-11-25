@@ -26,12 +26,17 @@ class MenuTools:
         if epoch is not None and (type(epoch) is not int or epoch<=0):raise ValueError('无效的菜单会话')
         mode=params.get('mode','search')
         if mode not in ('search','split','typeset'):raise ValueError('未知的Caps工具')
-        started=time.monotonic()
         require_available(self.app)
         if self.pending or self.app.panel_lock.locked():raise RuntimeError('工具正在处理，本次未接受')
+        return await self._open(mode,epoch,input_guard=args.get('input_guard'))
+
+    async def _open(self,mode,epoch,*,input_guard=None,selected_text=None):
+        started=time.monotonic()
         async with self.app.panel_lock:
-            guard={'input_guard':args['input_guard']} if 'input_guard' in args else {}
-            epoch=await asyncio.to_thread(self.app.desktop.open_menu_tools,mode,args.get('menu_epoch'),**guard)
+            options={}
+            if input_guard is not None:options['input_guard']=input_guard
+            if selected_text is not None:options['selected_text']=selected_text
+            epoch=await asyncio.to_thread(self.app.desktop.open_menu_tools,mode,epoch,**options)
             try:require_available(self.app)
             except Exception:
                 await asyncio.to_thread(self.app.desktop.hide_if_epoch,epoch)
@@ -70,7 +75,7 @@ class MenuTools:
         epoch=args.get('menu_epoch');value=args.get('params',{})
         if (type(epoch) is not int or epoch<=0 or not isinstance(value,dict) or set(value)!={'request','action','args'} or
                 type(value['request']) is not int or not 1<=value['request']<=2147483647 or
-                value['action'] not in ('layers.search','layers.focus','text.read','text.fonts','text.canvas','text.split','text.preview','text.proof','text.apply','text.write','text.vector','text.table') or not isinstance(value['args'],dict)):
+                value['action'] not in ('layers.search','layers.focus','layers.edit-text','text.read','text.fonts','text.canvas','text.split','text.preview','text.proof','text.apply','text.write','text.vector','text.table') or not isinstance(value['args'],dict)):
             raise ValueError('无效的Caps工具请求')
         async def guard(_target=None):
             if epoch != self.epoch:raise RuntimeError('工具会话已改变，本次未执行')
@@ -95,6 +100,22 @@ class MenuTools:
                 await guard()
                 await asyncio.to_thread(self.app.desktop.resize_menu_tools,epoch,len(result['items']))
             elif action=='layers.focus':result=await self.search.focus(params,menu_guard=guard)
+            elif action=='layers.edit-text':
+                search,row=self.search.destination(params)
+                if row.get('type')!='text' and not (row.get('type')=='smart-object' and row.get('text_source') is True):
+                    raise ValueError('请双击可编辑文字或文字源的缩略图')
+                await self.search.focus(params,menu_guard=guard)
+                await guard()
+                context=dict(self.app.desktop.layer_context)
+                if (not fresh(context) or context.get('session')!=search['session'] or
+                        context.get('document_id')!=row['document_id'] or context.get('layer_ids')!=[row['layer_id']] or context.get('locked')):
+                    raise ValueError('文字选择已改变或仍锁定')
+                if row['type']=='smart-object':
+                    verified=await self.text.read({},fast=True)
+                    if not verified.get('vector_object') or any(verified['target'].get(key)!=context.get(key) for key in ('session','document_id','layer_ids')):
+                        raise ValueError('无法核对所选对象的文字源')
+                    context['text_source']=True
+                return await self._open('typeset',epoch,selected_text=context)
             elif action=='text.read':
                 result=await self.text.read(params,fast=True,trace=(epoch,value['request']))
                 stage='target'

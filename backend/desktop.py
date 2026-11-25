@@ -18,6 +18,7 @@ from .window_icons import WindowIcons
 from .settings import DEFAULTS, chord, ALIASES, MODIFIERS
 from .paths import ROOT, runtime_dir, overlay_command
 from .panel_context import PanelContext, panel_flags
+from .layer_context import fresh
 
 TITLE = "151500px-menu - Actions"
 MAX_CONTEXT_PACKET_BYTES = 256 * 1024
@@ -140,9 +141,8 @@ def panel_bounds(ps_rect, work_rect, cursor, width, height):
 def typeset_bounds(ps_rect, work_rect, scale):
     x,y,available_width,available_height=panel_bounds(
         ps_rect,work_rect,work_rect[:2],work_rect[2]-work_rect[0],work_rect[3]-work_rect[1])
-    width=min(round(1130*scale),available_width-available_width//8)
-    height=min(round(860*scale),available_height-available_height//8)
-    return x+(available_width-width)//2,y+(available_height-height)//2,width,height
+    inset=min(round(12*scale),min(available_width,available_height)//12)
+    return x+inset,y+inset,available_width-2*inset,available_height-2*inset
 
 
 def pie_layout(ps_rect, work_rect, cursor, scale, home=False, color_editor=False, left_work=None, right_inset=None):
@@ -789,7 +789,7 @@ class Desktop:
         self.require_action_focus()
 
     @per_monitor_dpi
-    def open_menu_tools(self, mode, epoch=None,input_guard=None):
+    def open_menu_tools(self, mode, epoch=None,input_guard=None,selected_text=None):
         current=None
         try:
             with self.window_lock:
@@ -809,10 +809,14 @@ class Desktop:
                 if not self.visible:self.open(hold=True,keyboard_anchor=True)
                 current=self.menu_epoch
                 if mode in ('split','typeset'):
-                    value=self.menu_layer_context or {}
+                    value=selected_text if selected_text is not None else self.menu_layer_context or {}
+                    if selected_text is not None and (not fresh(value) or any(
+                        value.get(key)!=self.layer_context.get(key) for key in ('session','document_id','layer_ids','kind','locked'))):
+                        raise RuntimeError('文字选择已改变，请重新定位')
                     if (value.get('kind') not in ('text','smart') or len(value.get('layer_ids',[]))!=1 or value.get('locked')
                             or value.get('kind')=='smart' and value.get('text_source') is not True):
                         raise RuntimeError('请单选未锁定的文字图层或文字对象后打开文本工具')
+                    if selected_text is not None:self.menu_layer_context=dict(value)
                 self.hold_active=False;self.menu_tools_active=True
                 self.text_tool_owner=self.target if mode in ('split','typeset') else None
                 self.text_tool_foreground=None

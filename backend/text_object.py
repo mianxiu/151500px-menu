@@ -152,6 +152,10 @@ def render_bounds(raw,canvas):
         value=''.join(child.data for child in node.childNodes)
     try:bounds=json.loads(value)
     except (ValueError,RecursionError):raise ValueError('文字对象矢量页面范围无效') from None
+    return page_bounds(bounds,canvas)
+
+
+def page_bounds(bounds,canvas):
     if (not isinstance(bounds,list) or len(bounds)!=4 or any(type(edge) is not int for edge in bounds) or
             not 0<=bounds[0]<bounds[2]<=round(canvas['width']) or not 0<=bounds[1]<bounds[3]<=round(canvas['height'])):
         raise ValueError('文字对象矢量页面范围无效')

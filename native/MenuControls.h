@@ -358,14 +358,24 @@ template<size_t N> bool iconSegments(const char* id,const char* const (&names)[N
     return iconGroup<N>(id,scale,fitContent,[&](int i){return IconGroupItem{names[i],icons[i],selected==i,true,false,{},showLabels};},
         [&](int i){selected=i;});
 }
-inline bool resultRow(const char* id,int icon,const char* title,const char* detail,float scale,bool& previewHover,ImVec2& previewAnchor,bool* previewClick=nullptr,bool previewAvailable=true) {
+inline bool resultRow(const char* id,int icon,const char* title,const char* detail,float scale,bool& previewHover,ImVec2& previewAnchor,bool* previewClick=nullptr,bool previewAvailable=true,bool* editThumbnail=nullptr) {
     const auto at=ImGui::GetCursorScreenPos();const float width=ImGui::GetContentRegionAvail().x,h=menuSearchRowHeight*scale,pad=menuControlPadding*scale;
     const float actionWidth=std::max(1.f,width-(previewAvailable?h:0));auto* draw=ImGui::GetWindowDrawList();
-    const bool clicked=ImGui::InvisibleButton(id,{actionWidth,h},ImGuiButtonFlags_EnableNav);
-    const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
-    if(!disabled && ImGui::IsItemHovered())draw->AddRectFilled(at,{at.x+actionWidth,at.y+h},ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding);
-    const auto ink=ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),surface=ImGui::GetColorU32(ImGuiCol_Button);
     const float glyph=figmaBasicIconSize*scale;
+    const float thumbnailWidth=editThumbnail?std::min(actionWidth*.5f,2*pad+glyph):0.f;
+    const ImVec2 actionAt={at.x+thumbnailWidth,at.y};
+    if(editThumbnail){
+        ImGui::InvisibleButton("##text-thumbnail",{thumbnailWidth,h});
+        const bool over=ImGui::IsItemHovered() && !(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled);
+        *editThumbnail=over && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        if(over)draw->AddRectFilled(at,{actionAt.x,at.y+h},ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding);
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))tip("双击编辑文字",scale);
+        ImGui::SetCursorScreenPos(actionAt);
+    }
+    const bool clicked=ImGui::InvisibleButton(id,{actionWidth-thumbnailWidth,h},ImGuiButtonFlags_EnableNav);
+    const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
+    if(!disabled && ImGui::IsItemHovered())draw->AddRectFilled(actionAt,{at.x+actionWidth,at.y+h},ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding);
+    const auto ink=ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),surface=ImGui::GetColorU32(ImGuiCol_Button);
     drawStyledMenuIcon(draw,icon,{at.x+pad,at.y+(h-glyph)*.5f},glyph,ink,surface);
     auto* secondary=menuFont(MenuTextRole::Secondary);auto* body=menuFont(MenuTextRole::Body);
     const float meta=std::min(secondary->CalcTextSizeA(secondary->LegacySize,FLT_MAX,0,detail).x,actionWidth*.3f),end=at.x+actionWidth-pad-meta;
@@ -373,7 +383,7 @@ inline bool resultRow(const char* id,int icon,const char* title,const char* deta
     draw->AddText(body,body->LegacySize,{clip.x,at.y+(h-body->LegacySize)*.5f},ink,title,nullptr,0,&clip);
     const ImVec4 metaClip={end,at.y,at.x+actionWidth-pad,at.y+h};
     draw->AddText(secondary,secondary->LegacySize,{end,at.y+(h-secondary->LegacySize)*.5f},ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_PlotLines),detail,nullptr,0,&metaClip);
-    ImGui::RenderNavCursor(ImRect(at,{at.x+actionWidth,at.y+h}),ImGui::GetItemID());
+    ImGui::RenderNavCursor(ImRect(actionAt,{at.x+actionWidth,at.y+h}),ImGui::GetItemID());
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))tip((std::string(title)+"\n"+detail).c_str(),scale);
     previewAnchor={at.x+actionWidth,at.y};
     previewHover=false;if(previewClick)*previewClick=false;

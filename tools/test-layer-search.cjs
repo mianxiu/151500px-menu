@@ -53,6 +53,13 @@ const search=context.search,query={name:'重名',document:'',type:'all'};
   await assert.rejects(search.preview(result.items[0]),/已改变/);assert.equal(disposed,3);docs[0].rows[0].name='重名';
   assert.equal((await search.search({...query,document:'目标',type:'shape'})).items[0].layer_id,21);
   assert.equal((await search.search({...query,name:'',type:'fill'})).items[0].layer_id,22);
+  const vector={placed:{_value:'vectorData'},linked:false};
+  const xmp='https://15100px.menu/ns/text-object/1.0/';
+  docs[1].rows.push(row(23,'文字源',5,{smartObject:vector,XMPMetadataAsUTF8:xmp}),
+    row(24,'引用',5,{smartObject:{...vector,linked:true},XMPMetadataAsUTF8:xmp}),
+    row(25,'普通对象',5,{smartObject:vector}));
+  const smart=await search.search({...query,name:'',type:'smart-object'});
+  assert.deepEqual(Array.from(smart.items,row=>row.text_source),[true,undefined,undefined]);
   await assert.rejects(search.search({...query,type:'bad'}),/无效/);
   badList=true;await assert.rejects(search.search(query),/列表已改变/);badList=false;
   await assert.rejects(search.search(query,()=>{throw Error('yield');}),/yield/);assert.equal(writes,0);

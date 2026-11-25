@@ -838,6 +838,12 @@ struct MenuToolsPanel {
         return (pointer.x-bounds.left<grip?windowLeft:pointer.x>=bounds.right-grip?windowRight:0) |
             (pointer.y-bounds.top<grip?windowTop:pointer.y>=bounds.bottom-grip?windowBottom:0);
     }
+    static RECT typesetFrame(RECT bounds,float scale){
+        const LONG inset=std::min(std::lround(menuFloatingInset*scale),
+            std::max(0L,(std::min(bounds.right-bounds.left,bounds.bottom-bounds.top)-1)/2));
+        InflateRect(&bounds,-inset,-inset);
+        return bounds;
+    }
     static RECT resizedWindow(RECT bounds,RECT limit,POINT delta,int edge,SIZE minimum){
         minimum.cx=std::min(minimum.cx,limit.right-limit.left);
         minimum.cy=std::min(minimum.cy,limit.bottom-limit.top);
@@ -863,7 +869,7 @@ struct MenuToolsPanel {
         POINT pointer{};RECT bounds{};
         if(!GetCursorPos(&pointer) || !GetWindowRect(hwnd,&bounds))return false;
         const float dpi=ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
-        const int edge=windowResize?windowResize:windowEdges(bounds,pointer,std::max(1L,std::lround(5*dpi)));
+        const int edge=windowResize?windowResize:windowEdges(typesetFrame(bounds,dpi),pointer,std::max(1L,std::lround(5*dpi)));
         if(!edge)return false;
         if(message==WM_SETCURSOR){
             const bool horizontal=(edge&(windowLeft|windowRight))!=0,vertical=(edge&(windowTop|windowBottom))!=0;
@@ -1840,7 +1846,9 @@ struct MenuToolsPanel {
         const auto pos=ImGui::GetWindowPos(),size=ImGui::GetWindowSize();
         const bool typeset=mode=="typeset";
         MenuControls::PanelStyle controls(scale,false,false,typeset);
-        const float gap=menuControlPadding*scale,margin=typeset?0:menuFloatingInset*scale,h=menuControlHeight*scale;
+        const float gap=menuControlPadding*scale,h=menuControlHeight*scale;
+        const float margin=typeset && maximized?0.f:std::min(menuFloatingInset*scale,
+            std::max(0.f,(std::min(size.x,size.y)-1.f)*.5f));
         const float width=std::max(1.f,typeset?size.x-margin*2:std::min((mode=="search"?420:620)*scale,size.x-margin*2));
         const char* kinds[]={"全部","像素","文字","组","形状","智能对象","调整","填充","其他"};
         const float filters=MenuControls::segmentsHeight(kinds,width-2*ImGui::GetStyle().WindowPadding.x,scale);
@@ -1883,7 +1891,7 @@ struct MenuToolsPanel {
             const bool enter=MenuControls::input("##layer","搜索图层…",name,sizeof(name),MenuControls::Emphasis::Neutral);
             ImGui::PopID();
             if(ImGui::IsItemEdited())changeSearch(ImGui::GetTime());
-                const char* ids[]={"all","pixel","text","group","shape","smart-object","adjustment","fill","other"};
+            const char* ids[]={"all","pixel","text","group","shape","smart-object","adjustment","fill","other"};
             const int icons[]={7,35,36,2,37,38,6,1,40};
             if(MenuControls::segments("##types",kinds,kind,scale))changeSearch(ImGui::GetTime()-.18);
             if(enter && !pending)changeSearch(ImGui::GetTime()-.18);
@@ -1899,9 +1907,14 @@ struct MenuToolsPanel {
                     const auto type=row.value("type",std::string("other"));int typeIndex=8;
                     for(int i=0;i<IM_ARRAYSIZE(ids);++i)if(type==ids[i])typeIndex=i;
                     const bool canPreview=type!="adjustment" && (layerPreviewReady && type!="group");
-                    bool over=false,previewClick=false;ImVec2 point{};
-                    if(MenuControls::resultRow("##result",icons[typeIndex],row.at("name").get_ref<const std::string&>().c_str(),row.at("document_name").get_ref<const std::string&>().c_str(),scale,over,point,&previewClick,canPreview))
-                        submit("layers.focus",Json{{"search_id",results.at("search_id")},{"index",index}});
+                    const bool textSource=type=="smart-object" && row.value("text_source",false);
+                    const bool editable=type=="text" || textSource;
+                    bool over=false,previewClick=false,editClick=false;ImVec2 point{};
+                    const bool focusClick=MenuControls::resultRow("##result",textSource?36:icons[typeIndex],
+                        row.at("name").get_ref<const std::string&>().c_str(),row.at("document_name").get_ref<const std::string&>().c_str(),
+                        scale,over,point,&previewClick,canPreview,editable?&editClick:nullptr);
+                    if(editClick || focusClick)submit(editClick?"layers.edit-text":"layers.focus",
+                        Json{{"search_id",results.at("search_id")},{"index",index}});
                     if(previewClick && !previewPending) {
                         if(previewTarget==index && previewVisible)previewVisible=false;
                         else {
@@ -2004,7 +2017,11 @@ struct MenuToolsPanel {
                     if(hovered){
                         ImGui::SetKeyOwner(ImGuiKey_MouseWheelY,ImGui::GetCurrentWindow()->ID);
                         if(io.MouseWheel && !resizeHandle){
-                            canvasZoom=std::clamp(canvasZoom*std::pow(1.2f,io.MouseWheel),.25f,8.f);
+                            const float next=std::clamp(canvasZoom*std::pow(1.2f,io.MouseWheel),.25f,8.f);
+                            const float shift=1.f-next/canvasZoom;
+                            canvasPan.x+=(io.MousePos.x-p.x-extent.x*.5f-canvasPan.x)*shift;
+                            canvasPan.y+=(io.MousePos.y-p.y-extent.y*.5f-canvasPan.y)*shift;
+                            canvasZoom=next;
                             changedView();
                         }
                     }

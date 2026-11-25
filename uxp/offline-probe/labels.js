@@ -2216,6 +2216,24 @@ function createLayerSearch(ps,session,capture) {
   function validRow(row) {
     return Number.isSafeInteger(row?.layerID)&&row.layerID>0&&typeof row.name==='string'&&row.name.length<=2000&&Number.isSafeInteger(row.parentLayerID)&&Number.isInteger(row.layerKind)&&['layerSectionContent','layerSectionStart'].includes(row.layerSection?._value);
   }
+  async function markTextSources(rows,checkpoint) {
+    const candidates=rows.filter(row=>row.type==='smart-object');
+    for(let offset=0;offset<candidates.length;offset+=24){
+      const subset=candidates.slice(offset,offset+24);
+      const items=await batch(subset.map(row=>({_obj:'multiGet',
+        _target:{_ref:[{_ref:'layer',_id:row.layer_id},...docRef(row.document_id)]},
+        extendedReference:[['layerID','smartObject','XMPMetadataAsUTF8']],
+        options:{failOnMissingProperty:false,failOnMissingElement:false},_options:{dialogOptions:'silent'}})),checkpoint);
+      for(let index=0;index<subset.length;index++){
+        const item=items[index],row=subset[index],smart=item.smartObject,xmp=item.XMPMetadataAsUTF8;
+        // The search marker only controls the icon. Opening the editor verifies
+        // the freshly selected layer and the complete editable source on the backend.
+        if(item.layerID===row.layer_id&&smart?.placed?._value==='vectorData'&&smart.linked!==true&&
+           typeof xmp==='string'&&xmp.length<=2097152&&xmp.includes('https://15100px.menu/ns/text-object/1.0/'))
+          row.text_source=true;
+      }
+    }
+  }
   async function search(query,checkpoint) {
     if(!query||typeof query.name!=='string'||query.name.length>200||typeof query.document!=='string'||query.document.length>200||!types.includes(query.type))throw Error('无效的搜索条件');
     const count=await nativeDocumentCount(ps,checkpoint);
@@ -2250,6 +2268,7 @@ function createLayerSearch(ps,session,capture) {
       if(JSON.stringify(after)!==JSON.stringify(doc))throw Error('文档已改变，请重新搜索');
       if(truncated)break;
     }
+    await markTextSources(matches,checkpoint);
     if(await nativeDocumentCount(ps,checkpoint)!==count)throw Error('打开的文档已改变，请重新搜索');
     return {session,items:matches,scanned,truncated,document_count:count};
   }
@@ -2402,7 +2421,10 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     if(row.layerKind===5){
       if(row.XMPMetadataAsUTF8.length>2097152)throw Error('文字对象源超出上限');
       const query={_obj:'get',_target:[{_ref:'property',_property:'smartObjectMore'},...ref(target)],_options:{dialogOptions:'silent'}};
-      const [more,check]=await batch(stamp?[query,historyRequest()]:[query]);
+      const object={...query,_target:[{_ref:'property',_property:'smartObject'},...ref(target)]};
+      const [more,embedded,check]=await batch(stamp?[query,object,historyRequest()]:[query,object]);
+      if(embedded.smartObject?.placed?._value!=='vectorData'||embedded.smartObject.linked===true)
+        throw Error('选中的图层没有嵌入矢量文字源');
       row.smartObjectMore=more.smartObjectMore;
       if(stamp&&check.ID!==stamp.history||!sameTarget(await capture(),target))throw Error('文字对象目标已改变');
       return clone(row);

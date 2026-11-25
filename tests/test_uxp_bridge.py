@@ -219,11 +219,11 @@ class UxpDiscoveryTests(unittest.TestCase):
         self.assertTrue(response['result']['verified']);self.assertEqual(published.call_count,1)
 
     def test_only_matching_terminal_read_failure_proves_request_exit(self):
-        from backend.uxp_bridge import UxpRequestFailed
+        from backend.uxp_bridge import UxpRequestFailed, publish_request
         folder=self.heartbeat(24);self.transport.config.write_text('{"token":"test"}','utf-8')
         for mismatch in (None,'session','operation','phase'):
             def publish(source,destination):
-                request=json.loads(source.read_text('utf-8'));source.replace(destination)
+                request=json.loads(source.read_text('utf-8'));publish_request(source,destination)
                 response={k:request[k] for k in ('id','session','operation')}
                 response.update(phase='failed',error='Known test failure')
                 if mismatch:response[mismatch]='different'

@@ -1,4 +1,5 @@
 import copy
+from io import BytesIO
 import unittest
 import asyncio
 import hashlib,json,subprocess
@@ -15,6 +16,26 @@ SOURCE={'schema':1,'canvas':{'width':600,'height':400,'resolution':300,'mode':'R
 
 
 class TextObjectTests(unittest.TestCase):
+    def test_pdf_crop_changes_page_bounds_without_changing_vector_content(self):
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import DecodedStreamObject, NameObject
+        from backend.text_object_native import crop_pdf
+        writer=PdfWriter()
+        page=writer.add_blank_page(width=600,height=400)
+        stream=DecodedStreamObject()
+        paint=b'q 0 0 0 rg 40 30 10 14 re f Q'
+        stream.set_data(paint)
+        page[NameObject('/Contents')]=stream
+        original=BytesIO()
+        writer.write(original)
+        canvas={'width':600,'height':400,'resolution':72}
+        result=PdfReader(BytesIO(crop_pdf(original.getvalue(),[32,330,75,379],canvas))).pages[0]
+        self.assertEqual(list(result.mediabox),[0,0,43,49])
+        self.assertEqual(list(result.cropbox),[0,0,43,49])
+        commands=result.get_contents().operations
+        self.assertIn(([1,0,0,1,-32,-21],b'cm'),commands)
+        self.assertIn(([40,30,10,14],b're'),commands)
+
     def test_translated_double_size_point_and_paragraph_frames(self):
         from backend.text_tools import object_text_geometry
         canvas={'width':600,'height':400,'resolution':300}
