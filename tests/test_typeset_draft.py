@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.text_tools import mapped_parameters, style_ranges, summarize_ranges
+from backend.text_tools import mapped_parameters, style_ranges, summarize_ranges, typography, validate_style_scope
 from backend.typeset_settings import DEFAULTS, load, load_styles, save, save_style
 
 
@@ -43,3 +43,24 @@ class TypesetDraftTests(unittest.TestCase):
         self.assertEqual(profiles['textStyle'][1]['values']['fontPostScriptName'],'Second')
         self.assertEqual(summarize_ranges(profiles)['fontPostScriptName'],'混合')
         self.assertEqual(summarize_ranges(profiles)['textEveryLineComposer'],'逐行')
+
+    def test_east_asian_choices_preserve_paragraph_scope_and_inheritance(self):
+        style=typography({'range':[2,3],'kinsokuSetName':'Soft','mojiKumiName':'Photoshop6MojiKumiNone',
+                          'burasagari':'burasagariStrong','preferredKinsokuOrder':'pushOut'})
+        supported={'east_asian_paragraph_supported':True,'paragraph_indents_supported':True,
+                   'style_scope_supported':True,'typography_runs_supported':True}
+        validate_style_scope(style,supported,{})
+        for overrides in ({'east_asian_paragraph_supported':False},{'paragraph_indents_supported':False}):
+            with self.assertRaises(ValueError):validate_style_scope(style,{**supported,**overrides},{})
+        with self.assertRaises(ValueError):validate_style_scope(style,supported,{'operation':'list'})
+        with self.assertRaises(ValueError):typography({'burasagari':True})
+        raw={'textStyleRange':[{'from':0,'to':4,'textStyle':{}}],
+             'paragraphStyleRange':[
+                 {'from':0,'to':2,'paragraphStyle':{'kinsokuSetName':{'_enum':'kinsokuSetName','_value':'Hard'}}},
+                 {'from':2,'to':4,'paragraphStyle':{'baseParentStyle':{
+                     'kinsokuSetName':{'_enum':'kinsokuSetName','_value':'Soft'},
+                     'mojiKumiName':{'_enum':'mojiKumiName','_value':'Photoshop6MojiKumiSet1'}}}},
+             ]}
+        rows=style_ranges(raw,72)['paragraphStyle']
+        self.assertEqual([row['values']['kinsokuSetName'] for row in rows],['JIS 最大','JIS 弱'])
+        self.assertEqual([row['values']['mojiKumiName'] for row in rows],['关闭','组合 1'])

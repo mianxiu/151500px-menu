@@ -18,6 +18,12 @@ STYLE_SWITCHES=(*CHARACTER_SWITCHES,*PARAGRAPH_SWITCHES)
 HYPHENATION={'hyphenateWordSize':(1,99),'hyphenatePreLength':(0,99),'hyphenatePostLength':(0,99),
              'hyphenateLimit':(0,99),'hyphenationZone':(0,1296)}
 JUSTIFICATION={'justifyWord':('Word',0,1000),'justifyLetter':('Letter',-100,500),'justifyGlyph':('Glyph',50,200)}
+EAST_ASIAN_PARAGRAPH_CHOICES={
+    'kinsokuSetName':{'None':'关闭','Soft':'JIS 弱','Hard':'JIS 最大'},
+    'mojiKumiName':{'Photoshop6MojiKumiNone':'关闭',**{f'Photoshop6MojiKumiSet{i}':f'组合 {i}' for i in range(1,5)}},
+    'burasagari':{'burasagariNone':'关闭','burasagariStandard':'常规','burasagariStrong':'强制'},
+    'preferredKinsokuOrder':{'pushIn':'优先挤入','pushOutFirst':'优先推出','pushOut':'仅推出'},
+}
 STYLE_CHOICES={
     'autoKern':{'metricsKern':'度量','opticalKern':'视觉'},
     'fontCaps':{'normal':'正常','allCaps':'大写','smallCaps':'小型大写'},
@@ -31,7 +37,7 @@ OPENTYPE_STYLES={*OPENTYPE_SWITCHES,'figureStyle'}
 ADVANCED_STYLES={*STYLE_SWITCHES,*STYLE_CHOICES,'color'}
 CHARACTER_STYLES=('fontPostScriptName','size','leading','tracking','baselineShift','horizontalScale','verticalScale',
                   *STYLE_CHOICES,*CHARACTER_SWITCHES,'color')
-PARAGRAPH_STYLES=(*PARAGRAPH_DISTANCES,'align',*PARAGRAPH_SWITCHES,*HYPHENATION,*JUSTIFICATION)
+PARAGRAPH_STYLES=(*PARAGRAPH_DISTANCES,'align',*PARAGRAPH_SWITCHES,*HYPHENATION,*JUSTIFICATION,*EAST_ASIAN_PARAGRAPH_CHOICES)
 EXTENDED_STYLES={'baselineShift','horizontalScale','verticalScale','align'}
 ALIGNMENT={'left':'左对齐','center':'居中','right':'右对齐','justifyLeft':'两端对齐，末行左',
            'justifyCenter':'两端对齐，末行居中','justifyRight':'两端对齐，末行右','justifyAll':'全部两端对齐'}
@@ -41,6 +47,11 @@ def typography(value):
         raise ValueError('排版参数无效')
     result={}
     for key,item in value.items():
+        if key in EAST_ASIAN_PARAGRAPH_CHOICES:
+            if not isinstance(item,str) or item not in EAST_ASIAN_PARAGRAPH_CHOICES[key]:
+                raise ValueError('东亚段落排版选项无效')
+            result[key]=item
+            continue
         if key=='align':
             if not isinstance(item,str) or item not in ALIGNMENT:raise ValueError('段落对齐无效')
             result[key]=item
@@ -133,6 +144,11 @@ def style_ranges(raw,resolution):
                     item=ALIGNMENT.get(item.get('_value'))
                 if key in STYLE_CHOICES and isinstance(item,dict):
                     item=STYLE_CHOICES[key].get(item.get('_value'))
+                if key in EAST_ASIAN_PARAGRAPH_CHOICES:
+                    if isinstance(item,dict):
+                        item=EAST_ASIAN_PARAGRAPH_CHOICES[key].get(item.get('_value')) if item.get('_enum')==key else None
+                    elif key=='mojiKumiName' and item is None and isinstance(run[field].get('kinsokuSetName'),dict):
+                        item='关闭'
                 if key=='textEveryLineComposer' and type(item) is bool:item='整段' if item else '逐行'
                 elif key in STYLE_SWITCHES and type(item) is bool:item='开启' if item else '关闭'
                 if key=='color' and isinstance(item,dict) and item.get('_obj')=='RGBColor':
@@ -173,7 +189,12 @@ def validate_style_scope(style,saved,args):
         raise ValueError('请更新插件后重新读取字符和段落选项')
     if 'color' in style and not saved.get('text_rgb'):
         raise ValueError('文字取色需要 sRGB 8 位文档')
-    composition=set(HYPHENATION)|set(JUSTIFICATION)|set(PARAGRAPH_SWITCHES)
+    if style.keys() & EAST_ASIAN_PARAGRAPH_CHOICES.keys():
+        if not saved.get('east_asian_paragraph_supported'):
+            raise ValueError('当前 Photoshop 和插件无法写入东亚段落排版')
+        if not saved.get('paragraph_indents_supported'):
+            raise ValueError('东亚段落排版需要水平段落文字')
+    composition=set(HYPHENATION)|set(JUSTIFICATION)|set(PARAGRAPH_SWITCHES)|set(EAST_ASIAN_PARAGRAPH_CHOICES)
     if style.keys() & ({'align','startIndent','firstLineIndent'}|composition) and (
             args.get('operation')=='list' or args.get('list_options') is not None or
             text_list.read(saved.get('list_xmp','')) is not None):
@@ -251,7 +272,7 @@ def box_horizontal_shift(value):
     return value
 
 
-def object_text_geometry(raw,canvas,frame,document,style):
+def object_text_geometry(raw,canvas,frame,document,style,pdf_bounds=None):
     if (not isinstance(frame,list) or len(frame)!=8 or any(type(value) not in (int,float) or not math.isfinite(value) for value in frame)
             or not isinstance(document,list) or len(document)!=2 or any(type(value) is not int or value<=0 for value in document)):
         return None
@@ -262,6 +283,12 @@ def object_text_geometry(raw,canvas,frame,document,style):
     left,top,x1,y1,x2,y2,x3,y3=frame
     width,height=x1-left,y3-top
     if width<=0 or height<=0 or max(abs(y1-top),abs(x3-left),abs(x2-x1),abs(y2-y3))>.01:return None
+    if pdf_bounds:
+        x,y,right,bottom=pdf_bounds
+        horizontal,vertical=width/(right-x),height/(bottom-y)
+        left-=x*horizontal
+        top-=y*vertical
+        width,height=canvas['width']*horizontal,canvas['height']*vertical
     click=raw.get('textClickPoint',{})
     anchors=[click.get(key,{}) for key in ('horizontal','vertical')]
     if any(anchor.get('_unit')!='percentUnit' or type(anchor.get('_value')) not in (int,float)
@@ -391,7 +418,8 @@ class TextTools:
                         public['paragraph_alignment_supported']=snapshot['paragraph_alignment_supported']=raw.get('orientation',{}).get('_value')=='horizontal'
                         if supported:
                             geometry=object_text_geometry(raw,model['canvas'],snapshot.get('object_frame'),
-                                snapshot.get('object_canvas_size',snapshot.get('proof_size')),ranges['textStyle'][0]['values'])
+                                snapshot.get('object_canvas_size',snapshot.get('proof_size')),ranges['textStyle'][0]['values'],
+                                text_object.render_bounds(snapshot['object_xmp'],model['canvas']))
                             if geometry:
                                 size,public['object_text_frame']=geometry
                                 if size and snapshot.get('box_resize_available'):public['box_size']=snapshot['box_size']=size

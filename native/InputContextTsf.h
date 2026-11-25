@@ -1,6 +1,7 @@
 // Only the focused PS edit context is changed; never the global keyboard compartment.
 #include <msctf.h>
 #include <oleauto.h>
+#include <olectl.h>
 
 struct InputContextTsf : ITfThreadMgrEventSink,ITfCompartmentEventSink {
     ITfContext* context=nullptr;
@@ -33,9 +34,13 @@ struct InputContextTsf : ITfThreadMgrEventSink,ITfCompartmentEventSink {
     HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext*) override{return signal();}
     HRESULT STDMETHODCALLTYPE OnChange(REFGUID id) override{return id==GUID_COMPARTMENT_KEYBOARD_DISABLED?signal():S_OK;}
     bool watching()const{return threadCookie!=TF_INVALID_COOKIE && keyboardCookie!=TF_INVALID_COOKIE;}
-    static bool unwatch(ITfSource*& source,DWORD& cookie) {
+    static bool unwatch(ITfSource*& source,DWORD& cookie,bool invalidated=false) {
         if(!source)return true;
-        if(cookie!=TF_INVALID_COOKIE && FAILED(source->UnadviseSink(cookie)))return false;
+        if(cookie!=TF_INVALID_COOKIE) {
+            const auto result=source->UnadviseSink(cookie);
+            if(FAILED(result) && result!=CONNECT_E_NOCONNECTION &&
+               !(invalidated && result==E_UNEXPECTED))return false;
+        }
         source->Release();source=nullptr;cookie=TF_INVALID_COOKIE;return true;
     }
     static ITfContext* current(ITfThreadMgr** manager=nullptr) {
@@ -80,23 +85,45 @@ struct InputContextTsf : ITfThreadMgrEventSink,ITfCompartmentEventSink {
            FAILED(keyboardSource->AdviseSink(IID_ITfCompartmentEventSink,static_cast<ITfCompartmentEventSink*>(this),&keyboardCookie)))return false;
         return SUCCEEDED(keyboard->SetValue(client,&value)) && disabled();
     }
-    bool restore() {
-        if(changed) {
-            VARIANT value{};const auto read=keyboard->GetValue(&value);
-            if(FAILED(read)){VariantClear(&value);return false;}
-            const bool ours=value.vt==VT_I4 && value.lVal==1;VariantClear(&value);
-            if(ours) {
-                const auto result=original.vt==VT_EMPTY?compartments->ClearCompartment(client,GUID_COMPARTMENT_KEYBOARD_DISABLED):keyboard->SetValue(client,&original);
-                if(FAILED(result))return false;
-                ITfCompartment* check=nullptr;
-                if(FAILED(compartments->GetCompartment(GUID_COMPARTMENT_KEYBOARD_DISABLED,&check)))return false;
-                const auto readback=check->GetValue(&value);check->Release();
-                const bool same=SUCCEEDED(readback) && value.vt==original.vt && (value.vt==VT_EMPTY || value.lVal==original.lVal);VariantClear(&value);
-                if(!same)return false;
-            }
-            changed=false;
+    bool keyboardInvalidated() const {
+        VARIANT value{};
+        const bool invalidated=keyboard && keyboard->GetValue(&value)==E_UNEXPECTED;
+        VariantClear(&value);
+        return invalidated;
+    }
+    bool restoreValue() {
+        // ClearCompartment invalidates existing interfaces, including the one
+        // retained for notifications. Always verify through the saved context's
+        // compartment manager, including retries after a failed readback.
+        ITfCompartment* live=nullptr;
+        if(FAILED(compartments->GetCompartment(GUID_COMPARTMENT_KEYBOARD_DISABLED,&live)) || !live)return false;
+        VARIANT value{};
+        const auto read=live->GetValue(&value);
+        const bool ours=SUCCEEDED(read) && value.vt==VT_I4 && value.lVal==1;
+        const bool alreadyOriginal=ours && original.vt==VT_I4 && original.lVal==1;
+        VariantClear(&value);
+        // A compartment recreated by Photoshop or its IME owns its own value.
+        const bool needsRestore=ours && !alreadyOriginal && !keyboardInvalidated();
+        HRESULT result=S_OK;
+        if(needsRestore) {
+            result=original.vt==VT_EMPTY?compartments->ClearCompartment(client,GUID_COMPARTMENT_KEYBOARD_DISABLED):live->SetValue(client,&original);
         }
-        if(!unwatch(keyboardSource,keyboardCookie) || !unwatch(threadSource,threadCookie))return false;
+        live->Release();
+        if(FAILED(read) || FAILED(result))return false;
+        if(!needsRestore)return true;
+        live=nullptr;
+        if(FAILED(compartments->GetCompartment(GUID_COMPARTMENT_KEYBOARD_DISABLED,&live)) || !live)return false;
+        const auto verified=live->GetValue(&value);
+        live->Release();
+        const bool same=SUCCEEDED(verified) && value.vt==original.vt && (value.vt==VT_EMPTY || value.lVal==original.lVal);
+        VariantClear(&value);
+        return same;
+    }
+    bool restore() {
+        if(changed && !restoreValue())return false;
+        changed=false;
+        const bool invalidated=keyboardSource && keyboardInvalidated();
+        if(!unwatch(keyboardSource,keyboardCookie,invalidated) || !unwatch(threadSource,threadCookie))return false;
         if(activated){if(FAILED(thread->Deactivate()))return false;activated=false;}
         if(keyboard)keyboard->Release();
         if(compartments)compartments->Release();

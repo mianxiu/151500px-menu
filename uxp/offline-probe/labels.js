@@ -2335,7 +2335,14 @@ function createTextTools(ps,session,capture,readTree,options={}) {
   const hyphenationFields={hyphenateWordSize:[1,99],hyphenatePreLength:[0,99],hyphenatePostLength:[0,99],hyphenateLimit:[0,99],hyphenationZone:[0,1296]};
   const justificationFields={justifyWord:['Word',0,1000],justifyLetter:['Letter',-100,500],justifyGlyph:['Glyph',50,200]};
   const paragraphSwitches=['hyphenate','hyphenateCapitalized','hangingRoman','textEveryLineComposer'];
-  const paragraphComposition=[...paragraphSwitches,...Object.keys(hyphenationFields),...Object.keys(justificationFields)];
+  const eastAsianParagraph={
+    kinsokuSetName:['None','Soft','Hard'],
+    mojiKumiName:['Photoshop6MojiKumiNone','Photoshop6MojiKumiSet1','Photoshop6MojiKumiSet2','Photoshop6MojiKumiSet3','Photoshop6MojiKumiSet4'],
+    burasagari:['burasagariNone','burasagariStandard','burasagariStrong'],
+    preferredKinsokuOrder:['pushIn','pushOutFirst','pushOut']
+  };
+  const supportsEastAsianParagraph=String(options.hostVersion)==='24.0.1';
+  const paragraphComposition=[...paragraphSwitches,...Object.keys(hyphenationFields),...Object.keys(justificationFields),...Object.keys(eastAsianParagraph)];
   const paragraphFields=[...paragraphDistances,'align',...paragraphComposition];
   const scales=['horizontalScale','verticalScale'];
   const switches=['syntheticBold','syntheticItalic','ligature','noBreak',...paragraphSwitches,'contextualLigatures','stylisticAlternates',
@@ -2347,7 +2354,8 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     baseline:['normal','superScript','subScript'],
     underline:['underlineOff','underlineOnLeftInVertical','underlineOnRightInVertical'],
     strikethrough:['strikethroughOff','xHeightStrikethroughOn'],
-    figureStyle:['normal','proportionalLining','tabularLining','proportionalOldStyle','tabularOldStyle']
+    figureStyle:['normal','proportionalLining','tabularLining','proportionalOldStyle','tabularOldStyle'],
+    ...eastAsianParagraph
   };
   const hyphenationDefaults={hyphenateLimit:0,hyphenateCapitalized:true,hyphenationZone:36,
     hyphenatePreLength:2,hyphenatePostLength:2,hyphenateWordSize:6};
@@ -2519,6 +2527,8 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       for(const char of value)if(char.length===1&&char.charCodeAt(0)>=0xd800&&char.charCodeAt(0)<=0xdfff)throw Error('文字包含不完整的Unicode字符');
       const styles=plannedStyles(params);
       const includes=key=>styles.some(run=>Object.prototype.hasOwnProperty.call(run,key));
+      if(Object.keys(eastAsianParagraph).some(includes)&&(!supportsEastAsianParagraph||!canIndent(raw)))
+        throw Error('东亚段落排版需要支持的水平段落文字');
       if(indents.some(includes)){
         if(!canIndent(raw))throw Error('段落缩进需要水平段落文字');
         if(params.list_layout&&['startIndent','firstLineIndent'].some(includes))throw Error('列表的左缩进和首行缩进由列表层级控制');
@@ -2686,6 +2696,9 @@ function createTextTools(ps,session,capture,readTree,options={}) {
         if(field==='textStyle'&&style.autoLeading===true)delete style.leading;
         if(field==='paragraphStyle'&&style.hyphenate===true)
           for(const [key,value] of Object.entries(hyphenationDefaults))if(style[key]===undefined)style[key]=value;
+        // Photoshop omits the mojikumi descriptor when the selected set is Off.
+        if(field==='paragraphStyle'&&same(style.mojiKumiName,{_enum:'mojiKumiName',_value:'Photoshop6MojiKumiNone'}))
+          delete style.mojiKumiName;
         if(field==='paragraphStyle')for(const key of paragraphDistances)if(style[key]!==undefined){if(resolution===undefined)resolution=ps.app.activeDocument.resolution;style[key]=style[key]===0?0:Math.fround(pixels(style[key],resolution));}
         if(field==='textStyle'&&style.color?._obj==='RGBColor'){
           const {red,grain,blue}=style.color;
@@ -2897,6 +2910,7 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     const doc=ps.app.activeDocument,supportsProof=canProof(doc);
     if(trace)Object.assign(trace,{source_width:doc.width,source_height:doc.height,characters:row.textKey?.textKey?.length??0});
     const capabilities={advanced_typography:true,typography_runs_supported:true,opentype_supported:true,kerning_supported:row.layerKind===5||canKern(row.textKey),
+      east_asian_paragraph_supported:supportsEastAsianParagraph,
       box_shift_supported:row.layerKind===5||row.textKey.textClickPoint?.horizontal?._unit==='percentUnit',text_rgb:doc.mode===ps.constants.DocumentMode.RGB &&
       doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT && doc.colorProfileName==='sRGB IEC61966-2.1',
       ...(fast?{canvas_history:stamp.history,fonts_available:true,...(fontCatalog?{fonts:fontCatalog}:{})}:

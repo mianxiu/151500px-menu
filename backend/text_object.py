@@ -140,6 +140,24 @@ def render_hash(raw):
     return value
 
 
+def render_bounds(raw,canvas):
+    _,_,found=packet(raw,namespace=NAMESPACE,field='pageBounds',limit=MAX_XMP)
+    if not found:return None
+    desc,node=found[0]
+    if desc.getAttributeNS(RDF,'about'):raise ValueError('文字对象矢量页面目标无效')
+    if node.nodeType==Node.ATTRIBUTE_NODE:value=node.value
+    else:
+        if any(child.nodeType not in (Node.TEXT_NODE,Node.CDATA_SECTION_NODE) for child in node.childNodes):
+            raise ValueError('文字对象矢量页面结构无效')
+        value=''.join(child.data for child in node.childNodes)
+    try:bounds=json.loads(value)
+    except (ValueError,RecursionError):raise ValueError('文字对象矢量页面范围无效') from None
+    if (not isinstance(bounds,list) or len(bounds)!=4 or any(type(edge) is not int for edge in bounds) or
+            not 0<=bounds[0]<bounds[2]<=round(canvas['width']) or not 0<=bounds[1]<bounds[3]<=round(canvas['height'])):
+        raise ValueError('文字对象矢量页面范围无效')
+    return bounds
+
+
 def font_fallbacks(raw,text):
     _,_,found=packet(raw,namespace=NAMESPACE,field='fontFallbacks',limit=MAX_XMP)
     if not found:return []

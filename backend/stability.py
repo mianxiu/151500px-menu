@@ -25,6 +25,7 @@ TEXT_OBJECT_PROFILES=('text-object','text-object-in-place')
 STAGE_LABELS={'fixture':'正在创建隔离临时文档','idle-read':'正在检查闲置后的图层读取',
     'isolated-read':'正在检查隔离文档的图层读取','shape-commit-undo':'正在核验形状写入与一次撤销',
     'text-object-fixture':'正在创建隔离文字文档','text-object-create':'正在生成矢量文字对象',
+    'text-object-unsaved-create':'正在验证未保存文档的原位导出','text-object-unsaved-undo':'正在核对未保存文档的文字撤销',
     'text-object-scale':'正在缩放独立测试副本','text-object-update':'正在更新测试文字源',
     'text-object-undo-save-close':'正在核验撤销、保存重开和文档收尾',
     'fixed-layer-label':'正在反复修改固定图层的标签','fixed-layer-read':'正在读取固定图层',

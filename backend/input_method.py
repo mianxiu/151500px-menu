@@ -355,7 +355,7 @@ class InputMethod(InputLanguage):
             self.report['policy_error']=type(error).__name__
             return False
         fields=self.ime.policy_state(window,status)
-        if type(status) is not int or not status&1 or fields['policy_windows'] or fields['policy_residual']:
+        if type(status) is not int or not status&1 or fields['focus_policy'] or fields['policy_windows'] or fields['policy_residual']:
             self.report['policy_error']='restore-unconfirmed'
             return False
         self.focus_policy=False;self.policy_window=0;self.policy_identity=None

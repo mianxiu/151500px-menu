@@ -38,7 +38,24 @@ class TextObjectTests(unittest.TestCase):
         self.assertAlmostEqual(paragraph['box'][0]*doc[0],420)
         self.assertAlmostEqual((paragraph['box'][2]-paragraph['box'][0])*doc[0],400)
         self.assertAlmostEqual(paragraph['em']*doc[1],100)
+        crop=[120,160,360,320]
+        cropped_frame=[340,440,820,440,820,760,340,760]
+        self.assertEqual(object_text_geometry(raw,canvas,cropped_frame,doc,style,crop),(size,paragraph))
         self.assertIsNone(object_text_geometry(raw,canvas,[100,120,1300,121,1300,920,100,920],doc,style))
+
+    def test_render_bounds_include_origin_and_reject_invalid_pages(self):
+        raw=text_object.write('',SOURCE)
+        doc=minidom.parseString(raw)
+        node=doc.createElementNS(text_object.NAMESPACE,'pxText:pageBounds')
+        doc.getElementsByTagNameNS(text_list.RDF,'Description')[0].appendChild(node)
+        node.setAttribute('xmlns:pxText',text_object.NAMESPACE)
+        self.assertIsNone(text_object.render_bounds(raw,SOURCE['canvas']))
+        node.appendChild(doc.createTextNode('[12,25,400,380]'))
+        self.assertEqual(text_object.render_bounds(doc.toxml(),SOURCE['canvas']),[12,25,400,380])
+        for value in ('[240,0,200,9]','[0,0,601,10]','[0,0,100,2.5]','[true,0,100,30]'):
+            node.firstChild.data=value
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                text_object.render_bounds(doc.toxml(),SOURCE['canvas'])
 
     def test_resolved_font_metadata_validates_utf16_ranges(self):
         raw=text_object.write('',SOURCE);doc=minidom.parseString(raw)

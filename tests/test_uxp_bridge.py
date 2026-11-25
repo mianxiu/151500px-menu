@@ -471,6 +471,21 @@ class UxpDiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'23.3.0'):_ = self.transport.folder
 
 class UxpBridgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_owned_text_fixture_can_use_host_guard_without_weakening_menu_focus(self):
+        params={'revision':'r','find':'old','replacement':'new'}
+        self.bridge.focus_guard=Mock(side_effect=RuntimeError('Photoshop is not in the foreground'))
+        with self.assertRaisesRegex(RuntimeError,'not in the foreground'):
+            await self.bridge.execute_text_object(self.target,params)
+        self.bridge.transport.call.assert_not_called()
+
+        self.bridge._application.side_effect=None
+        verify_fixture=Mock()
+        await self.bridge.execute_text_object(self.target,params,_fixture_guard=verify_fixture)
+
+        self.assertEqual(verify_fixture.call_count,2)
+        self.bridge.focus_guard.assert_called_once()
+        self.assertEqual(self.bridge.transport.call.call_args.kwargs['target'],self.target)
+
     async def test_direct_caps_one_request_preserves_actual_bound_target_in_history(self):
         root=Path(self.temp.name);self.bridge.transport.folder=root
         (root/'probe-last.json').write_text(json.dumps({'probe_version':'0.3.34','session':'test'}),'utf-8')

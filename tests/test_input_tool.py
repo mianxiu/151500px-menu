@@ -114,6 +114,26 @@ class ToolObservationTests(unittest.TestCase):
             publish.assert_not_called();self.assertEqual(self.reader.path.read_bytes(),raw)
         self.assertEqual(self.reader.snapshot()['retirement']['reason'],'original-readonly-envelope-ambiguous')
 
+    def test_fresh_current_state_is_independent_of_a_missing_old_envelope(self):
+        self.old_session();raw=self.reader.path.read_bytes()
+        wire=self.folder/'input-tool-request.json';wire.unlink()
+        state={'schema':1,'session':self.heartbeat['session'],'token':'private-test-token','sequence':12,
+               'tool':'moveTool','isModal':False,'created_at_ms':time.time()*1000}
+        with patch('backend.input_tool.previous_tool_producer_exited',return_value=True),patch('backend.input_tool.publish_request') as publish:
+            first=self.reader.reconciler();second=self.reader.reconciler()
+            with self.assertRaises(ToolReadError):self.reader.read(identity=self.identity)
+            self.assertFalse(first())
+            atomic_json(self.folder/'input-tool-state.json',state)
+            self.assertTrue(first());self.assertFalse(first());self.assertTrue(second())
+            self.assertEqual(self.reader.read(identity=self.identity)['sequence'],12)
+            self.assertFalse(self.reader.reconcile())
+            with patch('backend.input_tool.time.time',return_value=time.time()+3):
+                with self.assertRaises(ToolReadError):self.reader.read(identity=self.identity)
+            publish.assert_not_called()
+        self.assertEqual(self.reader.path.read_bytes(),raw)
+        self.assertFalse(wire.exists())
+        self.assertIsNone(self.reader.snapshot()['last_retired_unknown'])
+
     def test_trusted_host_failure_is_classified_without_exporting_raw_errors(self):
         request=self.pending()
         error='Error: Unsupported tool state: '+json.dumps({'classID':'moveTool','isModal':'undefined','fields':['SECRET'], 'token':'SECRET'})

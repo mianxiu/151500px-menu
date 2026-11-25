@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 static HWND childEdit=nullptr;
 static HIMC childContext=nullptr;
@@ -52,6 +53,44 @@ static int childMenu() {
 }
 
 static void check(bool value,const char* message){if(!value){wchar_t name[128]{};GetClassNameW(GetForegroundWindow(),name,128);std::fprintf(stderr,"root=%p foreground=%p class=%ls focus=%p owned=%p assoc_focus=%p assoc_owned=%p restore_failed=%d tsf=%d policy=%d count=%d\n",root,GetForegroundWindow(),name,GetFocus(),disabledWindow,associated(GetFocus()),disabledWindow?associated(disabledWindow):nullptr,restoreFailed,tsf.keyboard!=nullptr,int(focusPolicy),focusCount);throw std::runtime_error(message);}}
+
+struct TestCompartment : ITfCompartment {
+    bool valid=true,disabled=false,failRead=false;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**) override{return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef() override{return 1;}
+    ULONG STDMETHODCALLTYPE Release() override{return 1;}
+    HRESULT STDMETHODCALLTYPE SetValue(TfClientId,const VARIANT* value) override{
+        if(!valid)return E_UNEXPECTED;
+        disabled=value->vt==VT_I4 && value->lVal==1;return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetValue(VARIANT* value) override{
+        if(!valid)return E_UNEXPECTED;
+        if(std::exchange(failRead,false))return E_FAIL;
+        if(!disabled){value->vt=VT_EMPTY;return S_FALSE;}
+        value->vt=VT_I4;value->lVal=1;return S_OK;
+    }
+};
+struct TestCompartmentManager : ITfCompartmentMgr {
+    TestCompartment old,replacement;
+    unsigned cleared=0;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**) override{return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef() override{return 1;}
+    ULONG STDMETHODCALLTYPE Release() override{return 1;}
+    HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID,ITfCompartment** value) override{*value=old.valid?&old:&replacement;return S_OK;}
+    HRESULT STDMETHODCALLTYPE ClearCompartment(TfClientId,REFGUID) override{old.valid=false;++cleared;return S_OK;}
+    HRESULT STDMETHODCALLTYPE EnumCompartments(IEnumGUID**) override{return E_NOTIMPL;}
+};
+static void testTsfRestore() {
+    TestCompartmentManager manager;
+    manager.old.disabled=true;manager.replacement.failRead=true;
+    InputContextTsf observed;
+    observed.compartments=&manager;observed.keyboard=&manager.old;observed.changed=true;
+    check(!observed.restore() && observed.changed && manager.cleared==1,"TSF readback failure must remain pending");
+    check(observed.restore() && !observed.changed && manager.cleared==1,"TSF retry must verify through the live compartment");
+    manager.replacement.disabled=true;
+    observed.compartments=&manager;observed.keyboard=&manager.old;observed.changed=true;
+    check(observed.restore() && manager.cleared==1 && manager.replacement.disabled,"TSF must preserve an externally replaced compartment");
+}
 static bool forceForeground(HWND window) {
     if(GetForegroundWindow()==window)return true;
     const auto previous=GetForegroundWindow();
@@ -77,6 +116,7 @@ static void settledForeground(HWND window) {
 int main(int argc,char** argv) {
     if(argc==2 && strcmp(argv[1],"--owned-menu")==0)return childMenu();
     try {
+        if(argc==2 && strcmp(argv[1],"--tsf-restore-only")==0){testTsfRestore();return 0;}
         bool low=false,queuedOnly=false;
         for(int i=1;i<argc;++i) {
             if(strcmp(argv[i],"--low")==0)low=true;
@@ -302,6 +342,26 @@ int main(int argc,char** argv) {
         check(focusPolicy && focusCount==0 && associated(policyCanvas)==policyCanvasContext,"foreground loss did not restore policy");
         forceForeground(fixture);settledForeground(fixture);SetFocus(policyCanvas);
         check(associated(policyCanvas)==nullptr && focusCount>=1,"foreground return did not reapply policy");
+        // Replay the activation notification while retaining the same HWND and
+        // without pumping either a focus message or the policy timer.
+        check(restoreFocus(PolicyRestoreForeground) && GetFocus()==policyCanvas &&
+              associated(policyCanvas)==policyCanvasContext,"same-focus activation precondition");
+        CWPSTRUCT activation{0,WA_CLICKACTIVE,WM_ACTIVATE,fixture};
+        compositionActive=true;
+        observeMessage(activation);
+        check(associated(policyCanvas)==policyCanvasContext,"activation detached an active composition");
+        compositionActive=false;
+        observeMessage(activation);
+        check(associated(policyCanvas)==nullptr && focusCount==1 && policyReason==PolicyActivateCanvas,
+              "activation left first key unprotected");
+        check(canvasEntry(policyCanvas,CanvasClickText),"app switch text-edit precondition");
+        const CWPSTRUCT deactivation{0,0,WM_ACTIVATEAPP,fixture};
+        observeMessage(deactivation);
+        observeMessage(activation);
+        check(canvasTextEditing && associated(policyCanvas)==policyCanvasContext,
+              "app switch stopped an active canvas text edit");
+        canvasExitApply(canvasEpoch,CanvasEsc);
+        check(!canvasTextEditing && associated(policyCanvas)==nullptr,"text exit after app switch");
         ImmAssociateContext(policyCanvas,policyForeignContext);
         SetFocus(edit);
         check(associated(policyCanvas)==policyForeignContext && focusCount==0,"policy overwrote PS replacement");

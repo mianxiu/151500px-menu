@@ -70,7 +70,7 @@ enum PolicyReason : DWORD {
     PolicyRestoreForeground=4,PolicyReapplyLanguage=5,PolicyRestoreOwner=6,
     PolicyOff=7,PolicyReapplyDrift=8,PolicyEnable=9,PolicyWindowGone=10,
     PolicyRestoreCanvasText=11,PolicyDisableCanvasExit=12,PolicyCorrectionEnter=13,
-    PolicyCorrectionExit=14,PolicyCanvasFocus=15
+    PolicyCorrectionExit=14,PolicyCanvasFocus=15,PolicyActivateCanvas=16
 };
 enum PolicyTraceAction : DWORD {TraceDisable=1,TraceRestore=2,TraceEnable=3,TraceOff=4,TraceCorrection=5,TraceCanvasEnter=6,TraceCanvasExit=7};
 struct FocusEntry { HWND window=nullptr; HIMC context=nullptr; };
@@ -385,11 +385,11 @@ static bool ownFocus(HWND window) {
     DWORD pid=0;
     return window && GetWindowThreadProcessId(window,&pid)==GetCurrentThreadId() && pid==GetCurrentProcessId() && GetFocus()==window;
 }
-static void verifyContext() {
+static void verifyContext(DWORD reason=PolicyNone) {
     if(focusPolicy) {
         const auto focus=GetFocus();
         if(canvasTextEditing) {
-            if(canvasTarget(focus)) {
+            if(!policyTsfForeground() || !focus || focus==root || canvasTarget(focus)) {
                 // Keeping the canvas open is the whole point of this state; the
                 // 100 ms watchdog must not detach it again mid-edit.
                 if(focusCount)restoreFocus(PolicyRestoreCanvasText);
@@ -402,7 +402,8 @@ static void verifyContext() {
             return;
         }
         if(!policyTsfForeground())return;
-        if(focusIndex(focus)<0 || associated(focus))disableFocus(focus,focusReason(focus));
+        if(focusIndex(focus)<0 || associated(focus))
+            disableFocus(focus,reason==PolicyNone?focusReason(focus):reason);
         else syncPolicyTsf(focus);
         // Drop entries whose window disappeared. A non-null association that PS
         // restored itself is left untouched (and dropped when focus leaves),
@@ -551,7 +552,7 @@ static LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wParam,LPARAM 
                 clearCanvasState(CanvasNone);
                 focusPolicy=false;restoreFocus(PolicyRestoreOwner);
             } else if(!policyForeground()) {
-                clearCanvasState(CanvasFocusLeave);
+                compositionActive=false;
                 restoreFocus(PolicyRestoreForeground);menuHandoff=false;
             }
         } else if(disabledWindow && (exited || !foreground() || (GetFocus()!=disabledWindow && !menuActive() && !menuReturning()) || GetTickCount64()>deadline)) {
@@ -592,7 +593,7 @@ static DWORD focusReason(HWND window) {
 }
 static void applyFocusPolicy(HWND window,DWORD reason) {
     if(!focusPolicy)return;
-    if(canvasTextEditing && canvasTarget(window)) {
+    if(canvasTextEditing && (window==root || canvasTarget(window))) {
         // The canvas is the text-edit carrier; a focus notification for it
         // while editing must not detach the association again.
         restoreFocus(PolicyRestoreCanvasText);
@@ -656,8 +657,24 @@ static void observeMessage(const CWPSTRUCT& event) {
             canvasInputMessage(event);
             if(event.message==WM_SETFOCUS) {
                 const auto target=event.hwnd;
-                if(canvasTextEditing && !canvasTarget(target))clearCanvasState(CanvasFocusLeave);
+                if(canvasTextEditing && target!=root && !canvasTarget(target) && policyTsfForeground())
+                    clearCanvasState(CanvasFocusLeave);
                 applyFocusPolicy(target,focusReason(target));
+                return;
+            }
+            if(event.message==WM_ACTIVATE && event.hwnd==root &&
+               LOWORD(event.wParam)!=WA_INACTIVE && !HIWORD(event.wParam) &&
+               GetForegroundWindow()==root) {
+                // A return to the same canvas may not deliver another WM_SETFOCUS.
+                // Recheck before the first key, using the current PS thread focus.
+                const auto target=GetFocus();
+                GUITHREADINFO info{};
+                info.cbSize=sizeof(info);
+                if(canvasTarget(target) && !canvasTextEditing && !compositionBusy(target) &&
+                   GetGUIThreadInfo(GetCurrentThreadId(),&info) && info.hwndFocus==target &&
+                   !info.hwndCaret && !info.hwndCapture && !info.hwndMenuOwner && !info.hwndMoveSize) {
+                    verifyContext(PolicyActivateCanvas);
+                }
                 return;
             }
             if(event.message==WM_INPUTLANGCHANGE) {
@@ -668,7 +685,8 @@ static void observeMessage(const CWPSTRUCT& event) {
                 return;
             }
             if(event.message==WM_ACTIVATEAPP && !event.wParam && !ownMenu(GetForegroundWindow()) && !ownMenuThread(DWORD(event.lParam))) {
-                clearCanvasState(CanvasFocusLeave);
+                // An app switch does not end an in-progress Photoshop text edit.
+                compositionActive=false;
                 restoreFocus(PolicyRestoreForeground);
                 menuHandoff=false;
                 return;
@@ -692,6 +710,10 @@ static bool attach(HWND rootWindow,DWORD ownerProcess,ULONG_PTR nonceValue) {
     wchar_t name[64]{};GetClassNameW(rootWindow,name,64);
     if(wcscmp(name,L"Photoshop")!=0 || rootWindow!=GetAncestor(rootWindow,GA_ROOTOWNER))return false;
     if(control)return ownerId==ownerProcess;
+    // A pinned older DLL can still own this root while restoring its leases.
+    // Do not replace its published control from a second module instance.
+    const auto published=static_cast<HWND>(GetPropW(rootWindow,controlProperty));
+    if(published && IsWindow(published))return false;
     const auto candidate=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,ownerProcess);
     if(!candidate)return false;
 #ifdef INPUT_CONTEXT_SELF_TEST

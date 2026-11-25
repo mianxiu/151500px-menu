@@ -1,10 +1,11 @@
 /* One PDF text object transaction. Called only while UXP reserves this request. */
 (function(){
     var request=__PS_MENU_TEXT_OBJECT_REQUEST__,s=stringIDToTypeID,c=charIDToTypeID;
-    var prepared=request.prepared,source=request.source,doc=null,anchor=null,work=null,history=null,historyId=null,changed=false,result,colorType,colorValue,documentsBefore=null,dialogs=null,identityConflict=false;
+    var prepared=request.prepared,source=request.source,doc=null,anchor=null,work=null,historyId=null,changed=false,result,colorType,colorValue,documentsBefore=null,dialogs=null,identityConflict=false;
     var proof=request.object_proof===true,scale=request.proof_scale||1,proofUnknown=false,fontFallbacks=[];
     var isolated=proof&&request.proof_isolated===true;
     var inPlaceFixture=request.in_place_fixture,inPlaceStamp=null;
+    var placementTitle='Vector text object',placementBaseline=null,updatedOriginal=false,pdfBounds=null;
     var folder=new Folder(request.folder),pdf=new File(folder+'/text-object-'+request.id+'.pdf'),receipt=new File(folder+'/legacy-result-'+request.id+'.json');
     var proofFile=new File(folder+'/text-proof-'+request.id+'.png');
     __PS_MENU_TEXT_HASH_HELPER__
@@ -44,6 +45,8 @@
         var meta=new XMPMeta(request.xmp);meta.setProperty(ns,'render',digest);
         if(fontFallbacks.length)meta.setProperty(ns,'fontFallbacks',encode(fontFallbacks));
         else meta.deleteProperty(ns,'fontFallbacks');
+        if(pdfBounds)meta.setProperty(ns,'pageBounds',encode(pdfBounds));
+        else meta.deleteProperty(ns,'pageBounds');
         request.xmp=meta.serialize();
         var value={schema:1,id:request.id,session:request.session,operation:request.operation,token:request.token,xmp:request.xmp},file=new File(folder+'/text-object-final-'+request.id+'.json');if(file.exists)throw Error('Final source evidence already exists');file.encoding='UTF-8';if(!file.open('w'))throw Error('Cannot persist final source evidence');try{file.write(encode(value));}finally{file.close();}
     }
@@ -141,6 +144,9 @@
                 if(k===0&&typeof o.fontPostScriptName==='string'){delete o.fontScript;delete o.fontTechnology;}
                 if(k===0&&o.autoLeading===true)delete o.leading;
                 if(k===1){
+                    // Photoshop omits the descriptor when mojikumi is disabled.
+                    if(o.mojiKumiName&&o.mojiKumiName._enum==='mojiKumiName'&&o.mojiKumiName._value==='Photoshop6MojiKumiNone')
+                        delete o.mojiKumiName;
                     var defaults={hyphenateLimit:0,hyphenateCapitalized:true,hyphenationZone:36,hyphenatePreLength:2,hyphenatePostLength:2,hyphenateWordSize:6};
                     // Photoshop can materialize a shared dictionary's settings on a paragraph
                     // with hyphenation off. Those fields affect rendering only when it is on.
@@ -281,20 +287,94 @@
         try{if(!pdf.write(data))throw Error('Incomplete table vector PDF');}finally{pdf.close();}
         if(pdf.length!==data.length)throw Error('Table vector PDF size mismatch');
     }
+    function embeddedId(layer){
+        var r=new ActionReference(),key=s('smartObjectMore');
+        r.putProperty(s('property'),key);
+        r.putIdentifier(s('layer'),layer.id);
+        r.putIdentifier(s('document'),doc.id);
+        var id=executeActionGet(r).getObjectValue(key).getString(s('ID'));
+        if(!id)throw Error('Smart Object content identity unavailable');
+        return id;
+    }
+    function canUpdateOriginal(){
+        if(proof||prepared.kind!=='smart-object'||source.schema!==1||app.version!=='24.0.1')return false;
+        try{
+            var placed=object(property('smartObject')).smartObject;
+            if(placed.linked!==false||placed.placed._value!=='vectorData')return false;
+            var id=embeddedId(anchor),owners=0;
+            function unique(container){
+                for(var i=0;i<container.layers.length;i++){
+                    var layer=container.layers[i];
+                    if(layer.typename==='LayerSet'){
+                        if(!unique(layer))return false;
+                    }else if(layer.kind===LayerKind.SMARTOBJECT&&embeddedId(layer)===id){
+                        if(layer.id!==anchor.id||++owners!==1)return false;
+                    }
+                }
+                return true;
+            }
+            // Layer groups may contain other placements of the same embedded content.
+            return unique(doc)&&owners===1;
+        }catch(_){return false;}
+    }
+    function fullPdfBounds(){return [0,0,source.canvas.width,source.canvas.height];}
+    function affineFrame(frame){
+        return frame&&frame.length===8&&Math.abs(frame[0]+frame[4]-frame[2]-frame[6])<.01&&
+            Math.abs(frame[1]+frame[5]-frame[3]-frame[7])<.01;
+    }
+    function remapPdfFrame(frame,from,to){
+        if(near(from,to))return frame;
+        if(!affineFrame(frame))throw Error('当前矢量透视需要保持 PDF 范围才能更新');
+        var result=[];
+        function add(x,y){
+            var horizontal=(x-from[0])/(from[2]-from[0]),vertical=(y-from[1])/(from[3]-from[1]);
+            result.push(frame[0]+horizontal*(frame[2]-frame[0])+vertical*(frame[6]-frame[0]));
+            result.push(frame[1]+horizontal*(frame[3]-frame[1])+vertical*(frame[7]-frame[1]));
+        }
+        add(to[0],to[1]);add(to[2],to[1]);add(to[2],to[3]);add(to[0],to[3]);
+        return result;
+    }
+    function shiftPdf(from,to){
+        var dx=(to[0]+to[4]-from[0]-from[4])/2,dy=(to[1]+to[5]-from[1]-from[5])/2;
+        if(Math.abs(dx)<=.0001&&Math.abs(dy)<=.0001)return;
+        var r=new ActionReference(),a=new ActionDescriptor(),offset=new ActionDescriptor();
+        r.putEnumerated(c('Lyr '),c('Ordn'),c('Trgt'));a.putReference(c('null'),r);
+        a.putEnumerated(c('FTcs'),c('QCSt'),c('Qcsa'));
+        a.putUnitDouble(c('Wdth'),c('#Prc'),100);a.putUnitDouble(c('Hght'),c('#Prc'),100);
+        a.putBoolean(s('constrainProportions'),false);
+        offset.putUnitDouble(c('Hrzn'),c('#Pxl'),dx);offset.putUnitDouble(c('Vrtc'),c('#Pxl'),dy);
+        a.putObject(c('Ofst'),c('Ofst'),offset);executeAction(c('Trnf'),a,DialogModes.NO);
+    }
     function replace(factor){
         factor=factor||1;
-        target();changed=true;
+        target();
+        updatedOriginal=canUpdateOriginal();
+        var placement='new-layer',originalId=request.target.active_layer_id;
+        var beforeFrame=prepared.kind==='smart-object'?prepared.transform:null,expected;
+        if(prepared.kind==='smart-object'&&(!beforeFrame||beforeFrame.length!==8))throw Error('Text object frame missing');
+        if(factor!==1&&beforeFrame){
+            var scaled=[];for(var n=0;n<beforeFrame.length;n++)scaled.push(factor*beforeFrame[n]);
+            beforeFrame=scaled;
+        }
+        var bounds=pdfBounds||fullPdfBounds(),left=bounds[0]*factor,top=bounds[1]*factor,right=bounds[2]*factor,bottom=bounds[3]*factor;
+        if(beforeFrame)expected=remapPdfFrame(beforeFrame,prepared.before_pdf_bounds||fullPdfBounds(),bounds);
+        else expected=[left,top,right,top,right,bottom,left,bottom];
+        changed=true;
         if(prepared.kind==='smart-object'){
-            executeAction(s('placedLayerMakeCopy'),new ActionDescriptor(),DialogModes.NO);
+            if(updatedOriginal)placement='original-layer';
+            else{
+                placement='independent-copy';
+                executeAction(s('placedLayerMakeCopy'),new ActionDescriptor(),DialogModes.NO);
+            }
+            if(beforeFrame&&(pdfBounds||prepared.before_pdf_bounds))shiftPdf(beforeFrame,expected);
             replaceContents();
         }else{
             var a=new ActionDescriptor();a.putPath(c('null'),pdf);a.putEnumerated(c('FTcs'),c('QCSt'),c('Qcsa'));a.putInteger(s('crop'),2);executeAction(c('Plc '),a,DialogModes.NO);
         }
-        var created=doc.activeLayer;if(created.id===anchor.id||created.kind!==LayerKind.SMARTOBJECT)throw Error('Vector object creation failed');
+        var created=doc.activeLayer;
+        if((created.id===originalId)!==updatedOriginal||created.kind!==LayerKind.SMARTOBJECT)throw Error('Vector object placement identity mismatch');
         var vector=object(property('smartObject')).smartObject;if(vector.placed._value!=='vectorData'||vector.linked)throw Error('Embedded vector source readback mismatch');
         var more=object(property('smartObjectMore')).smartObjectMore,frame=more.transform;
-        var expected=prepared.kind==='smart-object'?prepared.transform:[0,0,source.canvas.width,0,source.canvas.width,source.canvas.height,0,source.canvas.height];
-        if(factor!==1&&expected){var scaled=[];for(var n=0;n<expected.length;n++)scaled.push(factor*expected[n]);expected=scaled;}
         if(prepared.kind==='new-table'){
             var w=source.canvas.width*factor,h=source.canvas.height*factor;
             // Photoshop snaps each edge of a newly centred placement to a pixel.
@@ -302,26 +382,77 @@
             if(!more.size||Math.abs(more.size.width*px-w)>.01||Math.abs(more.size.height*px-h)>.01||fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01)throw Error('Table intrinsic size or placement mismatch');
             expected=[frame[0],frame[1],frame[0]+fw,frame[1],frame[0]+fw,frame[1]+fh,frame[0],frame[1]+fh];
         }
-        if(prepared.kind==='text'&&Math.abs(frame[2]-frame[0]-expected[2])<.01&&Math.abs(frame[5]-frame[1]-expected[5])<.01&&Math.abs(frame[3]-frame[1])<.01&&Math.abs(frame[6]-frame[0])<.01){created.translate(UnitValue(-frame[0],'px'),UnitValue(-frame[1],'px'));frame=object(property('smartObjectMore')).smartObjectMore.transform;}
+        if(prepared.kind==='text'&&Math.abs(frame[2]-frame[0]-(right-left))<.01&&Math.abs(frame[5]-frame[1]-(bottom-top))<.01&&
+           Math.abs(frame[3]-frame[1])<.01&&Math.abs(frame[6]-frame[0])<.01){
+            if(pdfBounds)shiftPdf(frame,expected);
+            else created.translate(UnitValue(-frame[0],'px'),UnitValue(-frame[1],'px'));
+            frame=object(property('smartObjectMore')).smartObjectMore.transform;
+        }
         if(!expected||frame.length!==8)throw Error('Text object frame missing');for(var i=0;i<8;i++)if(Math.abs(frame[i]-expected[i])>.01)throw Error('Text object placement readback mismatch: '+encode({crop:more.crop,frame:frame,expected:expected,size:more.size}));
         if(created.parent.typename!==anchor.parent.typename||created.parent.id!==anchor.parent.id)throw Error('Vector object parent changed');
         finalMetadata();setMetadata(request.xmp);if(metadata()!==request.xmp)throw Error('Text object metadata readback mismatch');
         var label=new ActionDescriptor(),value=new ActionDescriptor(),ref=new ActionReference();ref.putIdentifier(s('layer'),created.id);label.putReference(s('null'),ref);value.putEnumerated(s('color'),colorType,colorValue);label.putObject(s('to'),s('layer'),value);executeAction(s('set'),label,DialogModes.NO);
         if(property('color').getEnumerationValue(s('color'))!==colorValue)throw Error('Text object color label readback mismatch');
         if(prepared.kind==='new-table')created.name='表格';
-        else{created.name=anchor.name;created.visible=anchor.visible;anchor.remove();}
+        else if(!updatedOriginal){created.name=anchor.name;created.visible=anchor.visible;anchor.remove();}
         if(doc.activeLayer.id!==created.id)throw Error('Text object selection readback mismatch');
-        result={verified:true,count:1,layer_id:created.id,source_sha256:prepared.source_sha256,engine:'native-pdf-vector'};
+        result={verified:true,count:1,layer_id:created.id,source_sha256:prepared.source_sha256,engine:'native-pdf-vector',placement:placement};
+        if(pdfBounds)result.pdf_bounds=pdfBounds;
     }
     function replaceContents(){
         var a=new ActionDescriptor();a.putPath(s('null'),pdf);a.putInteger(s('crop'),2);
         executeAction(s('placedLayerReplaceContents'),a,DialogModes.NO);
     }
-    function saveSourcePdf(layers){
+    function compactBounds(copy,shape,position){
+        var previous=prepared.before_pdf_bounds,canvas=source.canvas;
+        if(app.version!=='24.0.1'){
+            if(previous)throw Error('当前 Photoshop 版本无法安全更新紧凑文字对象');
+            return null;
+        }
+        var limits=copy.bounds,ink=[];
+        for(var i=0;i<4;i++){
+            var pixel=limits[i].as('px');
+            if(!isFinite(pixel))return null;
+            ink.push(pixel);
+        }
+        if(ink[2]<=ink[0]||ink[3]<=ink[1])return previous||null;
+        var x=position[0].as('px'),y=position[1].as('px'),box=shape.bounds;
+        var left=x,top=y,right=x,bottom=y;
+        if(shape['char']._value==='box'&&box&&typeof box.left==='number'&&typeof box.top==='number'&&
+           typeof box.right==='number'&&typeof box.bottom==='number'){
+            left+=box.left;top+=box.top;right+=box.right;bottom+=box.bottom;
+        }
+        var bounds=[Math.max(0,Math.floor(Math.min(left,ink[0])-2)),
+            Math.max(0,Math.floor(Math.min(top,ink[1])-2)),
+            Math.min(Math.round(canvas.width),Math.ceil(Math.max(right,ink[2])+2)),
+            Math.min(Math.round(canvas.height),Math.ceil(Math.max(bottom,ink[3])+2))];
+        if(bounds[2]-bounds[0]<2||bounds[3]-bounds[1]<2)return previous||null;
+        if(previous&&previous[0]<=bounds[0]&&previous[1]<=bounds[1]&&previous[2]>=bounds[2]&&previous[3]>=bounds[3])return previous;
+        if(prepared.kind==='smart-object'&&!affineFrame(prepared.transform)){
+            if(previous)throw Error('当前矢量透视下的新文字超过原有 PDF 范围');
+            return null;
+        }
+        return near(bounds,fullPdfBounds())?null:bounds;
+    }
+    function cropSource(copy,bounds){
+        var text=copy.textItem,position=text.position,original=[position[0].as('px'),position[1].as('px')];
+        var content=text.contents,id=copy.id,rect=[];
+        for(var i=0;i<4;i++)rect.push(UnitValue(bounds[i],'px'));
+        work.crop(rect);
+        var layer=work.activeLayer;
+        if(layer.id!==id||layer.kind!==LayerKind.TEXT||layer.textItem.contents!==content||
+           Math.abs(work.width.as('px')-(bounds[2]-bounds[0]))>.01||
+           Math.abs(work.height.as('px')-(bounds[3]-bounds[1]))>.01)throw Error('紧凑 PDF 的文字或画布尺寸无法核对');
+        position=layer.textItem.position;
+        for(var n=0;n<2;n++)if(Math.abs(position[n].as('px')+bounds[n]-original[n])>.01)
+            throw Error('紧凑 PDF 的原稿坐标无法核对');
+    }
+    function saveSourcePdf(layers,copy,bounds){
         var options=new PDFSaveOptions(),hidden=[],restoreError=null;
         options.preserveEditing=false;options.embedColorProfile=true;
         try{
             for(var i=0;i<layers.length;i++){hidden.push(layers[i]);layers[i].visible=false;}
+            if(bounds)cropSource(copy,bounds);
             work.saveAs(pdf,options,true,Extension.LOWERCASE);
         }finally{
             // Visibility can survive history navigation in Photoshop. Restore
@@ -358,7 +489,8 @@
         var actualText=rawText();fontFallbacks=checkText(actualText,raw,original,edit);
         if(!near(layout(actualText),layout(raw)))throw Error('Text source layout readback mismatch');
         if(Math.abs(actualText.textClickPoint.horizontal._value-click.horizontal._value)>.00001||Math.abs(actualText.textClickPoint.vertical._value-click.vertical._value)>.00001)throw Error('Text anchor readback mismatch');
-        saveSourcePdf(layers);
+        pdfBounds=compactBounds(copy,shape,position);
+        saveSourcePdf(layers,copy,pdfBounds);
     }
     function historyAt(index){
         var r=new ActionReference();r.putIndex(s('historyState'),index);return executeActionGet(r).getInteger(s('ID'));
@@ -368,12 +500,27 @@
         for(var i=1;i<=doc.historyStates.length;i++)ages.push(historyAt(i));
         return ages;
     }
-    function proofStamp(){
+    function documentFileStamp(){
+        var r=new ActionReference(),key=s('fileReference'),file;
+        r.putIdentifier(s('document'),doc.id);
+        var descriptor=executeActionGet(r);
+        try{file=doc.fullName;}
+        catch(error){
+            // On the verified host, a never-saved document has neither a DOM
+            // full name nor an Action Manager file reference.
+            if(error.number===8103&&!doc.saved&&!descriptor.hasKey(key))return null;
+            throw error;
+        }
+        if(!file||!file.exists||!descriptor.hasKey(key)||descriptor.getType(key)!==DescValueType.ALIASTYPE||
+           descriptor.getPath(key).fsName!==file.fsName)throw Error('Document file identity mismatch');
+        return file.fsName;
+    }
+    function proofStamp(verifyDocument){
         var layers=[],paths=[];
         function visibility(parent){
             for(var j=0;j<parent.layers.length;j++){
                 var l=parent.layers[j];layers.push([l.id,l.visible]);
-                if((isolated||inPlaceFixture)&&l.typename==='LayerSet')visibility(l);
+                if((isolated||verifyDocument)&&l.typename==='LayerSet')visibility(l);
             }
         }
         visibility(doc);
@@ -385,12 +532,12 @@
         }
         var state=[doc.saved,currentHistoryId(),historyIds(),layers,paths,doc.activeLayer.id,documents(),metadata(),
             doc.width.as('px'),doc.height.as('px'),doc.resolution,docProperty('zoom'),docProperty('center')];
-        if(inPlaceFixture){
+        if(verifyDocument){
             var r=new ActionReference(),selection=s('targetLayersIDs'),ids=[];
             r.putProperty(s('property'),selection);r.putEnumerated(s('document'),s('ordinal'),s('targetEnum'));
             var selected=executeActionGet(r).getList(selection);
             for(var n=0;n<selected.count;n++)ids.push(selected.getReference(n).getIdentifier());
-            state.push(doc.name,doc.fullName.fsName,ids);
+            state.push(doc.name,documentFileStamp(),ids);
         }
         return encode(state);
     }
@@ -398,8 +545,27 @@
         var key='__psMenuTextObject_'+request.id;if($.global[key])throw Error('Text object already running');$.global[key]=operation;
         try{doc.suspendHistory(name,'$.global['+encode(key)+']()');}finally{delete $.global[key];}
     }
-    function proofStep(operation,name){
-        var before=proofStamp(),failure=null;
+    function restorePlacement(){
+        if(!app.documents.length||app.activeDocument.id!==doc.id||!placementBaseline)throw Error('Vector placement rollback target changed');
+        var current=currentHistoryId(),count=doc.historyStates.length;
+        if(current!==historyId){
+            if(count<2||historyAt(count)!==current||historyAt(count-1)!==historyId||doc.activeHistoryState.name!==placementTitle)
+                throw Error('Cannot identify the failed vector placement history step');
+            // Native undo restores the selection and saved flag together with the document contents.
+            executeAction(s('undoEvent'),new ActionDescriptor(),DialogModes.NO);
+        }
+        if(currentHistoryId()!==historyId||encode(historyIds())!==placementBaseline.histories||
+           doc.saved!==placementBaseline.saved||doc.activeLayer.id!==request.target.active_layer_id||metadata()!==prepared.before_xmp||
+           prepared.before_text&&encode(rawText())!==encode(prepared.before_text))throw Error('Vector placement rollback state mismatch');
+        if(updatedOriginal){
+            if(!prepared.before_render||renderHash('rollback')!==prepared.before_render)
+                throw Error('Vector placement rollback content mismatch');
+            var evidence=new File(folder+'/text-object-rollback-'+request.id+'.pdf');
+            if(!evidence.remove())throw Error('Vector placement rollback evidence cleanup failed');
+        }
+    }
+    function proofStep(operation,name,documentStamp){
+        var before=documentStamp||proofStamp(),failure=null;
         try{grouped(operation,name);}catch(e){failure=e;}
         try{
             if(!app.documents.length||app.activeDocument.id!==doc.id)throw Error('草稿文档已改变');
@@ -407,21 +573,32 @@
                 if(doc.activeHistoryState.name!==name)throw Error('无法确认草稿历史归属');
                 executeAction(s('undoEvent'),new ActionDescriptor(),DialogModes.NO);
             }
-            if(proofStamp()!==before)throw Error('草稿后原文档状态不一致');
+            if(proofStamp(!!documentStamp)!==before)throw Error('草稿后原文档状态不一致');
         }catch(e){proofUnknown=true;throw e;}
         if(failure)throw failure;
     }
-    function renderInPlace(){
-        var canvas=source.canvas,count=doc.historyStates.length,limit=app.preferences.numberOfHistoryStates;
-        if(proof||source.schema!==1||!/^151500px text acceptance [a-f0-9]{32} (72|300)$/.test(inPlaceFixture)||
-           (doc.name!==inPlaceFixture&&doc.name!==inPlaceFixture+'.psd')||!count||!limit||count>=limit||historyAt(count)!==historyId||
-           canvas.mode!=='RGB'||canvas.depth!==8||Math.abs(canvas.width-doc.width.as('px'))>.00001||Math.abs(canvas.height-doc.height.as('px'))>.00001||
-           canvas.profile!==String(doc.colorProfileName)||Math.abs(canvas.resolution-doc.resolution)>.001)
-            throw Error('原位导出需要匹配的隔离文字文档和可用的撤销历史');
-        inPlaceStamp=proofStamp();
+    function currentSourceStamp(){
+        if(proof||source.schema!==1||app.version!=='24.0.1')return null;
+        try{
+            var canvas=source.canvas,count=doc.historyStates.length,limit=app.preferences.numberOfHistoryStates;
+            // Adding and undoing a temporary step would otherwise discard redo
+            // states or evict the oldest history entry.
+            if(!count||!limit||count>=limit||historyAt(count)!==historyId||
+               canvas.mode!=='RGB'||canvas.depth!==8||doc.mode!==DocumentMode.RGB||doc.bitsPerChannel!==BitsPerChannelType.EIGHT||
+               Math.abs(canvas.width-doc.width.as('px'))>.00001||
+               Math.abs(canvas.height-doc.height.as('px'))>.00001||canvas.profile!==String(doc.colorProfileName)||
+               Math.abs(canvas.resolution-doc.resolution)>.001)return null;
+            return proofStamp(true);
+        }catch(_){return null;}
+    }
+    function renderInPlace(stamp){
+        if(!stamp||inPlaceFixture&&(!/^151500px text acceptance [a-f0-9]{32} (72|300)$/.test(inPlaceFixture)||
+           (doc.name!==inPlaceFixture&&doc.name!==inPlaceFixture+'.psd')))
+            throw Error('原位导出需要匹配的文字文档和可用的撤销历史');
+        inPlaceStamp=stamp;
         var ages=historyIds();
         work=doc;
-        try{proofStep(function(){renderSource(true);},'排版生成 PDF '+request.id);}
+        try{proofStep(function(){renderSource(true);},'排版生成 PDF '+request.id,stamp);}
         finally{work=null;}
         return ages;
     }
@@ -479,10 +656,10 @@
     }
     try{
         if(!/^[0-9a-f]{32}$/.test(request.id))throw Error('Invalid text object identity');
-        if(receipt.exists||proofFile.exists||pdf.exists&&source.renderer!=='list-v1'||new File(folder+'/legacy-result-'+request.id+'.tmp').exists||new File(folder+'/text-object-before-'+request.id+'.pdf').exists||new File(folder+'/text-object-render-'+request.id+'.pdf').exists||new File(folder+'/text-object-final-'+request.id+'.json').exists){identityConflict=true;throw Error('Text object identity already used; preserve original unknown');}
+        if(receipt.exists||proofFile.exists||pdf.exists&&source.renderer!=='list-v1'||new File(folder+'/legacy-result-'+request.id+'.tmp').exists||new File(folder+'/text-object-before-'+request.id+'.pdf').exists||new File(folder+'/text-object-render-'+request.id+'.pdf').exists||new File(folder+'/text-object-rollback-'+request.id+'.pdf').exists||new File(folder+'/text-object-final-'+request.id+'.json').exists){identityConflict=true;throw Error('Text object identity already used; preserve original unknown');}
         if(request.command!=='text.object'||!source||(source.schema!==1&&source.schema!==3&&!(source.schema===2&&source.renderer==='list-v1'))||!prepared)throw Error('Invalid text object command');
         if(sha256('abc')!=='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')throw Error('SHA256 self-check failed');
-        target(true);doc=app.activeDocument;anchor=doc.activeLayer;history=doc.activeHistoryState;historyId=currentHistoryId();documentsBefore=documents();
+        target(true);doc=app.activeDocument;anchor=doc.activeLayer;historyId=currentHistoryId();documentsBefore=documents();
         if(proof&&(!prepared.proofBefore||prepared.proofBefore.history!==historyId))throw Error('矢量草稿的文档历史已改变');
         dialogs=app.displayDialogs;app.displayDialogs=DialogModes.NO;
         var label=property('color');colorType=label.getEnumerationType(s('color'));colorValue=label.getEnumerationValue(s('color'));
@@ -501,7 +678,8 @@
         if(proof)renderProof();
         else{
             var retainedHistory=null;
-            if(inPlaceFixture)retainedHistory=renderInPlace();
+            var stamp=currentSourceStamp();
+            if(inPlaceFixture||stamp)retainedHistory=renderInPlace(stamp);
             else if(source.renderer!=='list-v1'){
                 var canvas=source.canvas;if(canvas.mode!=='RGB'||canvas.depth!==8)throw Error('Vector text currently requires RGB8 source');
                 work=app.documents.add(UnitValue(canvas.width,'px'),UnitValue(canvas.height,'px'),canvas.resolution,'Text object '+request.id,NewDocumentMode.RGB,DocumentFill.TRANSPARENT,1,BitsPerChannelType.EIGHT,canvas.profile);
@@ -511,7 +689,8 @@
                 if(encode(documents())!==encode(documentsBefore))throw Error('Source document cleanup mismatch');
             }
             if(currentHistoryId()!==historyId||metadata()!==prepared.before_xmp||prepared.before_text&&encode(rawText())!==encode(prepared.before_text))throw Error('Original changed during source generation');
-            grouped(replace,'Vector text object');
+            placementBaseline={histories:encode(historyIds()),saved:doc.saved};
+            grouped(replace,placementTitle);
             if(retainedHistory){
                 var committedHistory=historyIds(),last=committedHistory.pop();
                 if(last===historyId||last!==currentHistoryId()||encode(committedHistory)!==encode(retainedHistory))
@@ -524,7 +703,19 @@
         result={schema:1,id:request.id,session:request.session,operation:request.operation,token:request.token,phase:'completed',result:result};
     }catch(error){
         var unknown=identityConflict||proofUnknown,restore='';
-        try{if(work){if(contains(documentsBefore,work.id))throw Error('Source workspace ownership unavailable');app.activeDocument=work;work.close(SaveOptions.DONOTSAVECHANGES);work=null;}if(doc){app.activeDocument=doc;if(changed&&!proof){doc.activeHistoryState=history;doc.activeLayer=anchor;if(metadata()!==prepared.before_xmp)throw Error('Metadata restore mismatch');if(prepared.before_text&&encode(rawText())!==encode(prepared.before_text))throw Error('Text restore mismatch');}if(encode(documents())!==encode(documentsBefore))throw Error('Source document cleanup unknown');if(inPlaceStamp&&proofStamp()!==inPlaceStamp)throw Error('原位导出后文档历史或状态待核对');}}catch(e){unknown=true;restore=String(e);}
+        try{
+            if(work){
+                if(contains(documentsBefore,work.id))throw Error('Source workspace ownership unavailable');
+                app.activeDocument=work;work.close(SaveOptions.DONOTSAVECHANGES);work=null;
+                if(doc)app.activeDocument=doc;
+            }
+            if(doc){
+                if(changed&&!proof)restorePlacement();
+                if(encode(documents())!==encode(documentsBefore))throw Error('Source document cleanup unknown');
+                if(inPlaceStamp&&(!app.documents.length||app.activeDocument.id!==doc.id||proofStamp(true)!==inPlaceStamp))
+                    throw Error('原位导出后文档历史或状态待核对');
+            }
+        }catch(e){unknown=true;restore=String(e);}
         result={schema:1,id:request.id,session:request.session,operation:request.operation,token:request.token,phase:'failed',error:String(error),error_line:error.line,result_unknown:unknown,not_executed:!changed&&!unknown,rollback_error:restore};
     }
     try{if(dialogs!==null)app.displayDialogs=dialogs;}catch(error){result.phase='failed';result.result_unknown=true;result.error='Photoshop dialog state restore unknown: '+String(error);}

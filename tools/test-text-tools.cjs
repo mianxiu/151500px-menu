@@ -302,6 +302,7 @@ async function request(find,replacement){const read=await tools.read();return {t
  ps.app.activeDocument.resolution=300;
  read=await tools.read();
  assert.equal(read.paragraph_indents_supported,true);
+ assert.equal(read.east_asian_paragraph_supported,true);
  const indent={target:read.target,command:'text.proof',id:'indent-frame',expires_at_ms:Date.now()+5000,
   text:{revision:read.revision,value:row.textKey.textKey,origins:Array.from({length:9},(_,i)=>i),count:0,
    typography:{range:[2,4],startIndent:12,endIndent:6,firstLineIndent:-3}}};
@@ -310,13 +311,20 @@ async function request(find,replacement){const read=await tools.read();return {t
  const composition={...indent.text};
  delete composition.typography;
  composition.typography_runs=[{range:[5,6],textEveryLineComposer:false,hangingRoman:true,
-   hyphenateWordSize:8,justifyWord:[80,100,125],justifyLetter:[-5,0,10],justifyGlyph:[95,100,105]}];
+   hyphenateWordSize:8,justifyWord:[80,100,125],justifyLetter:[-5,0,10],justifyGlyph:[95,100,105],
+   kinsokuSetName:'Soft',mojiKumiName:'Photoshop6MojiKumiNone',burasagari:'burasagariStandard',preferredKinsokuOrder:'pushOutFirst'}];
  const compositionSource=(await tools.prepareObject(indent,composition)).source.layer.text;
  assert.equal(compositionSource.paragraphStyleRange[0].paragraphStyle.textEveryLineComposer,undefined);
  const composedParagraph=compositionSource.paragraphStyleRange[1].paragraphStyle;
  assert.equal(composedParagraph.textEveryLineComposer,false);
  assert.equal(composedParagraph.justificationWordMaximum,1.25);
  assert.equal(composedParagraph.hyphenateWordSize,8);
+ assert.equal(compositionSource.paragraphStyleRange[0].paragraphStyle.kinsokuSetName,undefined);
+ for(const key of ['kinsokuSetName','mojiKumiName','burasagari','preferredKinsokuOrder']){
+   assert.equal(composedParagraph[key]._enum,key);
+   assert.equal(composedParagraph[key]._value,composition.typography_runs[0][key]);
+ }
+ await assert.rejects(tools.prepareObject(indent,{...composition,typography_runs:[{kinsokuSetName:'loose'}]}),/样式无效/);
  await tools.replace(indent);
  assert.deepEqual(row,indentOriginal);
  const projected=savedProof.row.textKey;

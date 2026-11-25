@@ -62,6 +62,7 @@ class ToolObservation:
         self.retirement=None
         self.retirement_scope=None;self.retirement_retry_after=0
         self.recheck_generation=0
+        self.blocked_live_session=None
 
     def snapshot(self):
         return {**self.report,'last_failure':dict(self.last_failure) if self.last_failure else None,
@@ -169,10 +170,11 @@ class ToolObservation:
         value=self.event_detail()
         if value:return value['session'],value['sequence'],value['state']
 
-    def state(self):
+    def state(self,*,session=None,max_age_ms=24*60*60*1000):
         """Latest authenticated tool/modal snapshot; local file cache only."""
         try:
             folder,heartbeat=self.transport.observe()
+            if session is not None and heartbeat['session']!=session:return None
             path=folder/'input-tool-state.json'
             info=path.stat()
             if info.st_size>2048:return None
@@ -189,7 +191,7 @@ class ToolObservation:
                    value.get('token')==token and type(value.get('sequence')) is int and value['sequence']>0 and
                    isinstance(tool,str) and tool.isascii() and tool.isidentifier() and 1<=len(tool)<=80 and
                    type(value.get('isModal')) is bool and type(stamp) in (int,float) and math.isfinite(stamp) and
-                   -2000<=time.time()*1000-stamp<=24*60*60*1000)
+                   -2000<=time.time()*1000-stamp<=max_age_ms)
             return ({'classID':tool,'isModal':value['isModal'],'sequence':value['sequence'],
                      'created_at_ms':stamp} if valid else None)
         except (RuntimeError,OSError,ValueError,TypeError,AttributeError):
@@ -208,12 +210,21 @@ class ToolObservation:
     def reconciler(self):
         """Each worker observes recovery of the shared mailbox independently."""
         seen=self.recheck_generation
+        seen_live=None
         def recheck():
-            nonlocal seen
+            nonlocal seen,seen_live
             if not self.lock.acquire(blocking=False):return False
             try:
                 self.reconcile()
-                if self.path.exists() or self.retry_after is not None or seen==self.recheck_generation:return False
+                if self.path.exists():
+                    if self.blocked_live_session is None:return False
+                    current=self.state(session=self.blocked_live_session,max_age_ms=2000)
+                    if current is None:return False
+                    live=(self.blocked_live_session,current['sequence'])
+                    if live==seen_live:return False
+                    seen_live=live
+                    return True
+                if self.retry_after is not None or seen==self.recheck_generation:return False
                 seen=self.recheck_generation
                 return True
             finally:self.lock.release()
@@ -264,8 +275,15 @@ class ToolObservation:
                 raise ToolReadError('pending-invalid','ENG原观察身份损坏，未重发')
             if request['session']!=heartbeat['session']:
                 if not self.retire_previous(request,folder,heartbeat,identity):
+                    # A recent authenticated publication from the verified live
+                    # session is independent of the older request and its slot.
+                    if publish and identity is not None:
+                        self.blocked_live_session=heartbeat['session']
+                        current=self.state(session=self.blocked_live_session,max_age_ms=2000)
+                        if current is not None:return current
                     raise ToolReadError('pending-session-changed','ENG观察会话变化；旧生产者或原只读请求未确认，保留原身份，不重发')
                 request=None
+        self.blocked_live_session=None
         if request is None:
             if not publish:return None
             request={'schema':2,'id':secrets.token_hex(16),'session':heartbeat['session'],

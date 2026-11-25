@@ -707,7 +707,7 @@ class UxpBridge(PhotoshopBridge):
             if proof_frame:proof_frame[0].close()
             raise
 
-    async def execute_text_object(self,target,params,before_dispatch=None,proof_scale=None,proof_history=None,proof_isolated=False,*,in_place_fixture=None):
+    async def execute_text_object(self,target,params,before_dispatch=None,proof_scale=None,proof_history=None,proof_isolated=False,*,in_place_fixture=None,_fixture_guard=None):
         from .text_tools import replace_parameters
         from . import text_object
         params=dict(params);existing=params.pop('object_source',None);render=params.pop('object_render',None)
@@ -719,10 +719,13 @@ class UxpBridge(PhotoshopBridge):
             if not isinstance(render,str) or not re.fullmatch('[0-9a-f]{64}',render):raise ValueError('文字对象显示校验无效')
             params.update(object_source=existing,object_render=render)
         if self.execution_guard:self.execution_guard()
+        # The maintenance profile supplies an owned fixture check. Menu and
+        # shortcut actions continue to require the normal Photoshop focus.
+        guard=_fixture_guard or self.focus_guard
         proof_frame=None
         def write(_):
             nonlocal proof_frame
-            if self.focus_guard:self.focus_guard()
+            if guard:guard()
             application=self._application()
             self.transport.task_id=self._active_task_id;self._uxp_worker_active=True
             def native(folder,request,ready):
@@ -736,6 +739,7 @@ class UxpBridge(PhotoshopBridge):
                     if existing and existing['schema']==1:
                         edit['original_text']=existing['layer']['text']['textKey']
                         edit['previous_fallbacks']=text_object.font_fallbacks(ready['prepared']['before_xmp'],edit['original_text'])
+                        ready['prepared']['before_pdf_bounds']=text_object.render_bounds(ready['prepared']['before_xmp'],existing['canvas'])
                     ready['prepared']['source_sha256']=hashlib.sha256(encoded).hexdigest()
                     if model.get('renderer')=='list-v1':
                         from .text_object_render import render
@@ -768,7 +772,7 @@ class UxpBridge(PhotoshopBridge):
             finally:self._uxp_worker_active=False
         try:
             result=await self._execute_task('text.proof' if proof_scale is not None else 'text.object',before_dispatch,
-                                            capture=lambda:self._bind_menu_target(target),execute=write)
+                                            capture=lambda:self._bind_menu_target(target,focus_guard=guard),execute=write)
             if proof_frame:result['frame']=proof_frame
             return result
         except BaseException:

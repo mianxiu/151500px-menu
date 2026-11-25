@@ -64,16 +64,21 @@ struct MenuToolsPanel {
     ImVec2 canvasPan{},panGestureStart{},panBefore{};
     int styleScope=0,leadingMode=0,paragraphAlign=0,backgroundMode=0;
     inline static constexpr const char* alignmentKeys[]={"left","center","right","justifyLeft","justifyCenter","justifyRight","justifyAll"};
-    inline static constexpr const char* enumKeys[]={"autoKern","fontCaps","baseline","underline","strikethrough","figureStyle"};
+    inline static constexpr const char* enumKeys[]={"autoKern","fontCaps","baseline","underline","strikethrough","figureStyle",
+        "kinsokuSetName","mojiKumiName","burasagari","preferredKinsokuOrder"};
     inline static constexpr const char* enumValues[][6]={
         {"","metricsKern","opticalKern",""},{"","normal","allCaps","smallCaps"},{"","normal","superScript","subScript"},
         {"","underlineOff","underlineOnLeftInVertical",""},{"","strikethroughOff","xHeightStrikethroughOn",""},
-        {"","normal","proportionalLining","tabularLining","proportionalOldStyle","tabularOldStyle"}
+        {"","normal","proportionalLining","tabularLining","proportionalOldStyle","tabularOldStyle"},
+        {"","None","Soft","Hard"},
+        {"","Photoshop6MojiKumiNone","Photoshop6MojiKumiSet1","Photoshop6MojiKumiSet2","Photoshop6MojiKumiSet3","Photoshop6MojiKumiSet4"},
+        {"","burasagariNone","burasagariStandard","burasagariStrong"},
+        {"","pushIn","pushOutFirst","pushOut"}
     };
     inline static constexpr const char* switchKeys[]={"syntheticBold","syntheticItalic","ligature","noBreak","hyphenate",
         "contextualLigatures","stylisticAlternates","swash","titling","ornaments","fractions","ordinals"};
     int styleEnums[IM_ARRAYSIZE(enumKeys)]{},styleSwitches[IM_ARRAYSIZE(switchKeys)]{};
-    bool advancedTypography=false,textRgb=false,textColorChanged=false;
+    bool advancedTypography=false,eastAsianParagraphSupported=false,textRgb=false,textColorChanged=false;
     bool openTypeSupported=false,kerningSupported=false,scopeExplicit=false;
     Json sourceKerns=Json::array(),sourceFontRuns=Json::array();
     std::map<int,Json> kerningEdits;
@@ -162,10 +167,13 @@ struct MenuToolsPanel {
         viewDirty=false;
     }
 
+    static bool eastAsianParagraphProperty(std::string_view key) {
+        return key=="kinsokuSetName" || key=="mojiKumiName" || key=="burasagari" || key=="preferredKinsokuOrder";
+    }
     static bool paragraphProperty(std::string_view key) {
         return key=="align" || key.rfind("hyphenat",0)==0 || key.rfind("justify",0)==0 ||
             key=="hangingRoman" || key=="textEveryLineComposer" || key=="spaceBefore" || key=="spaceAfter" ||
-            key=="startIndent" || key=="endIndent" || key=="firstLineIndent";
+            key=="startIndent" || key=="endIndent" || key=="firstLineIndent" || eastAsianParagraphProperty(key);
     }
     std::array<int,2> activeStyleRange(bool paragraph)const {
         const int length=int(std::strlen(draft));
@@ -204,7 +212,10 @@ struct MenuToolsPanel {
         }
         const char* aliases[][6]={{"","度量","视觉"},{"","正常","大写","小型大写"},
             {"","正常","上标","下标"},{"","关闭","开启"},{"","关闭","开启"},
-            {"","默认","比例等高","等宽等高","比例旧式","等宽旧式"}};
+            {"","默认","比例等高","等宽等高","比例旧式","等宽旧式"},
+            {"","关闭","JIS 弱","JIS 最大"},{"","关闭","组合 1","组合 2","组合 3","组合 4"},
+            {"","关闭","常规","强制"},{"","优先挤入","优先推出","仅推出"}};
+        static_assert(IM_ARRAYSIZE(enumKeys)==IM_ARRAYSIZE(aliases));
         for(int i=0;i<IM_ARRAYSIZE(enumKeys);++i)if(key==enumKeys[i]){
             for(int j=1;j<IM_ARRAYSIZE(enumValues[i]) && enumValues[i][j] && enumValues[i][j][0];++j)
                 if(value==enumValues[i][j])return aliases[i][j];
@@ -229,7 +240,7 @@ struct MenuToolsPanel {
     Json captureStylePreset(bool paragraph)const {
         auto fields=Json::object();
         for(const auto& [key,runs]:styleDraft.source){
-            if(paragraphProperty(key)!=paragraph)continue;
+            if(paragraphProperty(key)!=paragraph || (eastAsianParagraphProperty(key) && !eastAsianParagraphSupported))continue;
             auto value=currentStyleOverride(key.c_str());
             if(!value.is_null()){fields[key]=std::move(value);continue;}
             const auto shown=currentStyle(key.c_str());
@@ -275,7 +286,8 @@ struct MenuToolsPanel {
         if(selected>=0){
             checkpointDraft();
             for(const auto& [key,value]:styleLibrary.at(rows[selected].second).at("values").items()){
-                if((key=="color" && !textRgb) || (paragraphProperty(key) && key!="spaceBefore" && key!="spaceAfter" &&
+                if((key=="color" && !textRgb) || (eastAsianParagraphProperty(key) && !eastAsianParagraphSupported) ||
+                   (paragraphProperty(key) && key!="spaceBefore" && key!="spaceAfter" &&
                     ((!paragraphIndentsSupported && key!="align") || !paragraphAlignmentSupported || managedList)))continue;
                 stageStyle(key.c_str(),value,false);
             }
@@ -1025,6 +1037,7 @@ struct MenuToolsPanel {
             sourceKerns=result.value("kerning_pairs",Json::array());sourceFontRuns=result.value("font_runs",Json::array());
             paragraphIndentsSupported=result.value("paragraph_indents_supported",false);
             extendedTypography=result.value("extended_typography",false);
+            eastAsianParagraphSupported=result.value("east_asian_paragraph_supported",false);
             advancedTypography=result.value("advanced_typography",false);textRgb=result.value("text_rgb",false);
             textColorChanged=false;std::fill_n(styleEnums,IM_ARRAYSIZE(styleEnums),0);std::fill_n(styleSwitches,IM_ARRAYSIZE(styleSwitches),0);
             unsigned int rgb=0;
@@ -1571,6 +1584,23 @@ struct MenuToolsPanel {
             choice("textEveryLineComposer","排版方式",composers);
             choice("hangingRoman","罗马标点悬挂",switches);
             choice("hyphenateCapitalized","断开大写单词",switches);
+            if(eastAsianParagraphSupported){
+                const auto eastAsian=[&](std::string_view key,const char* title,const auto& values){
+                    const auto it=std::find_if(std::begin(enumKeys),std::end(enumKeys),
+                        [key](const char* candidate){return key==candidate;});
+                    if(it!=std::end(enumKeys))select(title,*it,values,styleEnums[it-std::begin(enumKeys)],73,true);
+                };
+                const char* kinsoku[]={"沿用","关闭","JIS 弱","JIS 最大"};
+                const char* mojikumi[]={"沿用","关闭","组合 1","组合 2","组合 3","组合 4"};
+                const char* burasagari[]={"沿用","关闭","常规","强制"};
+                const char* order[]={"沿用","优先挤入","优先推出","仅推出"};
+                eastAsian("kinsokuSetName","避头尾规则",kinsoku);
+                eastAsian("mojiKumiName","日文标点间距",mojikumi);
+                ImGui::BeginDisabled(original("kinsokuSetName")=="关闭");
+                eastAsian("preferredKinsokuOrder","避头尾方式",order);
+                eastAsian("burasagari","东亚标点悬挂",burasagari);
+                ImGui::EndDisabled();
+            }
             const auto edit=[&](const char* key,const char* title,const char* unit,bool triple=false){
                 ImGui::PushID(key);label(title);
                 auto& buffer=compositionFields[key];
