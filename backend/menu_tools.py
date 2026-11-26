@@ -163,7 +163,7 @@ class MenuTools:
                     raise ValueError('请重新读取普通文字目标')
                 try:
                     memory,result=await text_canvas.read(self.app.runtime,self.app.desktop.target,saved['target'],background=background,
-                                                         trace=(epoch,value['request']))
+                                                         trace=(epoch,value['request']),legacy_bridge=self.app.bridge)
                 except text_canvas.CanvasUnavailable as error:
                     if type(saved.get('canvas_history')) is int and type(error.history) is int and error.history!=saved['canvas_history']:
                         raise text_canvas.CanvasTargetChanged() from error

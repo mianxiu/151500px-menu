@@ -20,9 +20,10 @@ def install(photoshop,runtime):
     folder=Path(runtime).resolve(strict=True)/'text-canvas'
     folder.mkdir(exist_ok=True)
     target=parent/'151500px-menu-text-canvas'
-    files=('main.js','package.json')
+    legacy_files={'main.js','package.json','connection.json'}
+    files=('main.js','package.json','text-geometry.jsx')
     if target.exists():
-        if (target.is_symlink() or target.resolve()!=target or {p.name for p in target.iterdir()}!=set(files)|{'connection.json'} or
+        if (target.is_symlink() or target.resolve()!=target or {p.name for p in target.iterdir()} not in (legacy_files,set(files)|{'connection.json'}) or
                 json.loads((target/'package.json').read_text('utf-8'))['name']!='151500px-menu-text-canvas' or
                 Path(json.loads((target/'connection.json').read_text('utf-8'))['folder'])!=folder):
             raise ValueError('目标目录与当前安装身份不匹配')

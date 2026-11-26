@@ -83,6 +83,7 @@ class MenuToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_background_retries_without_rereading_draft_and_old_epoch_is_rejected(self):
         self.app.runtime=Path('test')
         self.app.desktop.target=1
+        self.app.bridge=Mock()
         saved=self.tools.text.snapshot={'target':{},'revision':'r','canvas_history':34}
         plan=self.tools.text.plan=object()
         memory=Mock()

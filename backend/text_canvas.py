@@ -8,6 +8,7 @@ import secrets
 import time
 from pathlib import Path
 
+from .paths import ROOT
 from .settings import atomic_json
 
 
@@ -30,7 +31,7 @@ def connection(runtime, hwnd):
     try:
         ready = json.loads((folder/'ready.json').read_text('utf-8'))
         token = (folder/'pairing').read_text('ascii')
-        if (ready['version'] not in (1,2,3) or ready['token'] != token or len(token) != 32
+        if (ready['version'] not in (1,2,3,4) or ready['token'] != token or len(token) != 32
                 or win32process.GetWindowThreadProcessId(hwnd)[1] != ready['photoshopPid']):
             return None
         def executable(pid):
@@ -46,7 +47,57 @@ def connection(runtime, hwnd):
     return None
 
 
-async def read(runtime, hwnd, target, *, background=False, trace=None):
+def _mapping(identity,image):
+    memory=mmap.mmap(-1,len(image),tagname='Local\\151500px-menu-canvas-'+identity)
+    try:memory.write(image)
+    except BaseException:memory.close();raise
+    return memory
+
+
+def _legacy_text_frame(geometry,width,height):
+    kind,*fields=geometry.split('|')
+    if len(fields)!=8:return None
+    try:x,y,w,h,em,r,g,b=map(float,fields)
+    except ValueError:return None
+    import math
+    if not all(map(math.isfinite,(x,y,w,h,em,r,g,b))) or em<=0:return None
+    if kind=='box' and w>0 and h>0:
+        box=[x/width,y/height,(x+w)/width,(y+h)/height]
+    elif kind=='point':
+        box=[x/width,(y-em)/height,(max(x,width)+em)/width,max(y+em,height)/height]
+    else:return None
+    frame={'box':box,'wrap':kind=='box','em':em/height,'color':[max(0,min(255,int(c+.5))) for c in (r,g,b)]}
+    return frame if valid_text_frame(frame) else None
+
+
+async def _legacy_empty_background(bridge,identity,target,data):
+    history=data.get('history')
+    trace=data.get('trace',{})
+    width,height=trace.get('source_width'),trace.get('source_height')
+    if (type(history) is not int or data.get('doc')!=target['document_id'] or data.get('layer')!=target['active_layer_id'] or
+            type(width) is not int or type(height) is not int or not (width>0 and height>0 and width*height<=100000000)):
+        return None
+    proof={'doc':target['document_id'],'layer':target['active_layer_id'],'history':history,'width':width,'height':height}
+    script=(ROOT/'jsx/text_canvas_empty.jsx').read_text('utf-8')
+    geometry=(ROOT/'generator/text-canvas/text-geometry.jsx').read_text('utf-8').strip()
+    script=script.replace('__CANVAS_TARGET__',json.dumps(proof)).replace('__TEXT_GEOMETRY__',geometry)
+    def inspect():
+        if bridge.busy:return 'unsupported'
+        return str(bridge._application().DoJavaScript(script))
+    try:value=await asyncio.get_running_loop().run_in_executor(bridge.executor,inspect)
+    except Exception:
+        logging.debug('Legacy empty text canvas could not be verified',exc_info=True)
+        return None
+    if value=='stale':raise CanvasTargetChanged()
+    if not value.startswith('empty|'):return None
+    scale=min(1,2048/max(width,height))
+    w,h=(max(1,int(size*scale+.5)) for size in (width,height))
+    image=_mapping(identity,bytes(w*h*4))
+    return image,{'mapping':identity,'width':w,'height':h,'history':history,'background':True,
+                  'box':None,'text_frame':_legacy_text_frame(value[6:],width,height)}
+
+
+async def read(runtime, hwnd, target, *, background=False, trace=None, legacy_bridge=None):
     ready = connection(runtime,hwnd)
     if not ready:raise CanvasUnavailable('当前 Photoshop 尚未连接画布读取组件',state='limited')
     if background and ready['version']<2:
@@ -82,6 +133,15 @@ async def read(runtime, hwnd, target, *, background=False, trace=None):
         logging.info('Typeset generator request=%s stage=receipt elapsed_ms=%d metrics=%s',identity,(time.monotonic()-started)*1000,metrics)
         if data.get('error'):
             if data.get('error_code')=='target':raise CanvasTargetChanged()
+            if (background and legacy_bridge is not None and ready['version']<4 and
+                    data['error']=='Error: 画布边界属性无效'):
+                transparent=await _legacy_empty_background(legacy_bridge,identity,target,{**data,'trace':metrics})
+                if transparent:
+                    if connection(runtime,hwnd)!=ready:
+                        transparent[0].close()
+                        raise CanvasTargetChanged()
+                    logging.info('Typeset generator request=%s stage=empty-background-verified',identity)
+                    return transparent
             history=data.get('history') if data.get('doc')==target['document_id'] and data.get('layer')==target['active_layer_id'] else None
             raise CanvasUnavailable(data['error'],state='limited' if data.get('error_code')=='limited' else 'failed',history=history)
         w,h=data.get('width'),data.get('height')
@@ -93,9 +153,7 @@ async def read(runtime, hwnd, target, *, background=False, trace=None):
             raise RuntimeError('画布会话、目标或尺寸已改变')
         image=pixels.read_bytes()
         if len(image)!=w*h*4:raise RuntimeError('画布像素数据不完整')
-        memory=mmap.mmap(-1,len(image),tagname='Local\\151500px-menu-canvas-'+identity)
-        try:memory.write(image)
-        except BaseException:memory.close();raise
+        memory=_mapping(identity,image)
         box=data.get('box') if background else None
         frame=data.get('text_frame') if background else None
         return memory,{'mapping':identity,'width':w,'height':h,'history':data['history'],'background':background,
