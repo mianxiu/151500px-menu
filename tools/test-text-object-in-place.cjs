@@ -131,6 +131,20 @@ for (const options of [{linked: true}, {schema: 2}, {proof: true}, {version: '25
     assert.equal(preservesLayer(options), false);
 }
 
+const placedFrame = canUpdateOriginal.slice(canUpdateOriginal.indexOf('    function placeTextFrame('));
+const expected = [28, 95, 757, 95, 757, 336, 28, 336];
+const frame = [385, 479, 1115, 479, 1115, 720, 385, 720];
+const transforms = [];
+const adjustment = {
+    more: {transform: frame, size: {width: 174.96, height: 57.84}}, expected,
+    affineFrame: () => true, transformPdf: (...args) => transforms.push(args)
+};
+vm.runInNewContext(placedFrame + 'placeTextFrame(more, expected, 300)', adjustment);
+assert.deepEqual(transforms, [[frame, expected, 100 * 729 / 730, 100]]);
+adjustment.more.size.width = 174;
+vm.runInNewContext(placedFrame + 'placeTextFrame(more, expected, 300)', adjustment);
+assert.equal(transforms.length, 1);
+
 const restorePlacement = source.slice(source.indexOf('    function restorePlacement('), source.indexOf('    function proofStep('));
 function failedPlacement({title = 'Vector text object', history = [41, 42, 43], restoreSaved = true,
     restoreLayer = true, otherDocument = false} = {}) {

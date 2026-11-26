@@ -40,10 +40,30 @@
     function rawText(){return object(property('textKey')).textKey;}
     function metadata(){var d=property('XMPMetadataAsUTF8');return d.hasKey(s('XMPMetadataAsUTF8'))?d.getString(s('XMPMetadataAsUTF8')):'';}
     function setMetadata(xml){var r=new ActionReference(),a=new ActionDescriptor(),v=new ActionDescriptor();r.putProperty(s('property'),s('XMPMetadataAsUTF8'));r.putIdentifier(s('layer'),app.activeDocument.activeLayer.id);a.putReference(s('null'),r);v.putString(s('XMPMetadataAsUTF8'),xml);a.putObject(s('to'),s('layer'),v);executeAction(s('set'),a,DialogModes.NO);}
-    function renderHash(suffix){var file=new File(folder+'/text-object-'+suffix+'-'+request.id+'.pdf');if(file.exists)throw Error('Render evidence already exists');var a=new ActionDescriptor();a.putPath(c('null'),file);executeAction(s('placedLayerExportContents'),a,DialogModes.NO);if(file.length>16777216)throw Error('Vector source exceeds16MiB');file.encoding='BINARY';if(!file.open('r'))throw Error('Cannot read vector source');try{var bytes=file.read();if(bytes.slice(0,5)!=='%PDF-')throw Error('Vector source format mismatch');return sha256(bytes);}finally{file.close();}}
+    function renderFile(suffix){return new File(folder+'/text-object-'+suffix+'-'+request.id+'.pdf');}
+    function exportRender(suffix){
+        var file=renderFile(suffix);
+        if(file.exists)throw Error('Render evidence already exists');
+        var a=new ActionDescriptor();a.putPath(c('null'),file);executeAction(s('placedLayerExportContents'),a,DialogModes.NO);
+        return file;
+    }
+    function pdfBytes(file){
+        var size=file.length;
+        if(size<100||size>16777216)throw Error('Invalid vector source size');
+        file.encoding='BINARY';if(!file.open('r'))throw Error('Cannot read vector source');
+        try{
+            var bytes=file.read();
+            if(bytes.length!==size||bytes.slice(0,5)!=='%PDF-')throw Error('Vector source format mismatch');
+            return bytes;
+        }finally{file.close();}
+    }
+    function renderHash(suffix){return sha256(pdfBytes(exportRender(suffix)));}
     function finalMetadata(){
         var started=new Date().getTime();
-        var digest=renderHash('render');if(!ExternalObject.AdobeXMPScript)ExternalObject.AdobeXMPScript=new ExternalObject('lib:AdobeXMPScript');
+        var bytes=pdfBytes(exportRender('render')),digest;
+        if(placingPdf&&bytes===pdfBytes(pdf))digest=request.rendered.pdf_sha256;
+        else digest=sha256(bytes);
+        if(!ExternalObject.AdobeXMPScript)ExternalObject.AdobeXMPScript=new ExternalObject('lib:AdobeXMPScript');
         nativeTimes.embedded_readback_ms=new Date().getTime()-started;
         var ns='https://15100px.menu/ns/text-object/1.0/';XMPMeta.registerNamespace(ns,'pxText');
         var meta=new XMPMeta(request.xmp);meta.setProperty(ns,'render',digest);
@@ -351,16 +371,26 @@
         add(to[0],to[1]);add(to[2],to[1]);add(to[2],to[3]);add(to[0],to[3]);
         return result;
     }
-    function shiftPdf(from,to){
+    function transformPdf(from,to,scaleX,scaleY){
         var dx=(to[0]+to[4]-from[0]-from[4])/2,dy=(to[1]+to[5]-from[1]-from[5])/2;
-        if(Math.abs(dx)<=.0001&&Math.abs(dy)<=.0001)return;
+        if(Math.abs(dx)<=.0001&&Math.abs(dy)<=.0001&&scaleX===100&&scaleY===100)return;
         var r=new ActionReference(),a=new ActionDescriptor(),offset=new ActionDescriptor();
         r.putEnumerated(c('Lyr '),c('Ordn'),c('Trgt'));a.putReference(c('null'),r);
         a.putEnumerated(c('FTcs'),c('QCSt'),c('Qcsa'));
-        a.putUnitDouble(c('Wdth'),c('#Prc'),100);a.putUnitDouble(c('Hght'),c('#Prc'),100);
+        a.putUnitDouble(c('Wdth'),c('#Prc'),scaleX);a.putUnitDouble(c('Hght'),c('#Prc'),scaleY);
         a.putBoolean(s('constrainProportions'),false);
         offset.putUnitDouble(c('Hrzn'),c('#Pxl'),dx);offset.putUnitDouble(c('Vrtc'),c('#Pxl'),dy);
         a.putObject(c('Ofst'),c('Ofst'),offset);executeAction(c('Trnf'),a,DialogModes.NO);
+    }
+    function placeTextFrame(more,expected,resolution){
+        var frame=more.transform,fw=frame[2]-frame[0],fh=frame[5]-frame[1];
+        var w=expected[2]-expected[0],h=expected[5]-expected[1],px=resolution/72;
+        // Photoshop can round one centered edge by a pixel even when the
+        // PDF's intrinsic dimensions match the desired frame exactly.
+        if(!more.size||Math.abs(more.size.width*px-w)>.01||Math.abs(more.size.height*px-h)>.01||
+           fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01||
+           Math.abs(frame[3]-frame[1])>.01||Math.abs(frame[6]-frame[0])>.01||!affineFrame(frame))return;
+        transformPdf(frame,expected,Math.abs(fw-w)<.01?100:100*w/fw,Math.abs(fh-h)<.01?100:100*h/fh);
     }
     function replace(factor){
         factor=factor||1;
@@ -383,7 +413,7 @@
                 placement='independent-copy';
                 executeAction(s('placedLayerMakeCopy'),new ActionDescriptor(),DialogModes.NO);
             }
-            if(beforeFrame&&(pdfBounds||prepared.before_pdf_bounds))shiftPdf(beforeFrame,expected);
+            if(beforeFrame&&(pdfBounds||prepared.before_pdf_bounds))transformPdf(beforeFrame,expected,100,100);
             replaceContents();
         }else{
             var a=new ActionDescriptor();a.putPath(c('null'),pdf);a.putEnumerated(c('FTcs'),c('QCSt'),c('Qcsa'));a.putInteger(s('crop'),2);executeAction(c('Plc '),a,DialogModes.NO);
@@ -399,10 +429,8 @@
             if(!more.size||Math.abs(more.size.width*px-w)>.01||Math.abs(more.size.height*px-h)>.01||fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01)throw Error('Table intrinsic size or placement mismatch');
             expected=[frame[0],frame[1],frame[0]+fw,frame[1],frame[0]+fw,frame[1]+fh,frame[0],frame[1]+fh];
         }
-        if(prepared.kind==='text'&&Math.abs(frame[2]-frame[0]-(right-left))<.01&&Math.abs(frame[5]-frame[1]-(bottom-top))<.01&&
-           Math.abs(frame[3]-frame[1])<.01&&Math.abs(frame[6]-frame[0])<.01){
-            if(pdfBounds)shiftPdf(frame,expected);
-            else created.translate(UnitValue(-frame[0],'px'),UnitValue(-frame[1],'px'));
+        if(prepared.kind==='text'){
+            placeTextFrame(more,expected,doc.resolution);
             frame=object(property('smartObjectMore')).smartObjectMore.transform;
         }
         if(!expected||frame.length!==8)throw Error('Text object frame missing');for(var i=0;i<8;i++)if(Math.abs(frame[i]-expected[i])>.01)throw Error('Text object placement readback mismatch: '+encode({crop:more.crop,frame:frame,expected:expected,size:more.size}));
@@ -667,7 +695,7 @@
     }
     try{
         if(!/^[0-9a-f]{32}$/.test(request.id))throw Error('Invalid text object identity');
-        if(receipt.exists||proofFile.exists||pdf.exists&&!placingPdf&&source.renderer!=='list-v1'||new File(folder+'/legacy-result-'+request.id+'.tmp').exists||new File(folder+'/text-object-before-'+request.id+'.pdf').exists||new File(folder+'/text-object-render-'+request.id+'.pdf').exists||new File(folder+'/text-object-rollback-'+request.id+'.pdf').exists||new File(folder+'/text-object-final-'+request.id+'.json').exists){identityConflict=true;throw Error('Text object identity already used; preserve original unknown');}
+        if(receipt.exists||proofFile.exists||pdf.exists&&!placingPdf&&source.renderer!=='list-v1'||new File(folder+'/legacy-result-'+request.id+'.tmp').exists||renderFile('before').exists!==!!(placingPdf&&prepared.before_render)||renderFile('before-current').exists||renderFile('render').exists||renderFile('rollback').exists||new File(folder+'/text-object-final-'+request.id+'.json').exists){identityConflict=true;throw Error('Text object identity already used; preserve original unknown');}
         if(request.command!=='text.object'||!source||(source.schema!==1&&source.schema!==3&&!(source.schema===2&&source.renderer==='list-v1'))||!prepared)throw Error('Invalid text object command');
         if(sha256('abc')!=='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')throw Error('SHA256 self-check failed');
         target(true);doc=app.activeDocument;anchor=doc.activeLayer;historyId=currentHistoryId();documentsBefore=documents();
@@ -676,9 +704,16 @@
         var label=property('color');colorType=label.getEnumerationType(s('color'));colorValue=label.getEnumerationValue(s('color'));
         if(metadata()!==prepared.before_xmp)throw Error('Text object metadata changed');
         if(prepared.before_text&&encode(rawText())!==encode(prepared.before_text))throw Error('Text source changed');
-        if(!preparingPdf&&prepared.before_render){
+        if(placingPdf&&(!request.rendered||!/^[0-9a-f]{64}$/.test(request.rendered.pdf_sha256)||
+           prepared.before_render&&request.rendered.original_sha256!==prepared.before_render))throw Error('Vector PDF digest missing');
+        if(prepared.before_render){
             var readbackStarted=new Date().getTime();
-            if(renderHash('before')!==prepared.before_render)throw Error('Vector content changed outside this tool; original object was not updated');
+            if(preparingPdf)exportRender('before');
+            else if(placingPdf){
+                var currentPdf=exportRender('before-current');
+                if(pdfBytes(currentPdf)!==pdfBytes(renderFile('before')))throw Error('Vector content changed outside this tool; original object was not updated');
+                if(!currentPdf.remove())throw Error('Cannot clean the current vector readback');
+            }else if(renderHash('before')!==prepared.before_render)throw Error('Vector content changed outside this tool; original object was not updated');
             nativeTimes.original_readback_ms=new Date().getTime()-readbackStarted;
         }
         if(prepared.kind==='text'){
