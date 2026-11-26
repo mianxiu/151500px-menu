@@ -532,12 +532,17 @@ class TextTools:
         if box:payload['box_size']=box
         if shift is not None:payload['box_shift_x']=shift
         payload['revision']=saved['revision'];payload=mapped_parameters(payload,split)
+        changed_list=None
+        if not split and not carried and params['operation']!='list' and result['value']!=saved['text'] and 'list_xmp' in saved:
+            changed_list=text_list.read(saved['list_xmp'])
         if params['operation']=='list' or carried:
             value=args['list_options'] if carried else (None if params['kind']=='remove' else {key:params[key] for key in text_list.KEYS})
             value=text_list.options(value)
             if 'list_xmp' not in saved:raise ValueError('列表保存需要正常重启PS加载UXP0.3.81')
             text_list.write(saved['list_xmp'],value)
             payload['list_options']=value
+        elif changed_list is not None:
+            payload['list_options']=changed_list
         identity=secrets.token_hex(16);self.plan=(identity,payload,'text.split' if split else 'text.replace')
         self.transient_plan=identity if transient else None
         response={key:result[key] for key in ('preview','value','count','changed','kind','characters','matches')}|{'plan_id':identity}

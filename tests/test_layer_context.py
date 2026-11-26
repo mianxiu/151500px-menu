@@ -148,6 +148,23 @@ class LayerContextTests(unittest.TestCase):
         self.assertEqual(d.input_focus.focus_changed.call_count,3)
         self.assertFalse(d.photoshop_foreground)
 
+    def test_native_mouse_activation_wakes_thumbnail_observer_before_ime(self):
+        d=Desktop('http://localhost',Mock())
+        d.gui=SimpleNamespace(GetForegroundWindow=Mock(side_effect=[42,42,17,17]))
+        d._is_photoshop=lambda hwnd:hwnd==42
+        d.foreground_changed=Mock()
+        d.layer_wake=Mock()
+        d.window_wake=Mock()
+        d.native=SimpleNamespace(stdout=[json.dumps({'type':'activation.foreground','foreground':hwnd})
+                                        for hwnd in (42,42,42,17)])
+        d._read_native_events()
+        # The queued event may lag a real focus change. The live foreground
+        # wakes both observers once on entry and once on exit.
+        self.assertEqual(d.layer_wake.set.call_count,2)
+        self.assertEqual(d.window_wake.set.call_count,2)
+        self.assertEqual(d.foreground_changed.call_count,2)
+        self.assertFalse(d.photoshop_foreground)
+
 if __name__=='__main__':unittest.main()
 
 class DocumentSortTargetTests(unittest.TestCase):

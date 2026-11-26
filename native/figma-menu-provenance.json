@@ -962,5 +962,10 @@
       }
     ],
     "runtime": "Compiled geometry only; same source drives fill, hit testing and spacing. No runtime asset loading."
+  },
+  "typeset_icon_rendering": {
+    "stroke_scale": 0.8,
+    "minimum_device_pixels": 1,
+    "scope": "Standalone typeset editor"
   }
 }

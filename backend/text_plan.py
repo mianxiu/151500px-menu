@@ -83,6 +83,23 @@ def line_ends(text,expression):
     return result
 
 
+_NUMBERED_LIST_MARKER=r'(?:[0-9]+\.)+[0-9]+\.?|[0-9]+[.)、]|\([0-9]+\)'
+_IMPORTED_LIST_MARKER=re.compile(
+    r'(?:[•●○◦■▪□–—✓✔*+\-]|'+_NUMBERED_LIST_MARKER+r'|[A-Za-z][.)]|[A-Za-z]{2,3}\)|[IVXLCDMivxlcdm]{2,15}\))[ \t]+'
+)
+_TAB_LIST_MARKER=re.compile(r'(?:'+_NUMBERED_LIST_MARKER+r'|[A-Za-z]{1,15}[.)]|[^\s])\t')
+
+
+def list_marker_end(text,start,end,*,imported=False):
+    marker=_TAB_LIST_MARKER.match(text,start,end)
+    if marker and (marker.end()-start>2 or unicodedata.category(text[start])[0] in ('P','S')):
+        return marker.end()
+    if imported:
+        marker=_IMPORTED_LIST_MARKER.match(text,start,end)
+        if marker:return marker.end()
+    return start
+
+
 def list_edits(text,params):
     counters=[0]*6;edits=[];count=0
     def number(n,style):
@@ -97,17 +114,9 @@ def list_edits(text,params):
                 times,n=divmod(n,value);result+=symbol*times
             return (result.lower() if style=='lower-roman' else result)+')'
         return '('+str(n)+')' if style=='parens' else str(n)+(')' if style=='right-paren' else '.')
-    pattern=re.compile(r'(?:[•●○◦■▪□–—✓✔*+\-]|(?:[0-9]+\.)+[0-9]+\.?|[0-9]+[.)、]|\([0-9]+\)|[A-Za-z]{1,3}[.)]|[IVXLCDMivxlcdm]{1,15}[.)])[ \t]+')
     for line in re.finditer(r'(?m)^[^\S\n]*\S[^\n]*',text):
         leading=re.match(r'[^\S\n]*',line[0])[0];start=line.start()+len(leading)
-        marker=pattern.match(text,start,line.end())
-        if not marker:
-            symbol=text[start:start+1]
-            if symbol and unicodedata.category(symbol)[0] in ('P','S'):
-                marker=re.match(re.escape(symbol)+r'[ \t]+',text[start:line.end()])
-                end=start+marker.end() if marker else start
-            else:end=start
-        else:end=marker.end()
+        end=list_marker_end(text,start,line.end(),imported=True)
         if not text[end:line.end()].strip():continue
         count+=1
         if params['kind']=='remove':

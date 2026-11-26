@@ -8,6 +8,42 @@ const functions = source.slice(source.indexOf('    function proofStep('), source
 const documentFileStamp = source.slice(source.indexOf('    function documentFileStamp('), source.indexOf('    function proofStamp('));
 const name = '151500px text acceptance ' + 'a'.repeat(32) + ' 72';
 
+{
+    const affineFrame = source.slice(source.indexOf('    function affineFrame('), source.indexOf('    function remapPdfFrame('));
+    const correction = source.slice(source.indexOf('    function correctReplacementSnap('), source.indexOf('    function replace('));
+    const expected = [104,77,284,77,284,166,104,166];
+    const shifted = [105,77,285,77,285,166,105,166];
+    const snapped = [], moved = [];
+    let refreshed = 0;
+    const geometry = vm.runInNewContext(affineFrame + correction + ';correctReplacementSnap', {
+        transformPdf: (...args) => snapped.push(args),
+        movePdf: (...args) => {assert.equal(refreshed, moved.length + 1);moved.push(args);return true;},
+        app: {refresh() {refreshed++;}}
+    });
+    assert.equal(geometry(shifted, expected), true);
+    assert.deepEqual(moved, [[-1, 0]]);
+    for (const other of [expected, shifted.map((v,i)=>i%2?v:v+1),
+        [105,77,286,77,286,166,105,166], [105,77,285,77,284,166,105,166]])
+        assert.equal(geometry(other,expected),false);
+    assert.equal(snapped.length, 0);
+    const rounded = [33,72,464,72,464,285,33,285];
+    const fractional = [32.56171,71.54532,463.97391,71.54532,463.97391,284.85468,32.56171,284.85468];
+    assert.equal(geometry(rounded,fractional),false);
+    const pixelSnap = vm.runInNewContext(affineFrame + correction + ';exactPixelSnap');
+    assert.equal(pixelSnap(rounded,fractional),true);
+    assert.equal(pixelSnap(shifted,expected),false);
+    assert.equal(pixelSnap(rounded.map((v,i)=>i%2?v:v+1),fractional),false);
+    const reported = [32,72,386,72,386,278,32,278];
+    const intended = [32.5617095718959,71.5453164556962,387.278409899019,71.5453164556962,
+        387.278409899019,277.664480159295,32.5617095718959,277.664480159295];
+    assert.equal(geometry(reported,intended),true);
+    assert.deepEqual(moved,[[-1,0],[1,0]]);
+    assert.equal(snapped.length,0);
+    assert.equal(pixelSnap(reported,intended),false);
+    assert.equal(geometry(reported.map((n,i)=>i%2?n:n-.25),intended),false);
+    assert.equal(geometry([32,72,385,72,385,278,32,278],intended),false);
+}
+
 const saveSourcePdf = source.slice(source.indexOf('    function saveSourcePdf('), source.indexOf('    function renderSource('));
 for (const failSave of [false, true]) {
     const layers = [{visible: true}, {visible: true}];
@@ -154,9 +190,11 @@ function failedPlacement({title = 'Vector text object', history = [41, 42, 43], 
     doc.activeHistoryState = {name: title};
     doc.activeLayer = {id: 12};
     doc.saved = false;
+    doc.channels = [1, 2, 3];
     if (otherDocument) ctx.app.activeDocument = {id: 8};
     Object.assign(ctx, {
-        placementTitle: 'Vector text object', placementBaseline: {histories: '[41,42]', saved: true}, updatedOriginal: false,
+        placementTitle: 'Vector text object', placementBaseline: {histories: '[41,42]', saved: true, channels: 3, selection: null},
+        canvasSelection: () => null, updatedOriginal: false,
         encode: JSON.stringify, prepared: {before_xmp: 'baseline'}, metadata: () => 'baseline', undos: 0
     });
     ctx.request.target = {active_layer_id: 9};
@@ -175,10 +213,16 @@ assert.equal(placed.undos, 1);
 const damagedContent = failedPlacement();
 damagedContent.updatedOriginal = true;
 damagedContent.prepared.before_render = 'expected';
-damagedContent.renderHash = suffix => {
+damagedContent.placingPdf = true;
+damagedContent.exportRender = suffix => {
     assert.equal(suffix, 'rollback');
-    return 'other';
+    return 'restored';
 };
+damagedContent.renderFile = suffix => {
+    assert.equal(suffix, 'before');
+    return 'staged';
+};
+damagedContent.pdfBytes = file => file;
 assert.throws(() => vm.runInContext(restorePlacement + 'restorePlacement()', damagedContent), /rollback content mismatch/);
 assert.equal(damagedContent.undos, 1);
 for (const options of [{title: 'Another operation'}, {history: [41, 42, 44, 43]}, {otherDocument: true}]) {

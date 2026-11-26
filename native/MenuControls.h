@@ -1,6 +1,15 @@
 // Shared Caps/tool surfaces and widgets; inherit the current PS palette.
 namespace MenuControls {
 enum class Emphasis {Accent,Neutral};
+inline bool fineIconLines=false;
+struct IconStyle {
+    bool previous;
+    explicit IconStyle(bool fine):previous(fineIconLines){fineIconLines=fine;}
+    ~IconStyle(){fineIconLines=previous;}
+};
+inline void drawControlIcon(ImDrawList* draw,int icon,ImVec2 position,float size,ImU32 ink,ImU32 surface){
+    drawStyledMenuIcon(draw,icon,position,size,ink,surface,fineIconLines);
+}
 inline void surface(ImDrawList* draw,ImVec2 a,ImVec2 b,float scale,bool shadow=true) {
     const auto rounding=ImGui::GetStyle().FrameRounding;
     if(shadow)menuShadow::draw(draw,a,b,rounding,scale);
@@ -251,7 +260,7 @@ inline void fieldIcon(const char* label,int icon,float scale,float gap=-1) {
     const float h=ImGui::GetFrameHeight(),glyph=figmaDisplayIconSize*scale;
     ImGui::Dummy({glyph,h});
     const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
-    drawStyledMenuIcon(ImGui::GetWindowDrawList(),icon,{a.x,a.y+(h-glyph)*.5f},glyph,
+    drawControlIcon(ImGui::GetWindowDrawList(),icon,{a.x,a.y+(h-glyph)*.5f},glyph,
         ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))tip(label,scale);
     ImGui::SameLine(0,gap);
@@ -284,7 +293,7 @@ inline bool iconButton(const char* label,int icon,float scale,bool compact=false
     surface(draw,a,b,scale,false);
     if(!disabled && (ImGui::IsItemHovered() || ImGui::IsItemActive()))segment(draw,a,b,true,true,true,scale);
     outline(draw,a,b,scale);
-    drawStyledMenuIcon(draw,icon,{a.x+inset,a.y+(h-glyph)*.5f},glyph,ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
+    drawControlIcon(draw,icon,{a.x+inset,a.y+(h-glyph)*.5f},glyph,ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),ImGui::GetColorU32(ImGuiCol_Button));
     ImGui::RenderNavCursor(ImRect(a,b),ImGui::GetItemID());
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))tip(label,scale);
     return clicked;
@@ -333,7 +342,7 @@ bool iconGroup(const char* id,float scale,bool fitContent,const ItemAt& itemAt,c
             segment(draw,at,itemEnd,left,right,!disabled && ((!seam && ImGui::IsItemHovered()) || item.selected),scale,false,fill);
             const float icon=figmaDisplayIconSize*scale;
             const auto ink=ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text);
-            drawStyledMenuIcon(draw,item.glyph,{at.x+(w-icon)*.5f,at.y+(h-icon)*.5f},icon,ink,ImGui::GetColorU32(ImGuiCol_Button));
+            drawControlIcon(draw,item.glyph,{at.x+(w-icon)*.5f,at.y+(h-icon)*.5f},icon,ink,ImGui::GetColorU32(ImGuiCol_Button));
             if(item.showLabel)draw->AddText({at.x+w,at.y+(h-ImGui::GetTextLineHeight())*.5f},ink,item.title);
             if(item.indeterminate){
                 const float markRight=itemEnd.x-menuCompactGap*scale,markY=itemEnd.y-menuCompactGap*scale;
@@ -376,7 +385,7 @@ inline bool resultRow(const char* id,int icon,const char* title,const char* deta
     const bool disabled=(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)!=0;
     if(!disabled && ImGui::IsItemHovered())draw->AddRectFilled(actionAt,{at.x+actionWidth,at.y+h},ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding);
     const auto ink=ImGui::GetColorU32(disabled?ImGuiCol_TextDisabled:ImGuiCol_Text),surface=ImGui::GetColorU32(ImGuiCol_Button);
-    drawStyledMenuIcon(draw,icon,{at.x+pad,at.y+(h-glyph)*.5f},glyph,ink,surface);
+    drawControlIcon(draw,icon,{at.x+pad,at.y+(h-glyph)*.5f},glyph,ink,surface);
     auto* secondary=menuFont(MenuTextRole::Secondary);auto* body=menuFont(MenuTextRole::Body);
     const float meta=std::min(secondary->CalcTextSizeA(secondary->LegacySize,FLT_MAX,0,detail).x,actionWidth*.3f),end=at.x+actionWidth-pad-meta;
     const ImVec4 clip={at.x+pad+glyph+pad,at.y,std::max(at.x+pad+glyph+pad,end-pad),at.y+h};
@@ -392,7 +401,7 @@ inline bool resultRow(const char* id,int icon,const char* title,const char* deta
         const bool opened=ImGui::InvisibleButton("##preview",{h,h},ImGuiButtonFlags_EnableNav);
         if(previewClick)*previewClick=opened && !disabled;
         if(!disabled && ImGui::IsItemHovered())draw->AddRectFilled(previewAnchor,{at.x+width,at.y+h},ImGui::GetColorU32(ImGuiCol_ButtonHovered),ImGui::GetStyle().FrameRounding);
-        drawStyledMenuIcon(draw,39,{previewAnchor.x+(h-glyph)*.5f,at.y+(h-glyph)*.5f},glyph,ink,surface);
+        drawControlIcon(draw,39,{previewAnchor.x+(h-glyph)*.5f,at.y+(h-glyph)*.5f},glyph,ink,surface);
         previewHover=!disabled && ImGui::IsItemHovered();
     }
     ImGui::SetCursorScreenPos(at);ImGui::Dummy({width,h});return clicked && !disabled;

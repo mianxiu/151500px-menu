@@ -3,6 +3,9 @@ from contextlib import ExitStack
 import hashlib
 import json
 from io import BytesIO
+import logging
+import secrets
+from threading import Event, Thread
 import time
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
@@ -58,6 +61,35 @@ def locked_pdf_digest(path, handles, expected_size=None):
     return hashlib.sha256(data).hexdigest()
 
 
+def _hash_placed_pdf(folder, identity, nonce, stop):
+    # Photoshop exports the placed content inside its existing undo step.
+    # The COM caller is blocked until that step returns, so hash on a separate
+    # local thread and hold the read-only file lease until COM exits.
+    request_id=identity['id']
+    request=folder/('text-object-hash-request-'+request_id+'.json')
+    response=folder/('text-object-hash-response-'+request_id+'.txt')
+    try:
+        while not stop.wait(.01):
+            if not request.is_file():continue
+            if request.stat().st_size>4096 or response.exists():return
+            value=json.loads(request.read_text('utf-8-sig'))
+            expected={**identity,'schema':1,'nonce':nonce}
+            size=value.get('size')
+            if (set(value)!=set(expected)|{'size'} or any(value[k]!=v for k,v in expected.items()) or
+                    type(size) is not int or not 100<=size<=16777216):
+                return
+            with ExitStack() as handles:
+                digest=locked_pdf_digest(folder/('text-object-render-'+request_id+'.pdf'),handles,size)
+                temporary=response.with_suffix('.tmp')
+                with temporary.open('x',encoding='ascii') as stream:
+                    stream.write(f'{request_id}|{nonce}|{size}|{digest}')
+                temporary.replace(response)
+                stop.wait()
+            return
+    except Exception as error:
+        logging.warning('Placed PDF digest worker request=%s error=%s',request_id,type(error).__name__)
+
+
 def invoke(application,folder,request,prepared,model,xmp):
     from pywintypes import error as WindowsFileError
 
@@ -109,4 +141,11 @@ def invoke(application,folder,request,prepared,model,xmp):
             atomic_json(folder/('legacy-result-'+request['id']+'.json'),rejected)
             return json.dumps(rejected)
         rendered['compact_ms']=round((time.monotonic()-start)*1000)
-        return run({**value,'render_stage':'place','rendered':rendered})
+        nonce=secrets.token_hex(16)
+        stop=Event()
+        worker=Thread(target=_hash_placed_pdf,args=(folder,identity,nonce,stop),name='photoshop-placed-pdf-digest',daemon=True)
+        worker.start()
+        try:return run({**value,'render_stage':'place','rendered':rendered,'native_hash_nonce':nonce})
+        finally:
+            stop.set()
+            worker.join()

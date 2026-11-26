@@ -1,6 +1,9 @@
 #include "MenuTextGroups.h"
 #include "FontSampleRaster.h"
 #include "FontSampleWork.h"
+#include "CanvasTransparency.h"
+#include "CanvasGlyphTarget.h"
+#include "CanvasViewTransform.h"
 #include "TextStyleDraft.h"
 #include <optional>
 #include <set>
@@ -35,11 +38,12 @@ struct MenuToolsPanel {
     bool scopeSupported=false,paragraphIndentsSupported=false,paragraphAlignmentSupported=false,extendedTypography=false,managedList=false;
     bool canvasAvailable=false,proofAvailable=false,objectProofAvailable=false,proofCurrent=false;
     bool isolatedProofAvailable=false;
-    bool canvasEditAvailable=false,canvasTextFrame=false,canvasTextActive=false,canvasWrap=true,canvasPanning=false,boxShiftSupported=false;
+    bool canvasTextFrame=false,canvasTextActive=false,canvasWrap=true,canvasPanning=false,boxShiftSupported=false;
     enum class CanvasState {idle,waiting,ready,limited,failed,stale};
     CanvasState canvasState=CanvasState::idle;
     std::string canvasMessage;
-    bool fallbackDraftActive=false,firstEditable=false;
+    bool fallbackDraftActive=false,firstEditable=false,imeComposing=false;
+    bool autoFocusPending=false;
     ULONGLONG openedAt=0;
     std::array<float,4> textBox{};
     std::array<float,2> sourceBoxSize{},draftBoxSize{};
@@ -51,6 +55,7 @@ struct MenuToolsPanel {
     float resizeStartOffset=0;
     bool trackedResize=false;
     float canvasEm=0;
+    float canvasSourceWidth=0,canvasSourceHeight=0;
     ImU32 canvasInk=0;
     std::string proofAttempt;
     int maxProofScale=1,wantedProofScale=1,sharpAttempt=1,sharpProofScale=1,pendingProofScale=1;
@@ -60,8 +65,10 @@ struct MenuToolsPanel {
     bool tableObject=false;
     std::vector<std::vector<std::string>> cells;
     std::vector<std::vector<std::string>> savedCells;
-    float canvasZoom=1;
+    float canvasZoom=1,canvasAngle=0;
     ImVec2 canvasPan{},panGestureStart{},panBefore{};
+    bool canvasZoomMode=false,canvasZoomDragging=false;
+    ImVec2 canvasZoomStart{};
     int styleScope=0,leadingMode=0,paragraphAlign=0,backgroundMode=0;
     inline static constexpr const char* alignmentKeys[]={"left","center","right","justifyLeft","justifyCenter","justifyRight","justifyAll"};
     inline static constexpr const char* enumKeys[]={"autoKern","fontCaps","baseline","underline","strikethrough","figureStyle",
@@ -147,11 +154,13 @@ struct MenuToolsPanel {
     bool viewDirty=false;
     double lastViewChange=0;
 
+    bool listParagraphsManaged()const{return draftListChanged?draftList.is_object():managedList;}
     void loadViewSettings(const Json& value) {
         backgroundMode=value.value("background",0);
         const auto rgb=value.value("rgb",std::array<float,3>{1,1,1});
         std::copy(rgb.begin(),rgb.end(),backgroundRgb);
-        canvasZoom=value.value("zoom",1.f);canvasPan={};
+        canvasZoom=value.value("zoom",1.f);canvasPan={};canvasAngle=0;
+        canvasZoomMode=canvasZoomDragging=false;
         const int scope=value.value("scope",0);
         scopeExplicit=scope!=0;styleScope=std::max(0,scope-1);
         editorStyleRange={-1,-1,-1,-1};
@@ -288,7 +297,7 @@ struct MenuToolsPanel {
             for(const auto& [key,value]:styleLibrary.at(rows[selected].second).at("values").items()){
                 if((key=="color" && !textRgb) || (eastAsianParagraphProperty(key) && !eastAsianParagraphSupported) ||
                    (paragraphProperty(key) && key!="spaceBefore" && key!="spaceAfter" &&
-                    ((!paragraphIndentsSupported && key!="align") || !paragraphAlignmentSupported || managedList)))continue;
+                    ((!paragraphIndentsSupported && key!="align") || !paragraphAlignmentSupported || listParagraphsManaged())))continue;
                 stageStyle(key.c_str(),value,false);
             }
             editorStyleRange={-1,-1,-1,-1};
@@ -429,6 +438,8 @@ struct MenuToolsPanel {
     }
     int listMarker=0,listNumbering=0,indentCommand=0,selectionStart=0,selectionEnd=0,lastSelectionStart=0,lastSelectionEnd=0,cursorPos=0,draftBufferId=0;
     bool restoreDraftFocus=false;
+    bool showCanvasSource=false;
+    bool editingCanvasResult=false;
     int textTab=0,replaceMode=0,caseMode=0,tidyMode=0,listMode=0,splitMode=0,splitLayout=0,draftGeneration=0,previewGeneration=0,resultCount=0;
     std::string pendingAction,planId,resultValue,resultPreview,resultKind;
     std::vector<int> resultDraftOrigins;
@@ -509,6 +520,11 @@ struct MenuToolsPanel {
         positions.push_back(int(value.size())+1);
         return positions;
     }
+    int mapResultByte(int byte,const std::vector<int>& before,const std::vector<int>& after)const{
+        const auto unit=std::lower_bound(before.begin(),before.end(),byte)-before.begin();
+        const auto mapped=std::lower_bound(resultDraftOrigins.begin(),resultDraftOrigins.end(),unit)-resultDraftOrigins.begin();
+        return after[mapped];
+    }
     bool hasStyles()const{return (scopedStyles?!styleDraft.edits.empty():!styleChanges().empty()) || !kerningEdits.empty() || sourceBoxSize!=draftBoxSize || draftBoxOffset!=0;}
     static int draftCallback(ImGuiInputTextCallbackData* data) {
         auto& panel=*static_cast<MenuToolsPanel*>(data->UserData);
@@ -540,9 +556,10 @@ struct MenuToolsPanel {
         panel.selectionStart=data->SelectionStart;panel.selectionEnd=data->SelectionEnd;panel.cursorPos=data->CursorPos;
         return 0;
     }
-    bool textDue(double now)const{return textDirty && active && ready && !pending && !resizeHandle && !revision.empty() && canvasState!=CanvasState::stale && !kerningFieldInvalid && (kerningEdits.empty() || textTab==0) && (textTab!=1 || find[0]) && (textTab!=3 || splitMode==0 || separator[0]) && now-textChanged>=.12;}
+    bool textDue(double now)const{return textDirty && active && ready && !pending && !resizeHandle && !revision.empty() && canvasState!=CanvasState::stale && !kerningFieldInvalid && (kerningEdits.empty() || textTab==0) && (textTab!=1 || find[0] || editingCanvasResult) && (textTab!=3 || splitMode==0 || separator[0]) && now-textChanged>=.12;}
     bool canWriteText()const{return !pending && !revision.empty() && canvasState!=CanvasState::stale && !kerningFieldInvalid && invalidComposition.empty() && draft[0];}
-    static bool composingText(){
+    bool composingText()const{
+        if(imeComposing)return true;
         const auto focused=GetFocus();
         if(!focused)return false;
         const auto context=ImmGetContext(focused);
@@ -565,8 +582,8 @@ struct MenuToolsPanel {
     }
     Json textParams()const {
         Json args={{"revision",revision},{"draft",draft},{"operation","edit"}};
-        if(textTab==1){args["operation"]="replace";args["find"]=find;args["replacement"]=replacement;args["regex"]=replaceMode==1;args["ignore_case"]=caseMode==1;}
-        if(textTab==2){const char* operations[]={"trim","remove-empty","space","join","upper","lower"};args["operation"]=operations[tidyMode];if(tidyMode==3)args["separator"]=joiner;}
+        if(textTab==1 && !editingCanvasResult){args["operation"]="replace";args["find"]=find;args["replacement"]=replacement;args["regex"]=replaceMode==1;args["ignore_case"]=caseMode==1;}
+        if(textTab==2 && !editingCanvasResult){const char* operations[]={"trim","remove-empty","space","join","upper","lower"};args["operation"]=operations[tidyMode];if(tidyMode==3)args["separator"]=joiner;}
         if(textTab==3){const char* modes[]={"lines","literal","regex"};args["operation"]="split";args["mode"]=modes[splitMode];args["groups"]=grouping[0]?std::string(grouping):menuDefaultGroups(draft);args["separator"]=separator;args["layout"]=splitLayout==0?"original":"lines";}
         if(textTab==4){args["operation"]="list";args["kind"]=listKinds[listMode];args["marker"]=listMarkers[listMarker];args["custom_marker"]=listMarker==6?listCustom:"";args["numbering"]=listStyles[listNumbering];args["start"]=listMode==1?listStart:"1";}
         else if(textTab!=3 && draftListChanged)args["list_options"]=draftList;
@@ -594,9 +611,11 @@ struct MenuToolsPanel {
     ID3D11ShaderResourceView* thumbnail=nullptr;
     ID3D11ShaderResourceView* proofImage=nullptr;
     ID3D11ShaderResourceView* sharpProofImage=nullptr;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> localDraft;
-    int localDraftGeneration=-1,localDraftWidth=0,localDraftHeight=0;
-    float localDraftEm=0;
+    CanvasTransparency transparency;
+    int localDraftGeneration=-1;
+    std::string localLayoutPlan;
+    float localDraftWidth=0,localDraftHeight=0,localDraftEm=0;
+    bool localDraftReady=false;
     std::vector<FontSampleRaster::DraftLayout> localLayout;
     int canvasSelectionAnchor=0,canvasPickedByte=0;
     bool canvasPicking=false,pickFromLayout=false;
@@ -636,29 +655,43 @@ struct MenuToolsPanel {
         if(length)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),result.data(),length);
         return result;
     }
-    bool renderLocalDraft(float width,float height,float em){
-        if(!scopedStyles)return false;
-        const float ratio=std::min({1.f,1800.f/width,1800.f/height});
-        const int w=int(std::ceil(width*ratio)),h=int(std::ceil(height*ratio));
-        if(localDraftGeneration==draftGeneration && w==localDraftWidth && h==localDraftHeight && localDraftEm==em)return bool(localDraft);
-        localDraftGeneration=draftGeneration;localDraftWidth=w;localDraftHeight=h;localDraftEm=em;localDraft.Reset();
+    bool layoutLocalDraft(float width,float height,float em,bool processed=false){
+        auto* painter=scopedStyles?canvasGlyphTarget.prepare(device):nullptr;
+        if(!painter)return false;
+        const std::string_view plan=processed?std::string_view(planId):std::string_view{};
+        if(localDraftGeneration==draftGeneration && std::string_view(localLayoutPlan)==plan && width==localDraftWidth && height==localDraftHeight && localDraftEm==em)
+            return localDraftReady;
+        localDraftGeneration=draftGeneration;localDraftWidth=width;localDraftHeight=height;localDraftEm=em;
+        localLayoutPlan=plan;
+        const std::string_view text=processed?std::string_view(resultValue):std::string_view(draft);
+        const auto positions=textUnitPositions(text);
+        const auto unitsAt=[&](int byte){return int(std::lower_bound(positions.begin(),positions.end(),byte)-positions.begin());};
+        TextStyleDraft resultStyles;
+        const auto* styles=&styleDraft;
+        if(processed && !resultDraftOrigins.empty()){
+            const auto before=textUnitPositions(draft);
+            resultStyles=styleDraft;
+            resultStyles.remap([&](int byte,bool){return mapResultByte(byte,before,positions);});
+            styles=&resultStyles;
+        }
+        const bool listed=processed && textTab==4?listMode!=2:listParagraphsManaged();
         std::vector<FontSampleRaster::DraftParagraph> paragraphs;
-        const int length=int(std::strlen(draft));
+        const int length=int(text.size());
         const auto number=[](const std::string& text,float fallback){
             char* end=nullptr;const float n=std::strtof(text.c_str(),&end);
             return end==text.c_str() || *end || !std::isfinite(n)?fallback:n;
         };
         const auto at=[&](const char* key,int byte,bool edited=true){
-            return styleDraft.current(key,{byte,byte},displayStyle,edited);
+            return styles->current(key,{byte,byte},displayStyle,edited);
         };
-        const float point=em*ratio/std::max(1.f,number(at("size",0,false),12.f));
+        const float point=em/std::max(1.f,number(styleDraft.current("size",{0,0},displayStyle,false),12.f));
         const auto hover=activeStyleRange(false);
         std::vector<int> breaks{0,length};
-        for(const auto* map:{&styleDraft.source,&styleDraft.edits})for(const auto& [key,runs]:*map){
+        for(const auto* map:{&styles->source,&styles->edits})for(const auto& [key,runs]:*map){
             if(paragraphProperty(key))continue;
             for(const auto& run:runs){breaks.push_back(std::min(length,run.first));breaks.push_back(std::min(length,run.last));}
         }
-        if(!fontPreview.empty()){breaks.push_back(hover[0]);breaks.push_back(std::min(length,hover[1]));}
+        if(!processed && !fontPreview.empty()){breaks.push_back(hover[0]);breaks.push_back(std::min(length,hover[1]));}
         std::sort(breaks.begin(),breaks.end());breaks.erase(std::unique(breaks.begin(),breaks.end()),breaks.end());
         struct Feature {const char* key;DWRITE_FONT_FEATURE_TAG tag;};
         static constexpr Feature features[]={
@@ -668,9 +701,9 @@ struct MenuToolsPanel {
             {"fractions",DWRITE_FONT_FEATURE_TAG_FRACTIONS},{"ordinals",DWRITE_FONT_FEATURE_TAG_ORDINALS},
         };
         for(int first=0;first<=length;){
-            int last=first;while(last<length && draft[last]!='\n')++last;
+            int last=first;while(last<length && text[last]!='\n')++last;
             FontSampleRaster::DraftParagraph paragraph;
-            paragraph.text=wideText(std::string_view(draft+first,last-first));
+            paragraph.text=wideText(text.substr(first,last-first));
             paragraph.left=number(at("startIndent",first),0)*point;
             paragraph.right=number(at("endIndent",first),0)*point;
             paragraph.first=number(at("firstLineIndent",first),0)*point;
@@ -680,15 +713,25 @@ struct MenuToolsPanel {
             if(align=="居中")paragraph.align=DWRITE_TEXT_ALIGNMENT_CENTER;
             else if(align=="右对齐")paragraph.align=DWRITE_TEXT_ALIGNMENT_TRAILING;
             else if(align.find("两端对齐")!=std::string::npos)paragraph.align=DWRITE_TEXT_ALIGNMENT_JUSTIFIED;
-            const int firstUnit=draftUnits(first);
+            if(listed && paragraph.align==DWRITE_TEXT_ALIGNMENT_LEADING){
+                const auto leading=paragraph.text.find_first_not_of(L" \t");
+                const auto delimiter=paragraph.text.find_first_of(L" \t",leading);
+                if(delimiter!=std::wstring::npos && delimiter-leading<=32 &&
+                   paragraph.text[delimiter]==L'\t' && delimiter+1<paragraph.text.size()){
+                    paragraph.markerEnd=UINT32(delimiter+1);
+                    paragraph.listLevel=std::min<size_t>(5,(leading+3)/4);
+                }
+            }
+            const int firstUnit=unitsAt(first);
             for(int offset=first;offset<last;){
                 const int end=std::min(last,*std::upper_bound(breaks.begin(),breaks.end(),offset));
                 unsigned int rgb=0;
                 const auto color=at("color",offset);
                 if(color.size()==7 && color[0]=='#')std::sscanf(color.c_str(),"#%x",&rgb);
-                const auto font=!fontPreview.empty() && offset>=hover[0] && offset<hover[1]?fontPreview:at("fontPostScriptName",offset);
-                const float size=std::clamp(number(at("size",offset),12.f)*point,1.f,768.f);
-                FontSampleRaster::DraftRun run{{UINT32(draftUnits(offset)-firstUnit),UINT32(draftUnits(end)-draftUnits(offset))},
+                const auto font=!processed && !fontPreview.empty() && offset>=hover[0] && offset<hover[1]?fontPreview:at("fontPostScriptName",offset);
+                const float size=std::clamp(number(at("size",offset),12.f)*point,.01f,65536.f);
+                const int unit=unitsAt(offset);
+                FontSampleRaster::DraftRun run{{UINT32(unit-firstUnit),UINT32(unitsAt(end)-unit)},
                     wideText(font),size,number(at("tracking",offset),0)*size/1000,
                     {float((rgb>>16)&255)/255,float((rgb>>8)&255)/255,float(rgb&255)/255},
                     at("syntheticBold",offset)=="开启",at("syntheticItalic",offset)=="开启",
@@ -711,19 +754,19 @@ struct MenuToolsPanel {
             if(last==length)break;
             first=last+1;
         }
-        std::vector<unsigned char> pixels;
-        return fontRaster.renderDraft(paragraphs,w,h,em*ratio,canvasWrap,pixels,localLayout) &&
-            loadPixels(w,h,pixels.data(),localDraft.GetAddressOf());
+        return localDraftReady=fontRaster.layoutDraft(paragraphs,width,height,em,canvasWrap,*painter,localLayout);
     }
-    int canvasByteAt(ImVec2 point)const{
+    int canvasByteAt(ImVec2 point,std::string_view text)const{
         const auto row=std::lower_bound(localLayout.begin(),localLayout.end(),point.y,
-            [](const auto& para,float y){return para.y+para.height<y;});
-        if(row==localLayout.end())return int(std::strlen(draft));
+            [](const auto& para,float y){return para.bottom<y;});
+        if(row==localLayout.end())return int(text.size());
+        const auto& span=row->marker.text && point.y<=row->firstLineBottom && point.x<row->x?
+            row->marker:static_cast<const FontSampleRaster::DraftFragment&>(*row);
         DWRITE_HIT_TEST_METRICS hit{};BOOL trailing=FALSE,inside=FALSE;
-        if(FAILED(row->text->HitTestPoint(point.x-row->x,point.y-row->y,&trailing,&inside,&hit)))return cursorPos;
-        const auto unit=row->start+std::min(row->length,hit.textPosition+(trailing?hit.length:0));
-        const char* const end=draft+std::strlen(draft);
-        const char* byte=draft;
+        if(FAILED(span.text->HitTestPoint(point.x-span.x,point.y-span.y,&trailing,&inside,&hit)))return cursorPos;
+        const auto unit=span.start+std::min(span.length,hit.textPosition+(trailing?hit.length:0));
+        const char* const end=text.data()+text.size();
+        const char* byte=text.data();
         for(UINT32 next=0;next<unit && byte<end;){
             unsigned int ch=0;
             const int consumed=ImTextCharFromUtf8(&ch,byte,end);
@@ -731,41 +774,97 @@ struct MenuToolsPanel {
             if(!consumed || next>unit)break;
             byte+=consumed;
         }
-        return int(byte-draft);
+        return int(byte-text.data());
     }
-    void drawCanvasSelection(ImDrawList& draw,ImVec2 at,ImVec2 factor,ImU32 ink,bool focus){
+    int canvasByteAt(ImVec2 point)const{return canvasByteAt(point,draft);}
+    void drawCanvasSelection(ImDrawList& draw,const CanvasViewTransform& view,ImVec2 at,ImVec2 factor,ImU32 ink,bool focus){
         const UINT32 lo=draftUnits(std::min(selectionStart,selectionEnd)),hi=draftUnits(std::max(selectionStart,selectionEnd));
         const auto transform=[&](float x,float y){return ImVec2{at.x+x*factor.x,at.y+y*factor.y};};
         if(focus && hi>lo){
             const auto background=ImGui::GetColorU32(ImGuiCol_TextSelectedBg);
-            for(const auto& para:localLayout){
-                const UINT32 first=std::max(lo,para.start),last=std::min(hi,para.start+para.length);
+            for(const auto& para:localLayout)for(const auto* fragment:{
+                static_cast<const FontSampleRaster::DraftFragment*>(&para),&para.marker}){
+                const auto& span=*fragment;
+                const UINT32 first=std::max(lo,span.start),last=std::min(hi,span.start+span.length);
                 if(first>=last)continue;
                 UINT32 count=0;
-                para.text->HitTestTextRange(first-para.start,last-first,para.x,para.y,nullptr,0,&count);
+                span.text->HitTestTextRange(first-span.start,last-first,span.x,span.y,nullptr,0,&count);
                 std::vector<DWRITE_HIT_TEST_METRICS> boxes(count);
-                if(SUCCEEDED(para.text->HitTestTextRange(first-para.start,last-first,para.x,para.y,boxes.data(),count,&count)))
-                    for(const auto& box:boxes)draw.AddRectFilled(transform(box.left,box.top),transform(box.left+box.width,box.top+box.height),background);
+                if(SUCCEEDED(span.text->HitTestTextRange(first-span.start,last-first,span.x,span.y,boxes.data(),count,&count)))
+                    for(const auto& box:boxes){
+                        const ImRect clipped({std::max(0.f,box.left),std::max(0.f,box.top)},
+                            {std::min(localDraftWidth,box.left+box.width),std::min(localDraftHeight,box.top+box.height)});
+                        if(clipped.Min.x>=clipped.Max.x || clipped.Min.y>=clipped.Max.y)continue;
+                        const auto points=view.quad(transform(clipped.Min.x,clipped.Min.y),transform(clipped.Max.x,clipped.Max.y));
+                        draw.AddQuadFilled(points[0],points[1],points[2],points[3],background);
+                    }
             }
         }
-        const ImVec2 end=transform(float(localDraftWidth),float(localDraftHeight));
-        draw.AddImage((ImTextureID)(intptr_t)localDraft.Get(),at,end);
+        struct GlyphDraw {
+            const std::vector<FontSampleRaster::DraftLayout>* paragraphs;
+            ImVec2 at,right,down;
+            float width,height;
+        };
+        const auto origin=view.apply(at),right=view.apply({at.x+factor.x,at.y}),down=view.apply({at.x,at.y+factor.y});
+        GlyphDraw glyphs{&localLayout,origin,{right.x-origin.x,right.y-origin.y},{down.x-origin.x,down.y-origin.y},
+            localDraftWidth,localDraftHeight};
+        draw.AddCallback([](const ImDrawList*,const ImDrawCmd* command){
+            const auto& glyphs=*static_cast<const GlyphDraw*>(command->UserCallbackData);
+            const auto& data=*ImGui::GetDrawData();
+            const auto* state=static_cast<ImGui_ImplDX11_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+            auto* gpu=state->DeviceContext;
+            Microsoft::WRL::ComPtr<ID3D11RenderTargetView> view;
+            gpu->OMGetRenderTargets(1,view.GetAddressOf(),nullptr);
+            gpu->OMSetRenderTargets(0,nullptr,nullptr);
+            if(auto* painter=canvasGlyphTarget.prepare(state->Device);painter && canvasGlyphTarget.bind(view.Get())){
+                const auto scale=data.FramebufferScale;
+                const auto screen=[&](float x,float y){return D2D1::Point2F((x-data.DisplayPos.x)*scale.x,(y-data.DisplayPos.y)*scale.y);};
+                const auto min=screen(command->ClipRect.x,command->ClipRect.y),max=screen(command->ClipRect.z,command->ClipRect.w);
+                const auto origin=screen(glyphs.at.x,glyphs.at.y);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ink;
+                if(min.x<max.x && min.y<max.y && SUCCEEDED(painter->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black),ink.GetAddressOf()))){
+                    painter->BeginDraw();
+                    painter->SetTransform(D2D1::Matrix3x2F::Identity());
+                    painter->PushAxisAlignedClip(D2D1::RectF(min.x,min.y,max.x,max.y),D2D1_ANTIALIAS_MODE_ALIASED);
+                    painter->SetTransform(D2D1::Matrix3x2F(glyphs.right.x*scale.x,glyphs.right.y*scale.y,
+                        glyphs.down.x*scale.x,glyphs.down.y*scale.y,origin.x,origin.y));
+                    Microsoft::WRL::ComPtr<ID2D1Factory> factory;
+                    Microsoft::WRL::ComPtr<ID2D1RectangleGeometry> box;
+                    painter->GetFactory(factory.GetAddressOf());
+                    const auto layoutBounds=D2D1::RectF(0,0,glyphs.width,glyphs.height);
+                    const bool masked=SUCCEEDED(factory->CreateRectangleGeometry(layoutBounds,box.GetAddressOf()));
+                    if(masked)painter->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),box.Get()),nullptr);
+                    for(const auto& paragraph:*glyphs.paragraphs){
+                        const auto& marker=paragraph.marker;
+                        if(marker.text)painter->DrawTextLayout({marker.x,marker.y},marker.text.Get(),ink.Get(),D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+                        painter->DrawTextLayout({paragraph.x,paragraph.y},paragraph.text.Get(),ink.Get(),D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+                    }
+                    if(masked)painter->PopLayer();
+                    painter->PopAxisAlignedClip();
+                    if(FAILED(painter->EndDraw()))canvasGlyphTarget.detach();
+                }
+            }
+            gpu->OMSetRenderTargets(1,view.GetAddressOf(),nullptr);
+        },&glyphs,sizeof(glyphs));
+        draw.AddCallback(ImDrawCallback_ResetRenderState,nullptr);
         if(!focus)return;
         const UINT32 unit=draftUnits(cursorPos);
         const auto row=std::lower_bound(localLayout.begin(),localLayout.end(),unit,
             [](const auto& para,UINT32 at){return para.start+para.length<at;});
         if(row==localLayout.end())return;
-        const auto pos=unit-row->start;
-        const bool trailing=pos && pos==row->length;
+        const auto& span=row->marker.text && unit<row->start?row->marker:static_cast<const FontSampleRaster::DraftFragment&>(*row);
+        const auto pos=unit-span.start;
+        const bool trailing=pos && pos==span.length;
         float x=0,y=0;DWRITE_HIT_TEST_METRICS hit{};
-        if(FAILED(row->text->HitTestTextPosition(pos-(trailing?1:0),trailing,&x,&y,&hit)))return;
-        const auto top=transform(row->x+x,row->y+y),bottom=transform(row->x+x,row->y+y+hit.height);
+        if(FAILED(span.text->HitTestTextPosition(pos-(trailing?1:0),trailing,&x,&y,&hit)))return;
+        const auto top=view.apply(transform(span.x+x,span.y+y)),bottom=view.apply(transform(span.x+x,span.y+y+hit.height));
         const auto& state=GImGui->InputTextState;
         if(!ImGui::GetIO().ConfigInputTextCursorBlink || state.CursorAnim<=0 || std::fmod(state.CursorAnim,1.2f)<=.8f)
             draw.AddLine(top,bottom,ink);
         if(GImGui->PlatformImeData.WantTextInput){
-            GImGui->PlatformImeData.InputPos={std::clamp(top.x,at.x,end.x),std::clamp(top.y,at.y,end.y)};
-            GImGui->PlatformImeData.InputLineHeight=bottom.y-top.y;
+            const auto min=draw.GetClipRectMin(),max=draw.GetClipRectMax();
+            GImGui->PlatformImeData.InputPos={std::clamp(top.x,min.x,max.x),std::clamp(top.y,min.y,max.y)};
+            GImGui->PlatformImeData.InputLineHeight=hit.height*factor.y;
         }
     }
     bool loadProofPixels(BYTE* bytes,DWORD length,int width,int height,ID3D11ShaderResourceView** image){
@@ -852,6 +951,41 @@ struct MenuToolsPanel {
         if(edge&windowTop)bounds.top=std::clamp(bounds.top+delta.y,limit.top,std::max(limit.top,bounds.bottom-minimum.cy));
         if(edge&windowBottom)bounds.bottom=std::clamp(bounds.bottom+delta.y,std::min(limit.bottom,bounds.top+minimum.cy),limit.bottom);
         return bounds;
+    }
+    ImGuiMouseCursor canvasCursor=ImGuiMouseCursor_None;
+    bool nativeCanvasCursor=false;
+    static HCURSOR canvasCursorHandle(ImGuiMouseCursor cursor){
+        switch(cursor){
+        case ImGuiMouseCursor_ResizeEW:return LoadCursorW(nullptr,IDC_SIZEWE);
+        case ImGuiMouseCursor_ResizeNS:return LoadCursorW(nullptr,IDC_SIZENS);
+        case ImGuiMouseCursor_ResizeNWSE:return LoadCursorW(nullptr,IDC_SIZENWSE);
+        case ImGuiMouseCursor_ResizeNESW:return LoadCursorW(nullptr,IDC_SIZENESW);
+        case ImGuiMouseCursor_ResizeAll:return LoadCursorW(nullptr,IDC_SIZEALL);
+        default:return nullptr;
+        }
+    }
+    bool applyCanvasCursor(HWND hwnd){
+        if(!active || mode!="typeset" || !IsWindowVisible(hwnd) || (!nativeCanvasCursor && canvasCursor==ImGuiMouseCursor_None))return false;
+        const HWND foreground=GetForegroundWindow();
+        const HWND owner=GetWindow(hwnd,GW_OWNER);
+        POINT pointer{};RECT bounds{};
+        if((foreground!=hwnd && (!owner || !IsWindowEnabled(owner) ||
+           (foreground!=owner && GetAncestor(foreground,GA_ROOTOWNER)!=owner))) || !GetCursorPos(&pointer) ||
+           (WindowFromPoint(pointer)!=hwnd && !(GetCapture()==hwnd && (resizeHandle || canvasZoomDragging)))){
+            nativeCanvasCursor=false;
+            return false;
+        }
+        const float dpi=ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
+        if(windowResize || (!maximized && !resizeHandle && GetWindowRect(hwnd,&bounds) &&
+           windowEdges(typesetFrame(bounds,dpi),pointer,std::max(1L,std::lround(5*dpi))))){
+            nativeCanvasCursor=false;
+            return false;
+        }
+        const HCURSOR cursor=canvasCursorHandle(canvasCursor);
+        if(!cursor && !nativeCanvasCursor)return false;
+        SetCursor(cursor?cursor:LoadCursorW(nullptr,IDC_ARROW));
+        nativeCanvasCursor=cursor!=nullptr;
+        return true;
     }
     bool windowResizeMessage(HWND hwnd,UINT message,WPARAM wp){
         if(message==WM_CAPTURECHANGED){windowResize=0;return false;}
@@ -998,8 +1132,12 @@ struct MenuToolsPanel {
             for(const auto& row:results.at("items")){requireText(row.at("name"));requireText(row.at("document_name"));}
         } else if(action=="text.read") {
             traceTypeset("text-received");
+            autoFocusPending=mode=="typeset" && revision.empty();
+            showCanvasSource=editingCanvasResult=false;
             clearPreview();
             canvasState=CanvasState::idle;canvasMessage.clear();fallbackDraftActive=false;
+            canvasSourceWidth=canvasSourceHeight=0;
+            fontRaster.setPhotoshopOwner(GetWindow(window,GW_OWNER));
             vectorObject=result.value("vector_object",false);
             clearProof();proofAvailable=result.value("proof_available",false);
             objectProofAvailable=result.value("object_proof",false);proofAttempt.clear();
@@ -1015,13 +1153,13 @@ struct MenuToolsPanel {
                           && uint64_t(width)*height*(maxProofScale+1)*(maxProofScale+1)<=16777216)++maxProofScale;
                 }
             }
-            canvasEditAvailable=result.value("canvas_edit_available",false);
             canvasTextFrame=canvasTextActive=false;
             const auto boxSize=result.value("box_size",Json(nullptr));
             sourceBoxSize=draftBoxSize=boxSize.is_array()?boxSize.get<std::array<float,2>>():std::array<float,2>{};draftBoxOffset=0;
             boxShiftSupported=result.value("box_shift_supported",false);
             objectTextFrame=result.value("object_text_frame",Json(nullptr));resizeHandle=0;
             tableObject=result.contains("table");
+            if(tableObject)autoFocusPending=false;
             if(tableObject){
                 cells=result.at("table").get<decltype(cells)>();
                 for(const auto& row:cells)for(const auto& cell:row)requireText(cell);
@@ -1052,7 +1190,7 @@ struct MenuToolsPanel {
             for(int i=0;i<3;++i)textRgbOriginal[i]=textRgbDraft[i]=((rgb>>(16-8*i))&255)/255.f;
             paragraphAlignmentSupported=result.value("paragraph_alignment_supported",false);
             leadingMode=paragraphAlign=0;
-            managedList=result.contains("list_options");
+            managedList=result.value("list_options",Json(nullptr)).is_object();
             canvasAvailable=result.value("canvas_available",false);
             if((textTab==5 || textTab==7) && !sourceStyles.is_object())textTab=0;
             source=result.at("text").get<std::string>();sourceDisplay=source;std::replace(sourceDisplay.begin(),sourceDisplay.end(),'\r','\n');
@@ -1081,6 +1219,8 @@ struct MenuToolsPanel {
             }
             else{
                 canvasState=CanvasState::ready;canvasMessage.clear();traceTypeset("background-received");
+                canvasSourceWidth=result.value("source_width",0.f);
+                canvasSourceHeight=result.value("source_height",0.f);
                 const auto frame=objectTextFrame.is_object()?objectTextFrame:result.value("text_frame",Json(nullptr));
                 canvasTextFrame=frame.is_object();
                 if(canvasTextFrame){
@@ -1167,7 +1307,7 @@ struct MenuToolsPanel {
     void requestCanvas(){
         if(pending || revision.empty() || canvasState==CanvasState::stale)return;
         canvasState=CanvasState::waiting;canvasMessage.clear();
-        submit("text.canvas",Json{{"revision",revision},{"background",!tableObject && (canvasEditAvailable || !canvasAvailable)}});
+        submit("text.canvas",Json{{"revision",revision},{"background",!tableObject}});
     }
     bool draftInCanvas()const{
         return mode=="typeset" && textTab!=6 && !revision.empty() && (!thumbnail || fallbackDraftActive);
@@ -1544,7 +1684,7 @@ struct MenuToolsPanel {
             }
         }
         if(section("段落",false,true)){
-            const bool paragraphEditable=!managedList && textTab!=4;
+            const bool paragraphEditable=!listParagraphsManaged() && textTab!=4;
             const bool canAlign=extendedTypography && paragraphAlignmentSupported && paragraphEditable;
             const bool canHyphenate=advancedTypography && paragraphIndentsSupported && paragraphEditable;
             if(flat || canAlign){
@@ -1579,7 +1719,7 @@ struct MenuToolsPanel {
                 ImGui::EndDisabled();
             }
         }
-        if(scopedStyles && paragraphIndentsSupported && !managedList && textTab!=4 &&
+        if(scopedStyles && paragraphIndentsSupported && !listParagraphsManaged() && textTab!=4 &&
            MenuControls::section("高级段落排版",false)){
             const auto choice=[&](const char* key,const char* title,const char* const (&values)[3]){
                 const auto value=currentStyleOverride(key);
@@ -1677,10 +1817,11 @@ struct MenuToolsPanel {
     bool needsTableProof()const{
         return mode=="typeset" && objectProofAvailable && (!tableObject || cells!=savedCells || wantedProofScale>1 || backgroundMode);
     }
-    bool showTextResult()const{
-        return !editingOnCanvas() || (textTab>=1 && textTab<=4);
-    }
-    void continueTextResult(){
+    bool usesCanvasResult()const{return mode=="typeset" && textTab>=1 && textTab<=4;}
+    bool showsCanvasResult()const{return usesCanvasResult() && !showCanvasSource && !editingCanvasResult && !planId.empty() &&
+        (textTab==3?resultKind=="split":resultKind=="replace") &&
+        (!(canvasTextActive || fallbackDraftActive) || !composingText());}
+    void continueTextResult(bool keepTool=false){
         checkpointDraft();
         if(textTab==4){
             const auto params=textParams();
@@ -1692,20 +1833,21 @@ struct MenuToolsPanel {
             draftListChanged=true;
         }
         const auto value=resultValue;
+        int caret=0,first=0,last=0;
         if(!resultDraftOrigins.empty()){
             const auto before=textUnitPositions(draft),after=textUnitPositions(value);
-            const auto remap=[&](int byte,bool){
-                const auto unit=std::lower_bound(before.begin(),before.end(),byte)-before.begin();
-                const auto mapped=std::lower_bound(resultDraftOrigins.begin(),resultDraftOrigins.end(),unit)-resultDraftOrigins.begin();
-                return after[mapped];
-            };
+            const auto remap=[&](int byte,bool){return mapResultByte(byte,before,after);};
+            caret=remap(cursorPos,false);first=remap(selectionStart,false);last=remap(selectionEnd,true);
             if(scopedStyles){
                 styleDraft.remap(remap);nextCharacterStyles.clear();nextCharacterAt=-1;
                 editorStyleRange={-1,-1,-1,-1};
             }else if(styleBytes[0]>=0){styleBytes={remap(styleBytes[0],false),remap(styleBytes[1],true)};}
             styleAnchor=value;
         }
-        setDraft(value);textTab=0;
+        setDraft(value);if(!keepTool)textTab=0;
+        editingCanvasResult=keepTool;
+        cursorPos=caret;selectionStart=first;selectionEnd=last;
+        restoreDraftFocus=true;
     }
     void drawTypesetAction(float scale,bool available,bool alignRight=false){
         if(revision.empty())return;
@@ -1744,11 +1886,13 @@ struct MenuToolsPanel {
         const char* styleTabs[]={"编辑","查找替换","整理","拆分","列表","排版"};
         if(mode=="typeset"){
             if(!tableObject){
-                const char* choices[]={"编辑","查找替换","整理","拆分","列表","表格"};
-                const int glyphs[]={36,80,81,82,83,86};
-                int tab=textTab==6?5:textTab;
+                const char* choices[]={"查找替换","整理","拆分","列表","表格"};
+                const int glyphs[]={80,81,82,83,86};
+                const int selected=textTab==6?4:textTab-1;
+                int tab=selected;
                 if(MenuControls::iconSegments("##typeset-tabs",choices,glyphs,tab,scale,false,true)){
-                    textTab=tab==5?6:tab;
+                    textTab=tab==selected?0:tab==4?6:tab+1;
+                    showCanvasSource=editingCanvasResult=false;
                     changedText();
                 }
             }
@@ -1774,16 +1918,17 @@ struct MenuToolsPanel {
             drawDraft(110*scale);
             markEditable(available);
         }
+        const auto updateTool=[&]{editingCanvasResult=false;changedText();};
         if(textTab==1) {
-            const char* modes[]={"普通查找","正则表达式"};if(MenuControls::segments("##replace-mode",modes,replaceMode,scale))changedText();
-            const char* cases[]={"区分大小写","忽略大小写"};if(MenuControls::segments("##replace-case",cases,caseMode,scale))changedText();
-            MenuControls::input("##find","查找内容",find,sizeof(find));if(ImGui::IsItemEdited())changedText();
-            MenuControls::input("##replacement","替换为（可留空）",replacement,sizeof(replacement));if(ImGui::IsItemEdited())changedText();
+            const char* modes[]={"普通查找","正则表达式"};if(MenuControls::segments("##replace-mode",modes,replaceMode,scale))updateTool();
+            const char* cases[]={"区分大小写","忽略大小写"};if(MenuControls::segments("##replace-case",cases,caseMode,scale))updateTool();
+            MenuControls::input("##find","查找内容",find,sizeof(find));if(ImGui::IsItemEdited())updateTool();
+            MenuControls::input("##replacement","替换为（可留空）",replacement,sizeof(replacement));if(ImGui::IsItemEdited())updateTool();
             if(replaceMode==1){MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextWrapped("Python 正则；替换可用 \\1 或 \\g<名称> 引用分组");}
         } else if(textTab==2) {
             const char* tidy[]={"去首尾空白","删空行","合并空格","合并行","大写","小写"};
-            if(MenuControls::segments("##tidy",tidy,tidyMode,scale))changedText();
-            if(tidyMode==3){MenuControls::input("##joiner","合并行的连接符（可留空）",joiner,sizeof(joiner));if(ImGui::IsItemEdited())changedText();}
+            if(MenuControls::segments("##tidy",tidy,tidyMode,scale))updateTool();
+            if(tidyMode==3){MenuControls::input("##joiner","合并行的连接符（可留空）",joiner,sizeof(joiner));if(ImGui::IsItemEdited())updateTool();}
         } else if(textTab==3) {
             const char* modes[]={"按行分组","分隔符","正则分隔"};if(MenuControls::segments("##split-mode",modes,splitMode,scale))changedText();
             if(splitMode==0){MenuControls::input("##groups","留空自动按行分组；自定义如 1-2,3",grouping,sizeof(grouping));if(ImGui::IsItemEdited())changedText();}
@@ -1792,16 +1937,28 @@ struct MenuToolsPanel {
             {MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextWrapped("留空按实际换行拆分，最多64组。保留位置需要原有换行边界。");}
         } else if(textTab==4) {
             const char* lists[]={"项目列表","编号列表","移除列表"};const int listGlyphs[]={83,84,85};
-            if(MenuControls::iconSegments("##list-mode",lists,listGlyphs,listMode,scale))changedText();
+            if(MenuControls::iconSegments("##list-mode",lists,listGlyphs,listMode,scale))updateTool();
             if(listMode==0) {
-                const char* markers[]={"随层级 • ◦ ▪","•","◦","▪","–","✓","自定义"};if(MenuControls::segments("##list-markers",markers,listMarker,scale))changedText();
-                if(listMarker==6){MenuControls::input("##list-custom","项目符号（一个字符）",listCustom,sizeof(listCustom));if(ImGui::IsItemEdited())changedText();}
+                const char* markers[]={"随层级 • ◦ ▪","•","◦","▪","–","✓","自定义"};if(MenuControls::segments("##list-markers",markers,listMarker,scale))updateTool();
+                if(listMarker==6){MenuControls::input("##list-custom","项目符号（一个字符）",listCustom,sizeof(listCustom));if(ImGui::IsItemEdited())updateTool();}
             } else if(listMode==1) {
-                const char* styles[]={"1.","1)","(1)","a)","A)","i)","I)","1.1","1.a.i"};if(MenuControls::segments("##list-numbering",styles,listNumbering,scale))changedText();
-                MenuControls::input("##list-start","起始编号 1—9999",listStart,sizeof(listStart));if(ImGui::IsItemEdited())changedText();
+                const char* styles[]={"1.","1)","(1)","a)","A)","i)","I)","1.1","1.a.i"};if(MenuControls::segments("##list-numbering",styles,listNumbering,scale))updateTool();
+                MenuControls::input("##list-start","起始编号 1—9999",listStart,sizeof(listStart));if(ImGui::IsItemEdited())updateTool();
             }
             int indent=-1;const char* actions[]={"减少缩进","增加缩进"};const int indentGlyphs[]={99,100};
-            if(MenuControls::iconSegments("##list-indent",actions,indentGlyphs,indent,scale)){indentCommand=indent==0?-1:1;restoreDraftFocus=true;}
+            if(MenuControls::iconSegments("##list-indent",actions,indentGlyphs,indent,scale)){
+                const int delta=indent==0?-1:1;
+                if(showsCanvasResult()){
+                    const auto changed=menuIndentLines(draft,selectionStart,selectionEnd,cursorPos,delta);
+                    if(!changed.error.empty()){error=changed.error;requireText(error);}
+                    else if(changed.text!=draft && changed.text.size()<sizeof(draft)){
+                        checkpointDraft();++draftBufferId;
+                        std::snprintf(draft,sizeof(draft),"%s",changed.text.c_str());
+                        selectionStart=changed.start;selectionEnd=changed.end;cursorPos=changed.cursor;
+                        changedText();
+                    }
+                }else{indentCommand=delta;restoreDraftFocus=true;}
+            }
             {MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextWrapped("缩进作用于选中行或当前行，最多6级；Tab增加、Shift+Tab减少。预览自动更新编号，空行保留；每级写入4个空格，写回PS后不自动续号。");}
         }
         if(textTab==5)drawTypography(scale);
@@ -1813,13 +1970,14 @@ struct MenuToolsPanel {
         {
             MenuTextStyle text(MenuTextRole::Secondary);ImGui::TextWrapped("%s",textStatus().c_str());
         }
-        const bool showResult=showTextResult();
+        const bool showResult=mode!="typeset";
         if(showResult)
             MenuControls::textPreview("##text-result",planId.empty()?draft:resultPreview.c_str(),130*scale,{},textTab==4 && !planId.empty() && listMode!=2);
         const bool processed=textTab!=3 && !planId.empty() && resultKind=="replace";
         const bool typeset=mode=="typeset";
         ImGui::BeginDisabled(!processed || pending);
-        if(textTab!=3 && showResult && MenuControls::button("将结果继续编辑",scale))continueTextResult();
+        if(textTab!=3 && (showResult || usesCanvasResult()) && MenuControls::button("将结果继续编辑",scale))
+            continueTextResult(usesCanvasResult());
         ImGui::EndDisabled();
         if(typeset){
             if(!pinnedAction)drawTypesetAction(scale,available);
@@ -1842,10 +2000,12 @@ struct MenuToolsPanel {
             ImGui::EndDisabled();
         }
     }
-    void draw(float scale,ImVec2 center,bool available,bool hostForeground) {
+    void draw(float scale,ImVec2 center,bool available,bool hostForeground,ImU32 pasteboardColor) {
+        canvasCursor=ImGuiMouseCursor_None;
         const auto pos=ImGui::GetWindowPos(),size=ImGui::GetWindowSize();
         const bool typeset=mode=="typeset";
         MenuControls::PanelStyle controls(scale,false,false,typeset);
+        MenuControls::IconStyle icons(typeset);
         const float gap=menuControlPadding*scale,h=menuControlHeight*scale;
         const float margin=typeset && maximized?0.f:std::min(menuFloatingInset*scale,
             std::max(0.f,(std::min(size.x,size.y)-1.f)*.5f));
@@ -1937,6 +2097,88 @@ struct MenuToolsPanel {
                 ImGui::EndChild();
             }
         } else {
+            const bool canIsolate=typeset && editingOnCanvas() && textTab!=3;
+            bool focusText=false;
+            if(typeset){
+                const float iconWidth=figmaDisplayIconWidth*scale;
+                const auto toolbarStart=ImGui::GetCursorScreenPos();
+                const float toolbarEnd=toolbarStart.x+ImGui::GetContentRegionAvail().x;
+                const auto joinToolbar=[&](float width){
+                    if(ImGui::GetItemRectMax().x+gap+width<=toolbarEnd)ImGui::SameLine();
+                };
+                const auto toolbarWidth=[&](const auto& labels){
+                    float width=0;
+                    for(const auto* label:labels)width+=ImGui::CalcTextSize(label).x+2*ImGui::GetStyle().FramePadding.x;
+                    return width;
+                };
+                ImGui::PushID("##canvas-toolbar");
+                const char* zoomLabels[]={"缩小","放大","适合窗口"};const int zoomGlyphs[]={75,76,77};int zoomAction=-1;
+                if(MenuControls::iconSegments("##canvas-zoom",zoomLabels,zoomGlyphs,zoomAction,scale,true)){
+                    if(zoomAction==2){canvasZoom=1;canvasPan={};}
+                    else canvasZoom=std::clamp(zoomAction==0?canvasZoom/1.2f:canvasZoom*1.2f,.25f,8.f);
+                    changedView();
+                }
+                if(canIsolate){
+                    joinToolbar(3*iconWidth);
+                    const char* backgrounds[]={"文档背景","透明背景","纯色背景"};
+                    const int backgroundGlyphs[]={78,79,13};
+                    if(MenuControls::iconSegments("##canvas-background",backgrounds,backgroundGlyphs,backgroundMode,scale,true))changedView();
+                    if(backgroundMode==2){
+                        joinToolbar(ImGui::GetFrameHeight());
+                        if(MenuControls::colorSwatch("##canvas-bg-color",backgroundRgb,false))changedView();
+                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("背景颜色",scale);
+                    }
+                }
+                if(thumbnail && !draftInCanvas() && textTab!=6){
+                    ImGui::BeginDisabled(!hostForeground || resizeHandle || composingText());
+                    const char* zoomRegion[]={"框选放大"};
+                    joinToolbar(toolbarWidth(zoomRegion));
+                    MenuControls::textSegments("##canvas-region-zoom",zoomRegion,scale,
+                        [&](size_t){return canvasZoomMode;},[&](size_t){
+                            canvasZoomMode=!canvasZoomMode;canvasZoomDragging=false;
+                        },true);
+                    ImGui::EndDisabled();
+                }else canvasZoomMode=canvasZoomDragging=false;
+                if(editingOnCanvas() && scopedStyles && canvasGlyphTarget.prepare(device)){
+                    ImGui::BeginDisabled(resizeHandle || composingText());
+                    const char* viewActions[]={"左转","回正","右转","聚焦文字"};
+                    joinToolbar(toolbarWidth(viewActions));
+                    MenuControls::textSegments("##canvas-orientation",viewActions,scale,[](size_t){return false;},[&](size_t action){
+                        if(action==3)focusText=true;
+                        else canvasAngle=action==1?0:std::remainder(canvasAngle+(action==0?-90.f:90.f),360.f);
+                    },true);
+                    ImGui::EndDisabled();
+                }else canvasAngle=0;
+                const char* historyActions[]={"撤销","重做"};
+                joinToolbar(iconWidth+(scopedStyles?toolbarWidth(historyActions)+2*gap:0.f));
+                ImGui::BeginGroup();
+                if(MenuControls::iconButton("恢复排版视图默认设置",88,scale)){
+                    loadViewSettings(Json::object());saveViewSettings(true);
+                }
+                if(scopedStyles){
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(undoDrafts.empty());
+                    if(MenuControls::button("撤销",scale))restoreDraft(false);
+                    ImGui::EndDisabled();ImGui::SameLine();
+                    ImGui::BeginDisabled(redoDrafts.empty());
+                    if(MenuControls::button("重做",scale))restoreDraft(true);
+                    ImGui::EndDisabled();
+                }
+                ImGui::EndGroup();
+                if(usesCanvasResult()){
+                    const char* content[]={"处理结果","原草稿"};
+                    joinToolbar(toolbarWidth(content));
+                    ImGui::BeginDisabled(!hostForeground || composingText());
+                    MenuControls::textSegments("##canvas-text-content",content,scale,[&](size_t i){return i==size_t(showCanvasSource || editingCanvasResult);},
+                        [&](size_t i){
+                            if(!i && editingCanvasResult)changedText();
+                            editingCanvasResult=false;showCanvasSource=i==1;
+                            if(showCanvasSource)restoreDraftFocus=true;
+                        },true);
+                    ImGui::EndDisabled();
+                }
+                ImGui::PopID();
+            }
             const auto body=ImGui::GetContentRegionAvail();
             const float bodyHeight=std::max(h,body.y-(typeset?0.f:h+gap));
             if(typeset){
@@ -1955,43 +2197,13 @@ struct MenuToolsPanel {
                 ImGui::SameLine();
                 ImGui::BeginChild("##layout-canvas",{centerWidth,bodyHeight},
                     ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
-                const bool canIsolate=editingOnCanvas() && textTab!=3;
-                const float iconWidth=figmaDisplayIconWidth*scale;
-                const bool joined=canIsolate && ImGui::GetContentRegionAvail().x>=7*iconWidth+2*gap;
-                const char* zoomLabels[]={"缩小","放大","适合窗口"};const int zoomGlyphs[]={75,76,77};int zoomAction=-1;
-                if(MenuControls::iconSegments("##canvas-zoom",zoomLabels,zoomGlyphs,zoomAction,scale,true)){
-                    if(zoomAction==2){canvasZoom=1;canvasPan={};}
-                    else canvasZoom=std::clamp(zoomAction==0?canvasZoom/1.2f:canvasZoom*1.2f,.25f,8.f);
-                    changedView();
-                }
-                if(canIsolate){
-                    if(joined)ImGui::SameLine();
-                    const char* backgrounds[]={"文档背景","透明背景","纯色背景"};
-                    const int backgroundGlyphs[]={78,79,13};
-                    const bool swatchFits=ImGui::GetContentRegionAvail().x>=4*iconWidth+gap;
-                    if(MenuControls::iconSegments("##canvas-background",backgrounds,backgroundGlyphs,backgroundMode,scale,true))changedView();
-                    if(backgroundMode==2){
-                        if(swatchFits)ImGui::SameLine();
-                        if(MenuControls::colorSwatch("##canvas-bg-color",backgroundRgb,false))changedView();
-                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("背景颜色",scale);
-                    }
-                }
-                if(MenuControls::iconButton("恢复排版视图默认设置",88,scale)){
-                    loadViewSettings(Json::object());saveViewSettings(true);
-                }
-                if(scopedStyles){
-                    ImGui::SameLine();
-                    ImGui::BeginDisabled(undoDrafts.empty());
-                    if(MenuControls::button("撤销",scale))restoreDraft(false);
-                    ImGui::EndDisabled();ImGui::SameLine();
-                    ImGui::BeginDisabled(redoDrafts.empty());
-                    if(MenuControls::button("重做",scale))restoreDraft(true);
-                    ImGui::EndDisabled();
-                }
-                if(thumbnail && !fallbackDraftActive && textTab!=3 && textTab!=6){
+                const bool processedCanvas=showsCanvasResult();
+                const bool shapedResult=processedCanvas && textTab!=3 && editingOnCanvas() && scopedStyles && canvasGlyphTarget.prepare(device);
+                const int shownBackground=canIsolate?backgroundMode:0;
+                if(thumbnail && !fallbackDraftActive && textTab!=3 && textTab!=6 && (!processedCanvas || shapedResult)){
                     MenuTextStyle status(MenuTextRole::Secondary);
                     ImGui::AlignTextToFramePadding();
-                    ImGui::Text("本地草稿 · %.0f%%",canvasZoom*100);
+                    ImGui::Text("%s · %.0f%%",processedCanvas?"处理结果":"本地草稿",canvasZoom*100);
                     ImGui::SameLine();ImGui::Dummy({0,menuControlHeight*scale});
                 }
                 if(canvasState==CanvasState::limited || canvasState==CanvasState::failed){
@@ -2003,20 +2215,58 @@ struct MenuToolsPanel {
                     MenuTextStyle status(MenuTextRole::Secondary);
                     ImGui::TextWrapped("%s",canvasState==CanvasState::waiting?"正在读取背景…":canvasMessage.c_str());
                 }
-                const int shownBackground=canIsolate?backgroundMode:0;
                 const auto extent=ImGui::GetContentRegionAvail(),p=ImGui::GetCursorScreenPos();
-                if(draftInCanvas()){
+                if(autoFocusPending && available && hostForeground && canvasState!=CanvasState::waiting && !revision.empty()){
+                    autoFocusPending=false;
+                    if(!ImGui::IsAnyItemActive() && (selfTest || GetForegroundWindow()==window ||
+                       (IsWindowVisible(window) && SetForegroundWindow(window) && GetForegroundWindow()==window))){
+                        restoreDraftFocus=true;
+                        focusText=canIsolate;
+                    }
+                }
+                if(processedCanvas && !shapedResult){
+                    canvasTextActive=fallbackDraftActive=false;
+                    MenuControls::textPreview("##canvas-processed-text",resultPreview.c_str(),std::max(h,extent.y-gap),
+                        {},textTab==4 && listMode!=2);
+                    if(available && hostForeground && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        if(textTab==3){showCanvasSource=true;restoreDraftFocus=true;}
+                        else continueTextResult(true);
+                    }
+                }else if(draftInCanvas()){
                     fallbackDraftActive=drawDraft(std::max(h,extent.y-gap));
                     markEditable(available && hostForeground);
                 }else if(thumbnail && extent.x>1 && extent.y>1){
                     if(editingOnCanvas())markEditable(available && hostForeground);
                     const ImVec2 end={p.x+extent.x,p.y+extent.y};
                     const auto& io=ImGui::GetIO();
+                    const auto pointer=io.MousePos;
                     const bool hovered=ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows|ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
                         && ImGui::IsMouseHoveringRect(p,end);
+                    if(!hostForeground || (canvasZoomMode && !composingText() &&
+                       (ImGui::IsKeyPressed(ImGuiKey_Escape,false) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))))
+                        canvasZoomMode=canvasZoomDragging=false;
+                    const bool zooming=canvasZoomMode;
+                    const ImVec2 center={p.x+extent.x*.5f,p.y+extent.y*.5f};
+                    const ImVec2 zoomEnd={std::clamp(pointer.x,p.x,end.x),std::clamp(pointer.y,p.y,end.y)};
+                    if(zooming && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                        canvasZoomDragging=true;canvasZoomStart=zoomEnd;
+                    }
+                    if(zooming && (hovered || canvasZoomDragging))canvasCursor=ImGuiMouseCursor_ResizeAll;
+                    if(canvasZoomDragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+                        canvasZoomDragging=false;
+                        const float width=std::abs(canvasZoomStart.x-zoomEnd.x),height=std::abs(canvasZoomStart.y-zoomEnd.y);
+                        if(ImGui::IsMousePosValid(&pointer) && width>=6*scale && height>=6*scale){
+                            const float next=std::clamp(canvasZoom*std::min(extent.x/width,extent.y/height),.25f,8.f);
+                            canvasPan={(center.x+canvasPan.x-(canvasZoomStart.x+zoomEnd.x)*.5f)*next/canvasZoom,
+                                (center.y+canvasPan.y-(canvasZoomStart.y+zoomEnd.y)*.5f)*next/canvasZoom};
+                            canvasZoom=next;canvasZoomMode=false;changedView();
+                        }
+                    }
                     if(hovered){
                         ImGui::SetKeyOwner(ImGuiKey_MouseWheelY,ImGui::GetCurrentWindow()->ID);
-                        if(io.MouseWheel && !resizeHandle){
+                        if(!zooming && io.MouseWheel && !resizeHandle && io.KeyAlt && editingOnCanvas() && scopedStyles && !composingText()){
+                            canvasAngle=std::remainder(canvasAngle+io.MouseWheel*15.f,360.f);
+                        }else if(!zooming && io.MouseWheel && !resizeHandle){
                             const float next=std::clamp(canvasZoom*std::pow(1.2f,io.MouseWheel),.25f,8.f);
                             const float shift=1.f-next/canvasZoom;
                             canvasPan.x+=(io.MousePos.x-p.x-extent.x*.5f-canvasPan.x)*shift;
@@ -2029,8 +2279,34 @@ struct MenuToolsPanel {
                     if(canvasPanning && (ImGui::IsMouseDragging(0,2*scale) || ImGui::IsMouseDragging(2,2*scale))){
                         canvasPan={panBefore.x+io.MousePos.x-panGestureStart.x,panBefore.y+io.MousePos.y-panGestureStart.y};
                     }
-                    const float fit=std::min(extent.x/thumbnailSize.x,extent.y/thumbnailSize.y)*canvasZoom;
-                    const ImVec2 imageSize={thumbnailSize.x*fit,thumbnailSize.y*fit},min={p.x+(extent.x-imageSize.x)*.5f+canvasPan.x,p.y+(extent.y-imageSize.y)*.5f+canvasPan.y};
+                    const auto visibleSize=ImVec2{canvasSourceWidth>0?canvasSourceWidth:thumbnailSize.x,
+                        canvasSourceHeight>0?canvasSourceHeight:thumbnailSize.y};
+                    const CanvasViewTransform rotation({},canvasAngle);
+                    const auto rotatedSize=[&](ImVec2 size){
+                        return ImVec2{std::abs(rotation.cosine)*size.x+std::abs(rotation.sine)*size.y,
+                            std::abs(rotation.sine)*size.x+std::abs(rotation.cosine)*size.y};
+                    };
+                    const auto rotatedCanvas=rotatedSize(visibleSize);
+                    const float baseFit=std::min(extent.x/rotatedCanvas.x,extent.y/rotatedCanvas.y);
+                    if(focusText){
+                        const float width=textBox[2]-textBox[0],height=textBox[3]-textBox[1];
+                        const float unitsX=sourceBoxSize[0]>0?width/sourceBoxSize[0]:0,unitsY=sourceBoxSize[1]>0?height/sourceBoxSize[1]:0;
+                        const auto textSize=rotatedSize({(unitsX?draftBoxSize[0]*unitsX:width)*visibleSize.x,
+                            (unitsY?draftBoxSize[1]*unitsY:height)*visibleSize.y});
+                        if(textSize.x>0 && textSize.y>0){
+                            canvasZoom=std::clamp(.85f*std::min(extent.x/textSize.x,extent.y/textSize.y)/baseFit,.25f,8.f);
+                            const auto offset=rotation.apply({(textBox[0]+draftBoxOffset*unitsX+
+                                (unitsX?draftBoxSize[0]*unitsX:width)*.5f-.5f)*visibleSize.x*baseFit*canvasZoom,
+                                (textBox[1]+(unitsY?draftBoxSize[1]*unitsY:height)*.5f-.5f)*visibleSize.y*baseFit*canvasZoom});
+                            canvasPan={-offset.x,-offset.y};
+                            changedView();
+                        }
+                    }
+                    const float fit=baseFit*canvasZoom;
+                    const ImVec2 imageSize={visibleSize.x*fit,visibleSize.y*fit};
+                    const CanvasViewTransform view({center.x+canvasPan.x,center.y+canvasPan.y},canvasAngle);
+                    const ImVec2 min={view.center.x-imageSize.x*.5f,view.center.y-imageSize.y*.5f};
+                    const auto planePointer=view.unapply(pointer);
                     if(proofNativeSize.x>0){
                         const float demand=std::max(imageSize.x/proofNativeSize.x,imageSize.y/proofNativeSize.y);
                         const int scale=std::min(maxProofScale,demand>4.f?8:demand>2.f?4:demand>1.15f?2:1);
@@ -2045,6 +2321,7 @@ struct MenuToolsPanel {
                         inputEnd.x>inputStart.x && inputEnd.y>inputStart.y && (!pending || pendingAction=="text.preview" || pendingAction=="text.proof");
                     if(!resizable || !ImGui::IsMouseDown(ImGuiMouseButton_Left))resizeHandle=0;
                     const float grip=3.f*scale;
+                    int gripHover=0;
                     if(resizable){
                         const ImVec2 pixelsPerUnit={(inputEnd.x-inputStart.x)/sourceBoxSize[0],(inputEnd.y-inputStart.y)/sourceBoxSize[1]};
                         const auto updateHandles=[&]{
@@ -2057,8 +2334,8 @@ struct MenuToolsPanel {
                         if(resizeHandle && (trackedResize || ImGui::IsMouseDragging(0,2*scale))){
                             if(!trackedResize){checkpointDraft();trackedResize=true;}
                             const auto before=draftBoxSize;const float offsetBefore=draftBoxOffset;
-                            const float dx=(io.MousePos.x-resizeGestureStart.x)/pixelsPerUnit.x;
-                            const float dy=(io.MousePos.y-resizeGestureStart.y)/pixelsPerUnit.y;
+                            const float dx=(planePointer.x-resizeGestureStart.x)/pixelsPerUnit.x;
+                            const float dy=(planePointer.y-resizeGestureStart.y)/pixelsPerUnit.y;
                             if(resizeHandle&1)draftBoxSize[0]=std::clamp(resizeStartSize[0]+dx,1.f,100000.f);
                             if(resizeHandle&4){
                                 const float right=resizeStartOffset+resizeStartSize[0];
@@ -2068,25 +2345,21 @@ struct MenuToolsPanel {
                             if(resizeHandle&2)draftBoxSize[1]=std::clamp(resizeStartSize[1]+dy,1.f,100000.f);
                             if(draftBoxSize!=before || draftBoxOffset!=offsetBefore){updateHandles();changedText();canvasInteraction=ImGui::GetTime();}
                         }
-                        int gripHover=0;
-                        if(hovered && !canvasPanning){
+                        if(hovered && !canvasPanning && !zooming){
                             const float hit=2*grip;
-                            if(io.MousePos.y>=textAt.y-hit && io.MousePos.y<=textEnd.y+hit){
-                                if(boxShiftSupported && std::abs(io.MousePos.x-textAt.x)<=hit)gripHover=4;
-                                if(std::abs(io.MousePos.x-textEnd.x)<=hit && (!gripHover || io.MousePos.x>=(textAt.x+textEnd.x)*.5f))gripHover=1;
+                            if(planePointer.y>=textAt.y-hit && planePointer.y<=textEnd.y+hit){
+                                if(boxShiftSupported && std::abs(planePointer.x-textAt.x)<=hit)gripHover=4;
+                                if(std::abs(planePointer.x-textEnd.x)<=hit && (!gripHover || planePointer.x>=(textAt.x+textEnd.x)*.5f))gripHover=1;
                             }
-                            if(io.MousePos.x>=textAt.x-hit && io.MousePos.x<=textEnd.x+hit && std::abs(io.MousePos.y-textEnd.y)<=hit)gripHover|=2;
+                            if(planePointer.x>=textAt.x-hit && planePointer.x<=textEnd.x+hit && std::abs(planePointer.y-textEnd.y)<=hit)gripHover|=2;
                         }
                         if(gripHover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
                             resizeHandle=gripHover;trackedResize=false;
-                            resizeGestureStart=io.MousePos;resizeStartSize=draftBoxSize;resizeStartOffset=draftBoxOffset;
+                            resizeGestureStart=planePointer;resizeStartSize=draftBoxSize;resizeStartOffset=draftBoxOffset;
                         }
-                        const int cursor=resizeHandle?resizeHandle:gripHover;
-                        if(cursor)ImGui::SetMouseCursor(cursor==3?ImGuiMouseCursor_ResizeNWSE:cursor==6?ImGuiMouseCursor_ResizeNESW:
-                            cursor==2?ImGuiMouseCursor_ResizeNS:ImGuiMouseCursor_ResizeEW);
                     }
-                    const bool onText=editingOnCanvas() && ImGui::IsMouseHoveringRect(textAt,textEnd);
-                    if(hovered && !resizeHandle && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) ||
+                    const bool onText=editingOnCanvas() && ImRect(textAt,textEnd).Contains(planePointer);
+                    if(hovered && !resizeHandle && !zooming && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) ||
                        (!onText && ImGui::IsMouseClicked(ImGuiMouseButton_Left)))){
                         canvasPanning=true;panGestureStart=io.MousePos;panBefore=canvasPan;
                     }
@@ -2098,55 +2371,106 @@ struct MenuToolsPanel {
                         canvasInteraction=ImGui::GetTime();
                     auto* draw=ImGui::GetWindowDrawList();
                     draw->PushClipRect(p,end,true);
-                    const ImVec2 clipMin={std::max(p.x,min.x),std::max(p.y,min.y)},clipMax={std::min(end.x,max.x),std::min(end.y,max.y)};
-                    if(clipMin.x<clipMax.x && clipMin.y<clipMax.y){
-                        if(shownBackground==2)draw->AddRectFilled(clipMin,clipMax,ImGui::ColorConvertFloat4ToU32({backgroundRgb[0],backgroundRgb[1],backgroundRgb[2],1.f}));
-                        else ImGui::RenderColorRectWithAlphaCheckerboard(draw,clipMin,clipMax,0,2*menuPanelGap*scale,{0,0});
-                    }
-                    if(shownBackground==0)draw->AddImage((ImTextureID)(intptr_t)thumbnail,min,max);
-                    if(editingOnCanvas())
-                        draw->AddRect(textAt,textEnd,ImGui::GetColorU32(ImGuiCol_NavCursor),0,0,menuControlBorder*scale);
+                    draw->AddRectFilled(p,end,pasteboardColor);
+                    const auto canvasPoints=view.quad(min,max),textPoints=view.quad(textAt,textEnd);
+                    if(shownBackground==2)draw->AddQuadFilled(canvasPoints[0],canvasPoints[1],canvasPoints[2],canvasPoints[3],
+                        ImGui::ColorConvertFloat4ToU32({backgroundRgb[0],backgroundRgb[1],backgroundRgb[2],1.f}));
+                    else transparency.draw(*draw,canvasPoints,device,[&](const ImU32* pixels,ID3D11ShaderResourceView** image){
+                        return loadPixels(2,2,pixels,image);
+                    });
+                    if(shownBackground==0)draw->AddImageQuad((ImTextureID)(intptr_t)thumbnail,canvasPoints[0],canvasPoints[1],canvasPoints[2],canvasPoints[3]);
+                    if(editingOnCanvas())draw->AddPolyline(textPoints.data(),int(textPoints.size()),ImGui::GetColorU32(ImGuiCol_NavCursor),
+                        ImDrawFlags_Closed,menuControlBorder*scale);
                     if(resizable)for(size_t i=0;i<(boxShiftSupported?handles.size():3);++i){
-                        const auto pos=handles[i];
-                        draw->AddRectFilled({pos.x-grip,pos.y-grip},{pos.x+grip,pos.y+grip},ImGui::GetColorU32(ImGuiCol_NavCursor));
+                        const auto pos=view.apply(handles[i]);
+                        constexpr int gripMasks[]={1,2,3,4,6};
+                        const float radius=grip*((resizeHandle?resizeHandle:gripHover)==gripMasks[i]?1.4f:1.f);
+                        draw->AddRectFilled({pos.x-radius,pos.y-radius},{pos.x+radius,pos.y+radius},ImGui::GetColorU32(ImGuiCol_NavCursor));
                     }
                     draw->PopClipRect();
                     ImGui::Dummy(extent);
+                    const bool wasTextActive=canvasTextActive;
                     canvasTextActive=false;
-                    if(editingOnCanvas() && textEnd.x>p.x && textEnd.y>p.y && textAt.x<end.x && textAt.y<end.y
-                       && textEnd.x-textAt.x>=1 && textEnd.y-textAt.y>=1){
+                    ImRect rotatedText(textPoints[0],textPoints[0]);
+                    for(const auto point:textPoints)rotatedText.Add(point);
+                    if(editingOnCanvas() && (rotatedText.Overlaps(ImRect(p,end)) || wasTextActive)
+                       && textEnd.x>textAt.x && textEnd.y>textAt.y){
                         ImGui::PushClipRect(p,end,true);
-                        ImGui::SetCursorScreenPos(textAt);
-                        ImGui::PushID(int(menuEpoch));ImGui::PushID(draftBufferId);
-                        if(restoreDraftFocus)ImGui::SetKeyboardFocusHere();
-                        const float em=canvasEm>0?std::clamp(canvasEm*imageSize.y,4.f,192.f):menuFont(MenuTextRole::Body)->LegacySize;
-                        const auto ink=canvasEm>0?canvasInk:ImGui::GetColorU32(ImGuiCol_Text);
-                        const bool styled=renderLocalDraft(textEnd.x-textAt.x,textEnd.y-textAt.y,em);
+                        const float layoutHeight=canvasSourceHeight>0?canvasSourceHeight:thumbnailSize.y;
+                        const float draftEm=canvasEm>0?canvasEm*layoutHeight:menuFont(MenuTextRole::Body)->LegacySize;
+                        const float boxWidth=(textBox[2]-textBox[0])*visibleSize.x;
+                        const float boxHeight=(textBox[3]-textBox[1])*layoutHeight;
+                        const bool styled=layoutLocalDraft(resizable?boxWidth*draftBoxSize[0]/sourceBoxSize[0]:boxWidth,
+                            resizable?boxHeight*draftBoxSize[1]/sourceBoxSize[1]:boxHeight,draftEm,processedCanvas);
                         const ImVec2 factor=styled?ImVec2{(textEnd.x-textAt.x)/localDraftWidth,(textEnd.y-textAt.y)/localDraftHeight}:ImVec2{1,1};
-                        if(!io.MouseDown[0] || resizeHandle || !styled)canvasPicking=false;
-                        if(styled && !resizeHandle && hovered && onText && ImGui::IsMouseClicked(0)){
-                            canvasPicking=ImGui::GetMouseClickedCount(0)==1;
-                            const int at=canvasByteAt({(io.MousePos.x-textAt.x)/factor.x,(io.MousePos.y-textAt.y)/factor.y});
-                            canvasSelectionAnchor=io.KeyShift?(cursorPos==selectionStart?selectionEnd:selectionStart):at;
+                        const auto ink=canvasEm>0?canvasInk:ImGui::GetColorU32(ImGuiCol_Text);
+                        if(processedCanvas){
+                            canvasPicking=pickFromLayout=false;
+                            if(styled){
+                                drawCanvasSelection(*draw,view,textAt,factor,ink,false);
+                                if(available && hostForeground && hovered && onText && !resizeHandle && !zooming &&
+                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+                                    const int byte=canvasByteAt({(planePointer.x-textAt.x)/factor.x,(planePointer.y-textAt.y)/factor.y},resultValue);
+                                    continueTextResult(true);
+                                    cursorPos=selectionStart=selectionEnd=std::clamp(byte,0,int(std::strlen(draft)));
+                                }
+                            }
+                            else{
+                                ImGui::SetCursorScreenPos(p);
+                                MenuControls::textPreview("##canvas-result-fallback",resultPreview.c_str(),extent.y,{},textTab==4 && listMode!=2);
+                            }
+                        }else{
+                            const bool rotated=canvasAngle!=0;
+                            ImGui::SetCursorScreenPos(rotated?p:textAt);
+                            ImGui::PushID(int(menuEpoch));ImGui::PushID(draftBufferId);
+                            const float em=canvasEm>0?std::clamp(canvasEm*imageSize.y,4.f,192.f):menuFont(MenuTextRole::Body)->LegacySize;
+                            if(!io.MouseDown[0] || resizeHandle || !styled || zooming)canvasPicking=false;
+                            if(styled && !resizeHandle && !zooming && hovered && onText && ImGui::IsMouseClicked(0)){
+                                canvasPicking=ImGui::GetMouseClickedCount(0)==1;
+                                const int at=canvasByteAt({(planePointer.x-textAt.x)/factor.x,(planePointer.y-textAt.y)/factor.y});
+                                canvasSelectionAnchor=io.KeyShift?(cursorPos==selectionStart?selectionEnd:selectionStart):at;
+                                if(rotated && !composingText()){
+                                    selectionStart=canvasSelectionAnchor;selectionEnd=cursorPos=at;
+                                    restoreDraftFocus=true;
+                                }
+                            }
+                            pickFromLayout=canvasPicking && !composingText();
+                            if(pickFromLayout)canvasPickedByte=canvasByteAt({(planePointer.x-textAt.x)/factor.x,(planePointer.y-textAt.y)/factor.y});
+                            if(restoreDraftFocus)ImGui::SetKeyboardFocusHere();
+                            if(rotated && !zooming && !onText && hovered && ImGui::IsMouseClicked(0) && wasTextActive && !composingText())
+                                ImGui::ClearActiveID();
+                            // A rotated text box uses the layout hit-test above. Hide
+                            // its backing input's unrotated pointer hit area.
+                            if(rotated || zooming)ImGui::GetIO().MousePos={-FLT_MAX,-FLT_MAX};
+                            ImGui::BeginDisabled(resizeHandle!=0);
+                            if(MenuControls::canvasText("##draft",draft,sizeof(draft),{textEnd.x-textAt.x,textEnd.y-textAt.y},
+                                em,ink,canvasWrap,!styled,draftCallback,this,scopedStyles)){
+                                checkpointDraft(styleAnchor.c_str());changedText();
+                            }
+                            canvasTextActive=ImGui::IsItemActive();
+                            if(rotated || zooming)ImGui::GetIO().MousePos=pointer;
+                            pickFromLayout=false;
+                            ImGui::EndDisabled();
+                            if(styled){
+                                draw->PushClipRect(p,end,true);
+                                drawCanvasSelection(*draw,view,textAt,factor,ink,canvasTextActive && localDraftGeneration==draftGeneration);
+                                draw->PopClipRect();
+                            }
+                            ImGui::PopID();ImGui::PopID();
                         }
-                        pickFromLayout=canvasPicking && !composingText();
-                        if(pickFromLayout)canvasPickedByte=canvasByteAt({(io.MousePos.x-textAt.x)/factor.x,(io.MousePos.y-textAt.y)/factor.y});
-                        ImGui::BeginDisabled(resizeHandle!=0);
-                        if(MenuControls::canvasText("##draft",draft,sizeof(draft),{textEnd.x-textAt.x,textEnd.y-textAt.y},
-                            em,ink,canvasWrap,!styled,draftCallback,this,scopedStyles)){
-                            checkpointDraft(styleAnchor.c_str());changedText();
-                        }
-                        canvasTextActive=ImGui::IsItemActive();
-                        pickFromLayout=false;
-                        ImGui::EndDisabled();
-                        if(styled){
-                            draw->PushClipRect(textAt,textEnd,true);
-                            drawCanvasSelection(*draw,textAt,factor,ink,canvasTextActive && localDraftGeneration==draftGeneration);
-                            draw->PopClipRect();
-                        }
-                        ImGui::PopID();ImGui::PopID();
                         ImGui::PopClipRect();
                     }
+                    if(canvasZoomDragging){
+                        draw->PushClipRect(p,end,true);
+                        const ImVec2 first={std::min(canvasZoomStart.x,zoomEnd.x),std::min(canvasZoomStart.y,zoomEnd.y)};
+                        const ImVec2 last={std::max(canvasZoomStart.x,zoomEnd.x),std::max(canvasZoomStart.y,zoomEnd.y)};
+                        draw->AddRectFilled(first,last,ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+                        draw->AddRect(first,last,ImGui::GetColorU32(ImGuiCol_NavCursor),0,0,menuControlBorder*scale);
+                        draw->PopClipRect();
+                    }
+                    const int gripCursor=resizeHandle?resizeHandle:gripHover;
+                    if(gripCursor)canvasCursor=view.resizeCursor(gripCursor);
+                    if(canvasCursor!=ImGuiMouseCursor_None)ImGui::SetMouseCursor(canvasCursor);
                 }
                 ImGui::EndChild();ImGui::SameLine();
             }

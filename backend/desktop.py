@@ -458,6 +458,14 @@ class Desktop:
                     logging.exception("Native hotkey restart failed")
                     delay = min(delay * 2, 30)
 
+    def _refresh_native_foreground(self):
+        foreground=self._is_photoshop(self.gui.GetForegroundWindow())
+        if foreground==self.photoshop_foreground:return
+        self.photoshop_foreground=foreground
+        self.layer_wake.set()
+        self.window_wake.set()
+        if self.foreground_changed:self.foreground_changed()
+
     def _read_native_events(self):
         try:
             for line in self.native.stdout:
@@ -487,13 +495,7 @@ class Desktop:
                     if self.input_language:self.input_language.protect()
                     if self.input_focus:self.input_focus.protect(event.get('input_epoch'))
                 elif event.get('type') == 'input.language.activity':
-                    if event.get('hwnd'):
-                        foreground=self._is_photoshop(self.gui.GetForegroundWindow())
-                        if foreground != self.photoshop_foreground:
-                            self.photoshop_foreground=foreground
-                            self.layer_wake.set()
-                            self.window_wake.set()
-                            if self.foreground_changed:self.foreground_changed()
+                    if event.get('hwnd'):self._refresh_native_foreground()
                     if self.input_language:self.input_language.activity()
                     if self.input_focus:
                         if event.get('hwnd'):self.input_focus.focus_changed(event['hwnd'],event.get('input_epoch'))
@@ -529,6 +531,9 @@ class Desktop:
                     logging.info('Photoshop activation click: %s', event)
                 elif event.get('type') == 'activation.foreground':
                     self.activation_snapshot=event
+                    # A click can activate Photoshop before its IME activity
+                    # arrives. Refresh the thumbnail's target on this event.
+                    self._refresh_native_foreground()
                     logging.info('Photoshop activation foreground: %s', event)
                 elif event.get("type") == "configured":
                     with self.native_applied:

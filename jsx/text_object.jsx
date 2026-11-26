@@ -58,11 +58,42 @@
         }finally{file.close();}
     }
     function renderHash(suffix){return sha256(pdfBytes(exportRender(suffix)));}
+    function backendRenderHash(file,bytes){
+        var nonce=request.native_hash_nonce;
+        if(!placingPdf||typeof nonce!=='string'||!/^[a-f0-9]{32}$/.test(nonce))return null;
+        var marker=new File(folder+'/text-object-hash-request-'+request.id+'.json'),
+            answer=new File(folder+'/text-object-hash-response-'+request.id+'.txt'),
+            staging=new File(folder+'/text-object-hash-request-'+request.id+'.tmp');
+        if(marker.exists||answer.exists||staging.exists)throw Error('Embedded PDF verification evidence already exists');
+        var expected={schema:1,id:request.id,session:request.session,operation:request.operation,token:request.token,
+            nonce:nonce,size:bytes.length};
+        staging.encoding='UTF-8';if(!staging.open('w'))throw Error('Cannot publish embedded PDF verification');
+        try{staging.write(encode(expected));}finally{staging.close();}
+        if(!staging.rename(marker.name))throw Error('Cannot publish embedded PDF verification');
+        var deadline=new Date().getTime()+1500;
+        while(!answer.exists&&new Date().getTime()<deadline)$.sleep(15);
+        if(!answer.exists)return null;
+        answer.encoding='UTF-8';if(answer.length>4096||!answer.open('r'))throw Error('Invalid embedded PDF verification receipt');
+        var result;
+        try{result=answer.read().split('|');}finally{answer.close();}
+        if(result.length!==4||result[0]!==request.id||result[1]!==nonce||result[2]!==String(bytes.length))
+            throw Error('Embedded PDF verification identity mismatch');
+        if(!/^[a-f0-9]{64}$/.test(result[3])||
+           pdfBytes(file)!==bytes)throw Error('Embedded PDF changed during verification');
+        return result[3];
+    }
     function finalMetadata(){
         var started=new Date().getTime();
-        var bytes=pdfBytes(exportRender('render')),digest;
-        if(placingPdf&&bytes===pdfBytes(pdf))digest=request.rendered.pdf_sha256;
-        else digest=sha256(bytes);
+        var file=exportRender('render'),bytes=pdfBytes(file),digest;
+        if(placingPdf&&bytes===pdfBytes(pdf)){
+            digest=request.rendered.pdf_sha256;nativeTimes.embedded_hash='staged-digest';
+        }else{
+            var hashStarted=new Date().getTime();
+            digest=backendRenderHash(file,bytes);
+            nativeTimes.embedded_hash=digest?'backend':'extendscript';
+            if(!digest)digest=sha256(bytes);
+            nativeTimes.embedded_hash_ms=new Date().getTime()-hashStarted;
+        }
         if(!ExternalObject.AdobeXMPScript)ExternalObject.AdobeXMPScript=new ExternalObject('lib:AdobeXMPScript');
         nativeTimes.embedded_readback_ms=new Date().getTime()-started;
         var ns='https://15100px.menu/ns/text-object/1.0/';XMPMeta.registerNamespace(ns,'pxText');
@@ -373,14 +404,20 @@
     }
     function transformPdf(from,to,scaleX,scaleY){
         var dx=(to[0]+to[4]-from[0]-from[4])/2,dy=(to[1]+to[5]-from[1]-from[5])/2;
-        if(Math.abs(dx)<=.0001&&Math.abs(dy)<=.0001&&scaleX===100&&scaleY===100)return;
+        var x=Math.round(dx),y=Math.round(dy);
+        if(scaleX===100&&scaleY===100){
+            if(x||y)movePdf(x,y);
+            return;
+        }
         var r=new ActionReference(),a=new ActionDescriptor(),offset=new ActionDescriptor();
         r.putEnumerated(c('Lyr '),c('Ordn'),c('Trgt'));a.putReference(c('null'),r);
         a.putEnumerated(c('FTcs'),c('QCSt'),c('Qcsa'));
         a.putUnitDouble(c('Wdth'),c('#Prc'),scaleX);a.putUnitDouble(c('Hght'),c('#Prc'),scaleY);
         a.putBoolean(s('constrainProportions'),false);
         offset.putUnitDouble(c('Hrzn'),c('#Pxl'),dx);offset.putUnitDouble(c('Vrtc'),c('#Pxl'),dy);
-        a.putObject(c('Ofst'),c('Ofst'),offset);executeAction(c('Trnf'),a,DialogModes.NO);
+        a.putObject(c('Ofst'),c('Ofst'),offset);
+        try{executeAction(c('Trnf'),a,DialogModes.NO);}
+        catch(e){throw Error('Vector PDF transform: '+String(e));}
     }
     function placeTextFrame(more,expected,resolution){
         var frame=more.transform,fw=frame[2]-frame[0],fh=frame[5]-frame[1];
@@ -391,6 +428,94 @@
            fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01||
            Math.abs(frame[3]-frame[1])>.01||Math.abs(frame[6]-frame[0])>.01||!affineFrame(frame))return;
         transformPdf(frame,expected,Math.abs(fw-w)<.01?100:100*w/fw,Math.abs(fh-h)<.01?100:100*h/fh);
+    }
+    function movePdf(x,y){
+        // Move the layer directly. Free Transform can fall back to the
+        // active pixel selection or an empty render rectangle.
+        var r=new ActionReference(),a=new ActionDescriptor(),offset=new ActionDescriptor();
+        r.putIdentifier(c('Lyr '),doc.activeLayer.id);a.putReference(c('null'),r);
+        offset.putUnitDouble(c('Hrzn'),c('#Pxl'),x);offset.putUnitDouble(c('Vrtc'),c('#Pxl'),y);
+        a.putObject(c('T   '),c('Ofst'),offset);
+        try{executeAction(c('move'),a,DialogModes.NO);}
+        catch(e){throw Error('Vector PDF layer move: '+String(e));}
+        return true;
+    }
+    function correctReplacementSnap(frame,expected){
+        if(!affineFrame(frame)||!affineFrame(expected))return false;
+        var dx=expected[0]-frame[0],dy=expected[1]-frame[1],translation=true,maxError=0,pixelGrid=true,fractional=false;
+        for(var i=0;i<8;i+=2){
+            var x=expected[i]-frame[i],y=expected[i+1]-frame[i+1];
+            maxError=Math.max(maxError,Math.abs(x),Math.abs(y));
+            if(Math.abs(x-dx)>.01||Math.abs(y-dy)>.01)translation=false;
+            if(Math.abs(frame[i]-Math.round(frame[i]))>.01||Math.abs(frame[i+1]-Math.round(frame[i+1]))>.01)pixelGrid=false;
+            if(Math.abs(expected[i]-Math.round(expected[i]))>.01||Math.abs(expected[i+1]-Math.round(expected[i+1]))>.01)fractional=true;
+        }
+        if(maxError<=.01)return false;
+        // Replace Contents can leave the old preview's bounds cached.
+        if(translation&&maxError<=1.01&&Math.abs(dx-Math.round(dx))<.01&&Math.abs(dy-Math.round(dy))<.01){
+            app.refresh();return movePdf(Math.round(dx),Math.round(dy));
+        }
+        // Replace Contents rounds each edge independently on axis-aligned
+        // placements. Restore the requested scale and centre inside this undo step.
+        function positiveRect(points){
+            return points[2]>points[0]&&points[7]>points[1]&&Math.abs(points[3]-points[1])<.01&&Math.abs(points[6]-points[0])<.01;
+        }
+        if(!positiveRect(frame)||!positiveRect(expected))return false;
+        var w=frame[2]-frame[0],h=frame[7]-frame[1],desiredW=expected[2]-expected[0],desiredH=expected[7]-expected[1];
+        // Replace Contents can snap its origin and separately round the
+        // scaled PDF dimensions, so a fractional far edge can drift by 1.5 px.
+        if(maxError>1.01&&(!pixelGrid||!fractional||maxError>1.51||Math.abs(w-desiredW)>1.01||Math.abs(h-desiredH)>1.01))return false;
+        if(pixelGrid&&fractional&&Math.abs(w-(Math.round(expected[2])-Math.round(expected[0])))<.01&&
+           Math.abs(h-(Math.round(expected[7])-Math.round(expected[1])))<.01){
+            // Moving an already correct integer-sized crop preserves the
+            // embedded scale. Free Transform after replacement can distort it.
+            var pixelX=Math.round(expected[0])-Math.round(frame[0]),pixelY=Math.round(expected[1])-Math.round(frame[1]);
+            if(!pixelX&&!pixelY)return false;
+            app.refresh();
+            return movePdf(pixelX,pixelY);
+        }
+        if(maxError>1.01)return false;
+        app.refresh();
+        transformPdf(frame,expected,100*desiredW/w,100*desiredH/h);
+        return true;
+    }
+    function exactPixelSnap(frame,expected){
+        // The replacement can report whole document pixels even though the
+        // previous logical scale is fractional. Admit only the nearest pixel
+        // for every coordinate, and never an extra pixel on an integer target.
+        if(!affineFrame(frame)||!affineFrame(expected)||
+           Math.abs(expected[3]-expected[1])>.01||Math.abs(expected[6]-expected[0])>.01||
+           expected[2]<=expected[0]||expected[7]<=expected[1])return false;
+        for(var i=0;i<8;i++)if(Math.abs(frame[i]-Math.round(expected[i]))>.01)return false;
+        return true;
+    }
+    function containsPlacedInk(layer){
+        var b=layer.bounds;
+        return b.length===4&&b[2].as('px')>b[0].as('px')&&b[3].as('px')>b[1].as('px');
+    }
+    function canvasSelection(){
+        var r=new ActionReference(),key=s('selection');
+        r.putProperty(s('property'),key);r.putIdentifier(s('document'),doc.id);
+        var state=executeActionGet(r);
+        return state.hasKey(key)?encode(item(state,key)):null;
+    }
+    function withCanvasSelection(factor){
+        target();
+        var selection=canvasSelection();
+        if(selection===null){replace(factor);return;}
+        // Even an explicit layer Move shifts an active pixel selection.
+        // Preserve its mask across placement in the same undo transaction.
+        changed=true;
+        var count=doc.channels.length,channels=doc.activeChannels,saved=doc.channels.add();
+        doc.selection.store(saved,SelectionType.REPLACE);
+        doc.activeChannels=channels;
+        doc.selection.deselect();
+        replace(factor);
+        doc.selection.load(saved,SelectionType.REPLACE);
+        saved.remove();
+        doc.activeChannels=channels;
+        if(doc.channels.length!==count||canvasSelection()!==selection||doc.activeLayer.id!==result.layer_id)
+            throw Error('Vector PDF selection restoration mismatch');
     }
     function replace(factor){
         factor=factor||1;
@@ -429,11 +554,22 @@
             if(!more.size||Math.abs(more.size.width*px-w)>.01||Math.abs(more.size.height*px-h)>.01||fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01)throw Error('Table intrinsic size or placement mismatch');
             expected=[frame[0],frame[1],frame[0]+fw,frame[1],frame[0]+fw,frame[1]+fh,frame[0],frame[1]+fh];
         }
+        var pixelSnapped=false;
         if(prepared.kind==='text'){
             placeTextFrame(more,expected,doc.resolution);
             frame=object(property('smartObjectMore')).smartObjectMore.transform;
+        }else if(prepared.kind==='smart-object'){
+            pixelSnapped=!near(frame,expected)&&exactPixelSnap(frame,expected);
+            if(!pixelSnapped&&correctReplacementSnap(frame,expected)){
+                more=object(property('smartObjectMore')).smartObjectMore;frame=more.transform;
+                pixelSnapped=!near(frame,expected)&&exactPixelSnap(frame,expected);
+            }
+            if(pixelSnapped){
+                if(!containsPlacedInk(created))app.refresh();
+                if(!containsPlacedInk(created))throw Error('置入的文字对象没有可见内容，已保留原对象');
+            }
         }
-        if(!expected||frame.length!==8)throw Error('Text object frame missing');for(var i=0;i<8;i++)if(Math.abs(frame[i]-expected[i])>.01)throw Error('Text object placement readback mismatch: '+encode({crop:more.crop,frame:frame,expected:expected,size:more.size}));
+        if(!expected||frame.length!==8)throw Error('Text object frame missing');for(var i=0;i<8;i++)if(!pixelSnapped&&Math.abs(frame[i]-expected[i])>.01)throw Error('Text object placement readback mismatch: '+encode({crop:more.crop,frame:frame,expected:expected,size:more.size}));
         if(created.parent.typename!==anchor.parent.typename||created.parent.id!==anchor.parent.id)throw Error('Vector object parent changed');
         finalMetadata();setMetadata(request.xmp);if(metadata()!==request.xmp)throw Error('Text object metadata readback mismatch');
         var label=new ActionDescriptor(),value=new ActionDescriptor(),ref=new ActionReference();ref.putIdentifier(s('layer'),created.id);label.putReference(s('null'),ref);value.putEnumerated(s('color'),colorType,colorValue);label.putObject(s('to'),s('layer'),value);executeAction(s('set'),label,DialogModes.NO);
@@ -442,6 +578,7 @@
         else if(!updatedOriginal){created.name=anchor.name;created.visible=anchor.visible;anchor.remove();}
         if(doc.activeLayer.id!==created.id)throw Error('Text object selection readback mismatch');
         result={verified:true,count:1,layer_id:created.id,source_sha256:prepared.source_sha256,engine:'native-pdf-vector',placement:placement};
+        if(pixelSnapped)result.placement_pixel_snap=true;
         if(pdfBounds)result.pdf_bounds=pdfBounds;
     }
     function replaceContents(){
@@ -464,8 +601,12 @@
         var bounds=[Math.max(0,Math.floor(ink[0]-2)),Math.max(0,Math.floor(ink[1]-2)),
             Math.min(Math.round(canvas.width),Math.ceil(ink[2]+2)),Math.min(Math.round(canvas.height),Math.ceil(ink[3]+2))];
         if(bounds[2]-bounds[0]<2||bounds[3]-bounds[1]<2)return previous||null;
-        if(prepared.kind==='smart-object'&&!affineFrame(prepared.transform)){
+        if(prepared.kind==='smart-object'){
+            // Reuse a crop that contains the complete new ink. Changes
+            // inside it do not require moving or rescaling the placement.
             if(previous&&previous[0]<=bounds[0]&&previous[1]<=bounds[1]&&previous[2]>=bounds[2]&&previous[3]>=bounds[3])return previous;
+        }
+        if(prepared.kind==='smart-object'&&!affineFrame(prepared.transform)){
             if(previous)throw Error('当前矢量透视下的新文字超过原有 PDF 范围');
             return null;
         }
@@ -595,11 +736,12 @@
         }
         if(currentHistoryId()!==historyId||encode(historyIds())!==placementBaseline.histories||
            doc.saved!==placementBaseline.saved||doc.activeLayer.id!==request.target.active_layer_id||metadata()!==prepared.before_xmp||
+           doc.channels.length!==placementBaseline.channels||canvasSelection()!==placementBaseline.selection||
            prepared.before_text&&encode(rawText())!==encode(prepared.before_text))throw Error('Vector placement rollback state mismatch');
         if(updatedOriginal){
-            if(!prepared.before_render||renderHash('rollback')!==prepared.before_render)
+            var evidence=exportRender('rollback'),restored=pdfBytes(evidence);
+            if(!prepared.before_render||(placingPdf?restored!==pdfBytes(renderFile('before')):sha256(restored)!==prepared.before_render))
                 throw Error('Vector placement rollback content mismatch');
-            var evidence=new File(folder+'/text-object-rollback-'+request.id+'.pdf');
             if(!evidence.remove())throw Error('Vector placement rollback evidence cleanup failed');
         }
     }
@@ -663,7 +805,7 @@
                 if(Math.round(doc.width.as('px'))!==width*scale||Math.round(doc.height.as('px'))!==height*scale)
                     throw Error('高清草稿尺寸或图层未确认');
             }
-            replace(scale);
+            withCanvasSelection(scale);
             var hidden=[];
             try{
                 if(isolated){
@@ -760,9 +902,9 @@
                 }
             }
             if(currentHistoryId()!==historyId||metadata()!==prepared.before_xmp||prepared.before_text&&encode(rawText())!==encode(prepared.before_text))throw Error('Original changed during source generation');
-            placementBaseline={histories:encode(historyIds()),saved:doc.saved};
+            placementBaseline={histories:encode(historyIds()),saved:doc.saved,channels:doc.channels.length,selection:canvasSelection()};
             var placementStarted=new Date().getTime();
-            grouped(replace,placementTitle);
+            grouped(withCanvasSelection,placementTitle);
             nativeTimes.placement_ms=new Date().getTime()-placementStarted;
             result.native_timing=nativeTimes;
             if(retainedHistory){

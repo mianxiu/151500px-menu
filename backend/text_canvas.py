@@ -94,7 +94,8 @@ async def _legacy_empty_background(bridge,identity,target,data):
     w,h=(max(1,int(size*scale+.5)) for size in (width,height))
     image=_mapping(identity,bytes(w*h*4))
     return image,{'mapping':identity,'width':w,'height':h,'history':history,'background':True,
-                  'box':None,'text_frame':_legacy_text_frame(value[6:],width,height)}
+                  'source_width':width,'source_height':height,'box':None,
+                  'text_frame':_legacy_text_frame(value[6:],width,height)}
 
 
 async def read(runtime, hwnd, target, *, background=False, trace=None, legacy_bridge=None):
@@ -157,6 +158,7 @@ async def read(runtime, hwnd, target, *, background=False, trace=None, legacy_br
         box=data.get('box') if background else None
         frame=data.get('text_frame') if background else None
         return memory,{'mapping':identity,'width':w,'height':h,'history':data['history'],'background':background,
+                       **{key:metrics[key] for key in ('source_width','source_height') if key in metrics},
                        'box':box if valid_box(box) else None,'text_frame':frame if valid_text_frame(frame) else None}
     finally:
         for path in (pixels,request,result):path.unlink(missing_ok=True)

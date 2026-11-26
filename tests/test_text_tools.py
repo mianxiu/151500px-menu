@@ -138,6 +138,32 @@ class TextToolsTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError,'0.3.81'):await tools.preview({'revision':'r','draft':'new','operation':'list',**OPTIONS})
         self.assertIsNone(tools.plan)
 
+    async def test_editing_managed_list_rebases_ranges_before_removal(self):
+        from backend.text_list import formatting,layout,write
+        from backend.text_plan import compute
+        from tests.test_text_list import OPTIONS
+        app=SimpleNamespace(operation_lock=asyncio.Lock(),desktop=SimpleNamespace(focus_search_result=Mock()),
+            bridge=SimpleNamespace(execute_text=AsyncMock(return_value={}),busy=False,layer_context={}),broadcast=AsyncMock())
+        tools=TextTools(app);tools.available=Mock();target={'session':'s','document_id':1,'layer_ids':[2],'active_layer_id':2}
+        original='one\rtwo'
+        list_plan=compute(original,{'revision':'r','draft':original,'operation':'list',**OPTIONS})
+        base=[{'from':0,'to':4,'start':12,'first':3},{'from':4,'to':8,'start':24,'first':-2}]
+        _,xml=formatting(list_plan['value'],list_plan['origins'],base,write('',OPTIONS),True)
+        tools.snapshot={'revision':'r','text':list_plan['value'],'target':target,'list_xmp':xml,'list_paragraphs':layout(xml)}
+        draft='3.\ta much longer first line\n4.\ttwo'
+        with patch('backend.text_tools.evaluate',side_effect=compute):
+            await tools.write({'revision':'r','draft':draft})
+            payload=app.bridge.execute_text.call_args.args[1]
+            rebased=layout(payload['list_xmp'])
+            self.assertEqual(rebased[1]['from'],draft.index('\n')+1)
+            tools.snapshot={'revision':'r2','text':payload['value'],'target':target,'list_xmp':payload['list_xmp'],'list_paragraphs':rebased}
+            removal=await tools.preview({'revision':'r2','draft':draft,'operation':'list',**OPTIONS,'kind':'remove'})
+            await tools.apply({'revision':'r2','plan_id':removal['plan_id']})
+        removed=app.bridge.execute_text.call_args.args[1]
+        self.assertEqual([row['start'] for row in removed['list_layout']['paragraphs']],[12,24])
+        self.assertEqual([row['first'] for row in removed['list_layout']['paragraphs']],[3,-2])
+        self.assertIsNone(layout(removed['list_xmp']))
+
     async def test_write_current_draft_is_independent_of_an_invalid_split_and_is_one_shot(self):
         from backend.text_plan import compute
         app=SimpleNamespace(operation_lock=asyncio.Lock(),desktop=SimpleNamespace(focus_search_result=Mock()),

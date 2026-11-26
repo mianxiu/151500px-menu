@@ -16,6 +16,39 @@ SOURCE={'schema':1,'canvas':{'width':600,'height':400,'resolution':300,'mode':'R
 
 
 class TextObjectTests(unittest.TestCase):
+    def test_embedded_pdf_digest_is_bound_to_placement_and_holds_read_lease(self):
+        import os
+        import time
+        from tempfile import TemporaryDirectory
+        from threading import Event, Thread
+        from backend.text_object_native import _hash_placed_pdf
+        if os.name!='nt':self.skipTest('Windows PDF file lease')
+        identity={'id':'a'*32,'session':'session','operation':'set_label','token':'secret'}
+        nonce='b'*32
+        payload=b'%PDF-1.7\n'+b'0123456789'*30000
+        with TemporaryDirectory() as temporary:
+            folder=Path(temporary)
+            identifier=identity['id']
+            pdf=folder/f'text-object-render-{identifier}.pdf'
+            pdf.write_bytes(payload)
+            marker=folder/f'text-object-hash-request-{identifier}.json'
+            marker.write_text(json.dumps({**identity,'schema':1,'nonce':nonce,'size':len(payload)}),'utf-8')
+            answer=folder/f'text-object-hash-response-{identifier}.txt'
+            stop=Event()
+            worker=Thread(target=_hash_placed_pdf,args=(folder,identity,nonce,stop))
+            worker.start()
+            try:
+                deadline=time.monotonic()+2
+                while not answer.exists() and time.monotonic()<deadline:time.sleep(.005)
+                self.assertEqual(answer.read_text('ascii').split('|'),[identifier,nonce,str(len(payload)),hashlib.sha256(payload).hexdigest()])
+                with self.assertRaises(PermissionError):
+                    with pdf.open('r+b'):pass
+            finally:
+                stop.set()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            with pdf.open('r+b'):pass
+
     def test_pdf_crop_changes_page_bounds_without_changing_vector_content(self):
         from pypdf import PdfReader, PdfWriter
         from pypdf.generic import DecodedStreamObject, NameObject

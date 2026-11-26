@@ -4,7 +4,7 @@ import re
 import math
 from functools import lru_cache
 from xml.dom import Node, minidom
-from .text_plan import parameters
+from .text_plan import list_marker_end, parameters
 
 NAMESPACE='https://15100px.menu/ns/list/1.0/'
 RDF='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
@@ -74,10 +74,12 @@ def formatting(value,origins,current,raw,enabled):
     for line in value.split('\r'):
         end=start+len(line.encode('utf-16-le'))//2+1
         origin=origins[start];source=next((row for row in base if row['from']<=origin<row['to']),base[-1])
-        marker=re.match(r'[^\S\r]*\S+\t',line) if enabled else None
-        prefix=start+len(marker[0].encode('utf-16-le'))//2 if marker else start
-        if marker:
-            symbol=marker[0].strip()
+        marker_start=len(line)-len(line.lstrip())
+        marker_end=list_marker_end(line,marker_start,len(line)) if enabled else marker_start
+        prefix=start
+        if marker_end>marker_start:
+            prefix+=len(line[:marker_end].encode('utf-16-le'))//2
+            symbol=line[marker_start:marker_end-1]
             if len(symbol)==1 and ord(symbol)>127:symbols.add(symbol)
         rows.append({'from':start,'to':end,'start':source['start'],'first':source['first'],'prefix':prefix});start=end
     params=format_parameters({'enabled':enabled,'paragraphs':rows})

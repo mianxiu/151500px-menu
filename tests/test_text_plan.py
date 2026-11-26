@@ -41,6 +41,11 @@ class TextPlanTests(unittest.TestCase):
             with self.assertRaises(ValueError):compute('Text',{**base,**patch})
         with self.assertRaisesRegex(ValueError,'6级'):compute('Text',{**base,'draft':'\t'*6+'Text'})
         with self.assertRaisesRegex(ValueError,'3999'):compute('Text',{**base,'numbering':'upper-roman','start':4000})
+
+    def test_remove_only_consumes_prefixes_and_preserves_prose(self):
+        source='No. 5\n→ Direction\n😀 Smile\n• Imported\n→\tManaged'
+        self.assertEqual(self.list(source,'remove')['value'],'No. 5\r→ Direction\r😀 Smile\rImported\rManaged')
+
     def plan(self,source,operation='edit',draft=None,**extras):
         result=compute(source,{'revision':'r','draft':source if draft is None else draft,'operation':operation,**extras})
         params={key:value for key,value in result.items() if key in {'value','origins','count','breaks','layout'}}

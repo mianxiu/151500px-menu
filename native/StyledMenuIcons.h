@@ -1225,6 +1225,9 @@ static constexpr FigmaPathCommand styledPath108_2[] = {
     {'C', 8.00000000f, 4.10000000f, 5.70000000f, 4.10000000f, 5.70000000f, 2.60000000f},
 };
 
+static float styledIconStroke(float width,float unit,bool fineLines) {
+    return fineLines && width>0?std::min(width*unit,std::max(1.f,width*unit*.8f)):width*unit;
+}
 static void styledPath(ImDrawList* draw,const FigmaPathCommand* path,int count,ImVec2 at,float unit,ImU32 ink,float stroke) {
     auto point=[&](float x,float y){return ImVec2{at.x+x*unit,at.y+y*unit};};
     draw->PathClear();
@@ -1233,7 +1236,7 @@ static void styledPath(ImDrawList* draw,const FigmaPathCommand* path,int count,I
         if(c.op=='M' || c.op=='L')draw->PathLineToMergeDuplicate(point(c.x,c.y));
         else if(c.op=='C')draw->PathBezierCubicCurveTo(point(c.x,c.y),point(c.x2,c.y2),point(c.x3,c.y3));
     }
-    if(stroke) {draw->PathStroke(ink,0,stroke*unit);return;}
+    if(stroke) {draw->PathStroke(ink,0,stroke);return;}
     float area=0;
     for(int j=0;j<draw->_Path.Size;++j) {
         const auto& a=draw->_Path[j];const auto& b=draw->_Path[(j+1)%draw->_Path.Size];
@@ -1242,84 +1245,93 @@ static void styledPath(ImDrawList* draw,const FigmaPathCommand* path,int count,I
     if(area<0)std::reverse(draw->_Path.begin(),draw->_Path.end());
     draw->PathFillConcave(ink);
 }
-static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,ImU32 ink,ImU32 surface) {
+static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,ImU32 ink,ImU32 surface,bool fineLines=false) {
     const float unit=size/9;
     const auto fg=ImGui::ColorConvertU32ToFloat4(ink),bg=ImGui::ColorConvertU32ToFloat4(surface);
     auto color=[&](float t){return ImGui::ColorConvertFloat4ToU32({fg.x+(bg.x-fg.x)*t,fg.y+(bg.y-fg.y)*t,fg.z+(bg.z-fg.z)*t,fg.w});};
     auto p=[&](float x,float y){return ImVec2{at.x+x*unit,at.y+y*unit};};
+    auto strokeWidth=[&](float width){return styledIconStroke(width,unit,fineLines);};
+    auto bar=[&](float x,float y,float w,float h,float radius){
+        auto a=p(x,y),b=p(x+w,y+h);
+        if(fineLines){
+            if(w<h){const float inset=(w*unit-strokeWidth(w))*.5f;a.x+=inset;b.x-=inset;}
+            else{const float inset=(h*unit-strokeWidth(h))*.5f;a.y+=inset;b.y-=inset;}
+        }
+        draw->AddRectFilled(a,b,ink,radius*unit);
+    };
     switch(icon) {
     case 7:
         draw->AddRectFilled(p(0.00000000f,3.00000000f),p(6.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,3.50000000f),p(5.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,3.50000000f),p(5.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(3.00000000f,0.00000000f),p(9.00000000f,6.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(3.50000000f,0.50000000f),p(8.50000000f,5.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(3.50000000f,0.50000000f),p(8.50000000f,5.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 8:
         draw->AddRectFilled(p(1.00000000f,0.00000000f),p(8.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.50000000f,0.50000000f),p(7.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
-        draw->AddRectFilled(p(3.00000000f,4.00000000f),p(6.00000000f,5.00000000f),color(0.00000000f),0.50000000f*unit);
-        draw->AddRectFilled(p(4.00000000f,3.00000000f),p(5.00000000f,6.00000000f),color(0.00000000f),0.50000000f*unit);
+        draw->AddRect(p(1.50000000f,0.50000000f),p(7.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        bar(3.00000000f,4.00000000f,3.00000000f,1.00000000f,0.50000000f);
+        bar(4.00000000f,3.00000000f,1.00000000f,3.00000000f,0.50000000f);
         break;
     case 0:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
-        draw->AddRectFilled(p(2.50000000f,4.00000000f),p(6.50000000f,5.00000000f),color(0.00000000f),0.50000000f*unit);
-        draw->AddRectFilled(p(4.00000000f,2.50000000f),p(5.00000000f,6.50000000f),color(0.00000000f),0.50000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        bar(2.50000000f,4.00000000f,4.00000000f,1.00000000f,0.50000000f);
+        bar(4.00000000f,2.50000000f,1.00000000f,4.00000000f,0.50000000f);
         break;
     case 1:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(2.00000000f,2.00000000f),p(7.00000000f,7.00000000f),color(0.00000000f),0.00000000f*unit);
         break;
     case 2:
-        styledPath(draw,styledPath2_0,sizeof(styledPath2_0)/sizeof(*styledPath2_0),at,unit,color(0.00000000f),0.00000000f);
-        styledPath(draw,styledPath2_1,sizeof(styledPath2_1)/sizeof(*styledPath2_1),at,unit,color(0.67431195f),0.00000000f);
+        styledPath(draw,styledPath2_0,sizeof(styledPath2_0)/sizeof(*styledPath2_0),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath2_1,sizeof(styledPath2_1)/sizeof(*styledPath2_1),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
         break;
     case 3:
-        draw->AddRectFilled(p(0.00000000f,0.00000000f),p(1.00000000f,9.00000000f),color(0.00000000f),0.00000000f*unit);
-        draw->AddRectFilled(p(0.00000000f,8.00000000f),p(9.00000000f,9.00000000f),color(0.00000000f),0.00000000f*unit);
-        styledPath(draw,styledPath3_2,sizeof(styledPath3_2)/sizeof(*styledPath3_2),at,unit,color(0.00000000f),1.00000000f);
+        bar(0.00000000f,0.00000000f,1.00000000f,9.00000000f,0.00000000f);
+        bar(0.00000000f,8.00000000f,9.00000000f,1.00000000f,0.00000000f);
+        styledPath(draw,styledPath3_2,sizeof(styledPath3_2)/sizeof(*styledPath3_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddRectFilled(p(4.31250000f,3.50000000f),p(5.31250000f,4.50000000f),color(0.00000000f),0.00000000f*unit);
         break;
     case 5:
-        draw->AddRectFilled(p(4.00000000f,0.00000000f),p(5.00000000f,9.00000000f),color(0.00000000f),0.50000000f*unit);
-        draw->AddRectFilled(p(0.00000000f,2.00000000f),p(9.00000000f,3.00000000f),color(0.00000000f),0.50000000f*unit);
-        draw->AddRectFilled(p(2.50000000f,8.00000000f),p(6.50000000f,9.00000000f),color(0.00000000f),0.00000000f*unit);
-        styledPath(draw,styledPath5_3,sizeof(styledPath5_3)/sizeof(*styledPath5_3),at,unit,color(0.00000000f),0.00000000f);
-        styledPath(draw,styledPath5_4,sizeof(styledPath5_4)/sizeof(*styledPath5_4),at,unit,color(0.67431195f),0.00000000f);
-        styledPath(draw,styledPath5_5,sizeof(styledPath5_5)/sizeof(*styledPath5_5),at,unit,color(0.00000000f),0.00000000f);
-        styledPath(draw,styledPath5_6,sizeof(styledPath5_6)/sizeof(*styledPath5_6),at,unit,color(0.67431195f),0.00000000f);
+        bar(4.00000000f,0.00000000f,1.00000000f,9.00000000f,0.50000000f);
+        bar(0.00000000f,2.00000000f,9.00000000f,1.00000000f,0.50000000f);
+        bar(2.50000000f,8.00000000f,4.00000000f,1.00000000f,0.00000000f);
+        styledPath(draw,styledPath5_3,sizeof(styledPath5_3)/sizeof(*styledPath5_3),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath5_4,sizeof(styledPath5_4)/sizeof(*styledPath5_4),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath5_5,sizeof(styledPath5_5)/sizeof(*styledPath5_5),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath5_6,sizeof(styledPath5_6)/sizeof(*styledPath5_6),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
         break;
     case 6:
         draw->AddCircleFilled(p(4.50000000f,4.50000000f),4.50000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(4.50000000f,4.50000000f),3.50000000f*unit,color(0.67431195f),32);
-        styledPath(draw,styledPath6_2,sizeof(styledPath6_2)/sizeof(*styledPath6_2),at,unit,color(0.00000000f),0.00000000f);
+        styledPath(draw,styledPath6_2,sizeof(styledPath6_2)/sizeof(*styledPath6_2),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
         break;
     case 9:
-        styledPath(draw,styledPath9_0,sizeof(styledPath9_0)/sizeof(*styledPath9_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath9_1,sizeof(styledPath9_1)/sizeof(*styledPath9_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath9_0,sizeof(styledPath9_0)/sizeof(*styledPath9_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath9_1,sizeof(styledPath9_1)/sizeof(*styledPath9_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 10:
-        styledPath(draw,styledPath10_0,sizeof(styledPath10_0)/sizeof(*styledPath10_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath10_1,sizeof(styledPath10_1)/sizeof(*styledPath10_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath10_0,sizeof(styledPath10_0)/sizeof(*styledPath10_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath10_1,sizeof(styledPath10_1)/sizeof(*styledPath10_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 11:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 12:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(2.00000000f,2.00000000f),p(7.00000000f,7.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(2.50000000f,2.50000000f),p(6.50000000f,6.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(2.50000000f,2.50000000f),p(6.50000000f,6.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 13:
         draw->AddRectFilled(p(1.00000000f,1.00000000f),p(8.00000000f,8.00000000f),color(0.00000000f),0.00000000f*unit);
         break;
     case 14:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
-        draw->AddRectFilled(p(1.00000000f,1.00000000f),p(2.00000000f,8.00000000f),color(0.00000000f),0.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        bar(1.00000000f,1.00000000f,1.00000000f,7.00000000f,0.00000000f);
         draw->AddRectFilled(p(2.00000000f,1.00000000f),p(3.00000000f,8.00000000f),color(0.16666667f),0.00000000f*unit);
         draw->AddRectFilled(p(3.00000000f,1.00000000f),p(4.00000000f,8.00000000f),color(0.33333333f),0.00000000f*unit);
         draw->AddRectFilled(p(4.00000000f,1.00000000f),p(5.00000000f,8.00000000f),color(0.50000000f),0.00000000f*unit);
@@ -1329,7 +1341,7 @@ static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,Im
         break;
     case 15:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(1.00000000f,1.00000000f),p(3.00000000f,3.00000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(5.00000000f,1.00000000f),p(7.00000000f,3.00000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(3.00000000f,3.00000000f),p(5.00000000f,5.00000000f),color(0.00000000f),0.00000000f*unit);
@@ -1338,115 +1350,115 @@ static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,Im
         break;
     case 16:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(6.00000000f,6.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(5.50000000f,5.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(5.50000000f,5.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(3.00000000f,3.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(3.50000000f,3.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(3.50000000f,3.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 17:
         draw->AddRectFilled(p(1.00000000f,1.00000000f),p(8.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.50000000f,1.50000000f),p(7.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(1.50000000f,1.50000000f),p(7.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(3.00000000f,0.00000000f),p(6.00000000f,2.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(3.50000000f,0.50000000f),p(5.50000000f,1.50000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath17_2,sizeof(styledPath17_2)/sizeof(*styledPath17_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath17_3,sizeof(styledPath17_3)/sizeof(*styledPath17_3),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(3.50000000f,0.50000000f),p(5.50000000f,1.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath17_2,sizeof(styledPath17_2)/sizeof(*styledPath17_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath17_3,sizeof(styledPath17_3)/sizeof(*styledPath17_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 18:
-        styledPath(draw,styledPath18_0,sizeof(styledPath18_0)/sizeof(*styledPath18_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath18_1,sizeof(styledPath18_1)/sizeof(*styledPath18_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath18_0,sizeof(styledPath18_0)/sizeof(*styledPath18_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath18_1,sizeof(styledPath18_1)/sizeof(*styledPath18_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 19:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(0.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 20:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 21:
-        styledPath(draw,styledPath21_0,sizeof(styledPath21_0)/sizeof(*styledPath21_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath21_1,sizeof(styledPath21_1)/sizeof(*styledPath21_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath21_2,sizeof(styledPath21_2)/sizeof(*styledPath21_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath21_0,sizeof(styledPath21_0)/sizeof(*styledPath21_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath21_1,sizeof(styledPath21_1)/sizeof(*styledPath21_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath21_2,sizeof(styledPath21_2)/sizeof(*styledPath21_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 22:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(1.00000000f,1.00000000f),p(4.50000000f,8.00000000f),color(0.00000000f),0.00000000f*unit);
-        styledPath(draw,styledPath22_2,sizeof(styledPath22_2)/sizeof(*styledPath22_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath22_2,sizeof(styledPath22_2)/sizeof(*styledPath22_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 23:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(1.00000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath23_1,sizeof(styledPath23_1)/sizeof(*styledPath23_1),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath23_1,sizeof(styledPath23_1)/sizeof(*styledPath23_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 24:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(0.53000000f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath24_1,sizeof(styledPath24_1)/sizeof(*styledPath24_1),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath24_1,sizeof(styledPath24_1)/sizeof(*styledPath24_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 25:
-        styledPath(draw,styledPath25_0,sizeof(styledPath25_0)/sizeof(*styledPath25_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath25_1,sizeof(styledPath25_1)/sizeof(*styledPath25_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath25_0,sizeof(styledPath25_0)/sizeof(*styledPath25_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath25_1,sizeof(styledPath25_1)/sizeof(*styledPath25_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(1.50000000f,6.00000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(7.50000000f,3.00000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 26:
-        styledPath(draw,styledPath26_0,sizeof(styledPath26_0)/sizeof(*styledPath26_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath26_0,sizeof(styledPath26_0)/sizeof(*styledPath26_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(7.35800000f,2.85000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(7.80000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(7.35800000f,6.15000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 27:
-        styledPath(draw,styledPath27_0,sizeof(styledPath27_0)/sizeof(*styledPath27_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath27_0,sizeof(styledPath27_0)/sizeof(*styledPath27_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(7.80000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.20000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 28:
-        styledPath(draw,styledPath28_0,sizeof(styledPath28_0)/sizeof(*styledPath28_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath28_0,sizeof(styledPath28_0)/sizeof(*styledPath28_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(7.80000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.64200000f,6.15000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.64200000f,2.85000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 29:
-        styledPath(draw,styledPath29_0,sizeof(styledPath29_0)/sizeof(*styledPath29_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath29_0,sizeof(styledPath29_0)/sizeof(*styledPath29_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(7.80000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(2.85000000f,7.35800000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(2.85000000f,1.64200000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 30:
-        styledPath(draw,styledPath30_0,sizeof(styledPath30_0)/sizeof(*styledPath30_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath30_0,sizeof(styledPath30_0)/sizeof(*styledPath30_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(7.80000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.20000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddRectFilled(p(3.50000000f,3.50000000f),p(5.50000000f,5.50000000f),color(0.00000000f),0.00000000f*unit);
         break;
     case 31:
-        styledPath(draw,styledPath31_0,sizeof(styledPath31_0)/sizeof(*styledPath31_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath31_1,sizeof(styledPath31_1)/sizeof(*styledPath31_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath31_0,sizeof(styledPath31_0)/sizeof(*styledPath31_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath31_1,sizeof(styledPath31_1)/sizeof(*styledPath31_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 32:
-        styledPath(draw,styledPath32_0,sizeof(styledPath32_0)/sizeof(*styledPath32_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath32_0,sizeof(styledPath32_0)/sizeof(*styledPath32_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 33:
-        styledPath(draw,styledPath33_0,sizeof(styledPath33_0)/sizeof(*styledPath33_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath33_0,sizeof(styledPath33_0)/sizeof(*styledPath33_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 34:
-        styledPath(draw,styledPath34_0,sizeof(styledPath34_0)/sizeof(*styledPath34_0),at,unit,color(0.67431195f),0.00000000f);
-        styledPath(draw,styledPath34_1,sizeof(styledPath34_1)/sizeof(*styledPath34_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath34_2,sizeof(styledPath34_2)/sizeof(*styledPath34_2),at,unit,color(0.00000000f),0.00000000f);
+        styledPath(draw,styledPath34_0,sizeof(styledPath34_0)/sizeof(*styledPath34_0),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath34_1,sizeof(styledPath34_1)/sizeof(*styledPath34_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath34_2,sizeof(styledPath34_2)/sizeof(*styledPath34_2),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
         break;
     case 35:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(9.00000000f,9.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath35_1,sizeof(styledPath35_1)/sizeof(*styledPath35_1),at,unit,color(0.00000000f),0.00000000f);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath35_1,sizeof(styledPath35_1)/sizeof(*styledPath35_1),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
         draw->AddCircleFilled(p(6.50000000f,2.50000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 36:
-        draw->AddRectFilled(p(1.00000000f,1.00000000f),p(8.00000000f,2.00000000f),color(0.00000000f),0.00000000f*unit);
-        draw->AddRectFilled(p(4.00000000f,1.00000000f),p(5.00000000f,8.00000000f),color(0.00000000f),0.00000000f*unit);
-        draw->AddRectFilled(p(2.50000000f,7.00000000f),p(6.50000000f,8.00000000f),color(0.00000000f),0.00000000f*unit);
+        bar(1.00000000f,1.00000000f,7.00000000f,1.00000000f,0.00000000f);
+        bar(4.00000000f,1.00000000f,1.00000000f,7.00000000f,0.00000000f);
+        bar(2.50000000f,7.00000000f,4.00000000f,1.00000000f,0.00000000f);
         break;
     case 37:
         draw->AddRectFilled(p(1.00000000f,1.00000000f),p(8.00000000f,8.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.50000000f,1.50000000f),p(7.50000000f,7.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(1.50000000f,1.50000000f),p(7.50000000f,7.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(2.00000000f,2.00000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(7.00000000f,0.00000000f),p(9.00000000f,2.00000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(0.00000000f,7.00000000f),p(2.00000000f,9.00000000f),color(0.00000000f),0.00000000f*unit);
@@ -1454,414 +1466,414 @@ static void drawStyledMenuIcon(ImDrawList* draw,int icon,ImVec2 at,float size,Im
         break;
     case 38:
         draw->AddRectFilled(p(0.00000000f,0.00000000f),p(8.00000000f,8.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.50000000f,0.50000000f),p(7.50000000f,7.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.50000000f,0.50000000f),p(7.50000000f,7.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(4.00000000f,4.00000000f),p(9.00000000f,9.00000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(5.00000000f,5.00000000f),p(8.00000000f,8.00000000f),color(0.67431195f),0.00000000f*unit);
         break;
     case 39:
-        styledPath(draw,styledPath39_0,sizeof(styledPath39_0)/sizeof(*styledPath39_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath39_0,sizeof(styledPath39_0)/sizeof(*styledPath39_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(4.50000000f,4.50000000f),1.20000000f*unit,color(0.00000000f),32);
         break;
     case 40:
         draw->AddRectFilled(p(1.00000000f,1.00000000f),p(8.00000000f,8.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.50000000f,1.50000000f),p(7.50000000f,7.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(1.50000000f,1.50000000f),p(7.50000000f,7.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(2.50000000f,4.50000000f),0.55000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(4.50000000f,4.50000000f),0.55000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(6.50000000f,4.50000000f),0.55000000f*unit,color(0.00000000f),32);
         break;
     case 41:
-        styledPath(draw,styledPath41_0,sizeof(styledPath41_0)/sizeof(*styledPath41_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath41_1,sizeof(styledPath41_1)/sizeof(*styledPath41_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath41_0,sizeof(styledPath41_0)/sizeof(*styledPath41_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath41_1,sizeof(styledPath41_1)/sizeof(*styledPath41_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 42:
         draw->AddRectFilled(p(0.25000000f,1.10000000f),p(8.75000000f,7.90000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(0.75000000f,1.60000000f),p(8.25000000f,7.40000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(0.75000000f,1.60000000f),p(8.25000000f,7.40000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 43:
-        styledPath(draw,styledPath43_0,sizeof(styledPath43_0)/sizeof(*styledPath43_0),at,unit,color(0.00000000f),0.00000000f);
-        styledPath(draw,styledPath43_1,sizeof(styledPath43_1)/sizeof(*styledPath43_1),at,unit,color(0.67431195f),0.00000000f);
+        styledPath(draw,styledPath43_0,sizeof(styledPath43_0)/sizeof(*styledPath43_0),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath43_1,sizeof(styledPath43_1)/sizeof(*styledPath43_1),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
         break;
     case 44:
-        styledPath(draw,styledPath44_0,sizeof(styledPath44_0)/sizeof(*styledPath44_0),at,unit,color(0.00000000f),0.00000000f);
-        styledPath(draw,styledPath44_1,sizeof(styledPath44_1)/sizeof(*styledPath44_1),at,unit,color(0.67431195f),0.00000000f);
+        styledPath(draw,styledPath44_0,sizeof(styledPath44_0)/sizeof(*styledPath44_0),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath44_1,sizeof(styledPath44_1)/sizeof(*styledPath44_1),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
         break;
     case 45:
-        styledPath(draw,styledPath45_0,sizeof(styledPath45_0)/sizeof(*styledPath45_0),at,unit,color(0.00000000f),0.00000000f);
-        styledPath(draw,styledPath45_1,sizeof(styledPath45_1)/sizeof(*styledPath45_1),at,unit,color(0.67431195f),0.00000000f);
+        styledPath(draw,styledPath45_0,sizeof(styledPath45_0)/sizeof(*styledPath45_0),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
+        styledPath(draw,styledPath45_1,sizeof(styledPath45_1)/sizeof(*styledPath45_1),at,unit,color(0.67431195f),strokeWidth(0.00000000f));
         break;
     case 46:
-        styledPath(draw,styledPath46_0,sizeof(styledPath46_0)/sizeof(*styledPath46_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath46_0,sizeof(styledPath46_0)/sizeof(*styledPath46_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 47:
-        draw->AddRectFilled(p(0.00000000f,2.00000000f),p(9.00000000f,3.00000000f),color(0.00000000f),0.00000000f*unit);
+        bar(0.00000000f,2.00000000f,9.00000000f,1.00000000f,0.00000000f);
         draw->AddRectFilled(p(2.00000000f,0.50000000f),p(5.00000000f,4.50000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(2.50000000f,1.00000000f),p(4.50000000f,4.00000000f),ink,0,0,1.00000000f*unit);
-        draw->AddRectFilled(p(0.00000000f,6.00000000f),p(9.00000000f,7.00000000f),color(0.00000000f),0.00000000f*unit);
+        draw->AddRect(p(2.50000000f,1.00000000f),p(4.50000000f,4.00000000f),ink,0,0,strokeWidth(1.00000000f));
+        bar(0.00000000f,6.00000000f,9.00000000f,1.00000000f,0.00000000f);
         draw->AddRectFilled(p(5.00000000f,4.50000000f),p(8.00000000f,8.50000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(5.50000000f,5.00000000f),p(7.50000000f,8.00000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(5.50000000f,5.00000000f),p(7.50000000f,8.00000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 48:
-        styledPath(draw,styledPath48_0,sizeof(styledPath48_0)/sizeof(*styledPath48_0),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath48_0,sizeof(styledPath48_0)/sizeof(*styledPath48_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 49:
-        styledPath(draw,styledPath49_0,sizeof(styledPath49_0)/sizeof(*styledPath49_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath49_1,sizeof(styledPath49_1)/sizeof(*styledPath49_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath49_0,sizeof(styledPath49_0)/sizeof(*styledPath49_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath49_1,sizeof(styledPath49_1)/sizeof(*styledPath49_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 50:
-        styledPath(draw,styledPath50_0,sizeof(styledPath50_0)/sizeof(*styledPath50_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath50_1,sizeof(styledPath50_1)/sizeof(*styledPath50_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath50_2,sizeof(styledPath50_2)/sizeof(*styledPath50_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath50_3,sizeof(styledPath50_3)/sizeof(*styledPath50_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath50_0,sizeof(styledPath50_0)/sizeof(*styledPath50_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath50_1,sizeof(styledPath50_1)/sizeof(*styledPath50_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath50_2,sizeof(styledPath50_2)/sizeof(*styledPath50_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath50_3,sizeof(styledPath50_3)/sizeof(*styledPath50_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 51:
-        styledPath(draw,styledPath51_0,sizeof(styledPath51_0)/sizeof(*styledPath51_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath51_1,sizeof(styledPath51_1)/sizeof(*styledPath51_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath51_2,sizeof(styledPath51_2)/sizeof(*styledPath51_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath51_3,sizeof(styledPath51_3)/sizeof(*styledPath51_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath51_0,sizeof(styledPath51_0)/sizeof(*styledPath51_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath51_1,sizeof(styledPath51_1)/sizeof(*styledPath51_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath51_2,sizeof(styledPath51_2)/sizeof(*styledPath51_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath51_3,sizeof(styledPath51_3)/sizeof(*styledPath51_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 52:
-        styledPath(draw,styledPath52_0,sizeof(styledPath52_0)/sizeof(*styledPath52_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath52_1,sizeof(styledPath52_1)/sizeof(*styledPath52_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath52_2,sizeof(styledPath52_2)/sizeof(*styledPath52_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath52_3,sizeof(styledPath52_3)/sizeof(*styledPath52_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath52_0,sizeof(styledPath52_0)/sizeof(*styledPath52_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath52_1,sizeof(styledPath52_1)/sizeof(*styledPath52_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath52_2,sizeof(styledPath52_2)/sizeof(*styledPath52_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath52_3,sizeof(styledPath52_3)/sizeof(*styledPath52_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 53:
-        styledPath(draw,styledPath53_0,sizeof(styledPath53_0)/sizeof(*styledPath53_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath53_1,sizeof(styledPath53_1)/sizeof(*styledPath53_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath53_2,sizeof(styledPath53_2)/sizeof(*styledPath53_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath53_3,sizeof(styledPath53_3)/sizeof(*styledPath53_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath53_0,sizeof(styledPath53_0)/sizeof(*styledPath53_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath53_1,sizeof(styledPath53_1)/sizeof(*styledPath53_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath53_2,sizeof(styledPath53_2)/sizeof(*styledPath53_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath53_3,sizeof(styledPath53_3)/sizeof(*styledPath53_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 54:
-        styledPath(draw,styledPath54_0,sizeof(styledPath54_0)/sizeof(*styledPath54_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath54_1,sizeof(styledPath54_1)/sizeof(*styledPath54_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath54_2,sizeof(styledPath54_2)/sizeof(*styledPath54_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath54_3,sizeof(styledPath54_3)/sizeof(*styledPath54_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath54_0,sizeof(styledPath54_0)/sizeof(*styledPath54_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath54_1,sizeof(styledPath54_1)/sizeof(*styledPath54_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath54_2,sizeof(styledPath54_2)/sizeof(*styledPath54_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath54_3,sizeof(styledPath54_3)/sizeof(*styledPath54_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 55:
-        styledPath(draw,styledPath55_0,sizeof(styledPath55_0)/sizeof(*styledPath55_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath55_1,sizeof(styledPath55_1)/sizeof(*styledPath55_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath55_2,sizeof(styledPath55_2)/sizeof(*styledPath55_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath55_3,sizeof(styledPath55_3)/sizeof(*styledPath55_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath55_0,sizeof(styledPath55_0)/sizeof(*styledPath55_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath55_1,sizeof(styledPath55_1)/sizeof(*styledPath55_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath55_2,sizeof(styledPath55_2)/sizeof(*styledPath55_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath55_3,sizeof(styledPath55_3)/sizeof(*styledPath55_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 56:
-        styledPath(draw,styledPath56_0,sizeof(styledPath56_0)/sizeof(*styledPath56_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath56_1,sizeof(styledPath56_1)/sizeof(*styledPath56_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath56_2,sizeof(styledPath56_2)/sizeof(*styledPath56_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath56_3,sizeof(styledPath56_3)/sizeof(*styledPath56_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath56_0,sizeof(styledPath56_0)/sizeof(*styledPath56_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath56_1,sizeof(styledPath56_1)/sizeof(*styledPath56_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath56_2,sizeof(styledPath56_2)/sizeof(*styledPath56_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath56_3,sizeof(styledPath56_3)/sizeof(*styledPath56_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 57:
-        styledPath(draw,styledPath57_0,sizeof(styledPath57_0)/sizeof(*styledPath57_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath57_1,sizeof(styledPath57_1)/sizeof(*styledPath57_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath57_2,sizeof(styledPath57_2)/sizeof(*styledPath57_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath57_0,sizeof(styledPath57_0)/sizeof(*styledPath57_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath57_1,sizeof(styledPath57_1)/sizeof(*styledPath57_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath57_2,sizeof(styledPath57_2)/sizeof(*styledPath57_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 58:
-        styledPath(draw,styledPath58_0,sizeof(styledPath58_0)/sizeof(*styledPath58_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath58_1,sizeof(styledPath58_1)/sizeof(*styledPath58_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath58_0,sizeof(styledPath58_0)/sizeof(*styledPath58_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath58_1,sizeof(styledPath58_1)/sizeof(*styledPath58_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 59:
-        styledPath(draw,styledPath59_0,sizeof(styledPath59_0)/sizeof(*styledPath59_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath59_1,sizeof(styledPath59_1)/sizeof(*styledPath59_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath59_2,sizeof(styledPath59_2)/sizeof(*styledPath59_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath59_3,sizeof(styledPath59_3)/sizeof(*styledPath59_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath59_4,sizeof(styledPath59_4)/sizeof(*styledPath59_4),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath59_0,sizeof(styledPath59_0)/sizeof(*styledPath59_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath59_1,sizeof(styledPath59_1)/sizeof(*styledPath59_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath59_2,sizeof(styledPath59_2)/sizeof(*styledPath59_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath59_3,sizeof(styledPath59_3)/sizeof(*styledPath59_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath59_4,sizeof(styledPath59_4)/sizeof(*styledPath59_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 60:
-        styledPath(draw,styledPath60_0,sizeof(styledPath60_0)/sizeof(*styledPath60_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath60_1,sizeof(styledPath60_1)/sizeof(*styledPath60_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath60_2,sizeof(styledPath60_2)/sizeof(*styledPath60_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath60_3,sizeof(styledPath60_3)/sizeof(*styledPath60_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath60_4,sizeof(styledPath60_4)/sizeof(*styledPath60_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath60_5,sizeof(styledPath60_5)/sizeof(*styledPath60_5),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath60_6,sizeof(styledPath60_6)/sizeof(*styledPath60_6),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath60_0,sizeof(styledPath60_0)/sizeof(*styledPath60_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath60_1,sizeof(styledPath60_1)/sizeof(*styledPath60_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath60_2,sizeof(styledPath60_2)/sizeof(*styledPath60_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath60_3,sizeof(styledPath60_3)/sizeof(*styledPath60_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath60_4,sizeof(styledPath60_4)/sizeof(*styledPath60_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath60_5,sizeof(styledPath60_5)/sizeof(*styledPath60_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath60_6,sizeof(styledPath60_6)/sizeof(*styledPath60_6),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 61:
-        styledPath(draw,styledPath61_0,sizeof(styledPath61_0)/sizeof(*styledPath61_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath61_1,sizeof(styledPath61_1)/sizeof(*styledPath61_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath61_2,sizeof(styledPath61_2)/sizeof(*styledPath61_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath61_3,sizeof(styledPath61_3)/sizeof(*styledPath61_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath61_4,sizeof(styledPath61_4)/sizeof(*styledPath61_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath61_5,sizeof(styledPath61_5)/sizeof(*styledPath61_5),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath61_0,sizeof(styledPath61_0)/sizeof(*styledPath61_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath61_1,sizeof(styledPath61_1)/sizeof(*styledPath61_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath61_2,sizeof(styledPath61_2)/sizeof(*styledPath61_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath61_3,sizeof(styledPath61_3)/sizeof(*styledPath61_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath61_4,sizeof(styledPath61_4)/sizeof(*styledPath61_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath61_5,sizeof(styledPath61_5)/sizeof(*styledPath61_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 62:
-        styledPath(draw,styledPath62_0,sizeof(styledPath62_0)/sizeof(*styledPath62_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath62_1,sizeof(styledPath62_1)/sizeof(*styledPath62_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath62_2,sizeof(styledPath62_2)/sizeof(*styledPath62_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath62_3,sizeof(styledPath62_3)/sizeof(*styledPath62_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath62_4,sizeof(styledPath62_4)/sizeof(*styledPath62_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath62_5,sizeof(styledPath62_5)/sizeof(*styledPath62_5),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath62_0,sizeof(styledPath62_0)/sizeof(*styledPath62_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath62_1,sizeof(styledPath62_1)/sizeof(*styledPath62_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath62_2,sizeof(styledPath62_2)/sizeof(*styledPath62_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath62_3,sizeof(styledPath62_3)/sizeof(*styledPath62_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath62_4,sizeof(styledPath62_4)/sizeof(*styledPath62_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath62_5,sizeof(styledPath62_5)/sizeof(*styledPath62_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 63:
-        styledPath(draw,styledPath63_0,sizeof(styledPath63_0)/sizeof(*styledPath63_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath63_1,sizeof(styledPath63_1)/sizeof(*styledPath63_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath63_2,sizeof(styledPath63_2)/sizeof(*styledPath63_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath63_0,sizeof(styledPath63_0)/sizeof(*styledPath63_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath63_1,sizeof(styledPath63_1)/sizeof(*styledPath63_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath63_2,sizeof(styledPath63_2)/sizeof(*styledPath63_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 64:
-        styledPath(draw,styledPath64_0,sizeof(styledPath64_0)/sizeof(*styledPath64_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath64_1,sizeof(styledPath64_1)/sizeof(*styledPath64_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath64_2,sizeof(styledPath64_2)/sizeof(*styledPath64_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath64_0,sizeof(styledPath64_0)/sizeof(*styledPath64_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath64_1,sizeof(styledPath64_1)/sizeof(*styledPath64_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath64_2,sizeof(styledPath64_2)/sizeof(*styledPath64_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 65:
-        styledPath(draw,styledPath65_0,sizeof(styledPath65_0)/sizeof(*styledPath65_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath65_1,sizeof(styledPath65_1)/sizeof(*styledPath65_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath65_2,sizeof(styledPath65_2)/sizeof(*styledPath65_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath65_0,sizeof(styledPath65_0)/sizeof(*styledPath65_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath65_1,sizeof(styledPath65_1)/sizeof(*styledPath65_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath65_2,sizeof(styledPath65_2)/sizeof(*styledPath65_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 66:
-        styledPath(draw,styledPath66_0,sizeof(styledPath66_0)/sizeof(*styledPath66_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath66_1,sizeof(styledPath66_1)/sizeof(*styledPath66_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath66_2,sizeof(styledPath66_2)/sizeof(*styledPath66_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath66_3,sizeof(styledPath66_3)/sizeof(*styledPath66_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath66_0,sizeof(styledPath66_0)/sizeof(*styledPath66_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath66_1,sizeof(styledPath66_1)/sizeof(*styledPath66_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath66_2,sizeof(styledPath66_2)/sizeof(*styledPath66_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath66_3,sizeof(styledPath66_3)/sizeof(*styledPath66_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 67:
-        styledPath(draw,styledPath67_0,sizeof(styledPath67_0)/sizeof(*styledPath67_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath67_1,sizeof(styledPath67_1)/sizeof(*styledPath67_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath67_2,sizeof(styledPath67_2)/sizeof(*styledPath67_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath67_3,sizeof(styledPath67_3)/sizeof(*styledPath67_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath67_0,sizeof(styledPath67_0)/sizeof(*styledPath67_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath67_1,sizeof(styledPath67_1)/sizeof(*styledPath67_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath67_2,sizeof(styledPath67_2)/sizeof(*styledPath67_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath67_3,sizeof(styledPath67_3)/sizeof(*styledPath67_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 68:
-        styledPath(draw,styledPath68_0,sizeof(styledPath68_0)/sizeof(*styledPath68_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath68_1,sizeof(styledPath68_1)/sizeof(*styledPath68_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath68_2,sizeof(styledPath68_2)/sizeof(*styledPath68_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath68_3,sizeof(styledPath68_3)/sizeof(*styledPath68_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath68_4,sizeof(styledPath68_4)/sizeof(*styledPath68_4),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath68_0,sizeof(styledPath68_0)/sizeof(*styledPath68_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath68_1,sizeof(styledPath68_1)/sizeof(*styledPath68_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath68_2,sizeof(styledPath68_2)/sizeof(*styledPath68_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath68_3,sizeof(styledPath68_3)/sizeof(*styledPath68_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath68_4,sizeof(styledPath68_4)/sizeof(*styledPath68_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 69:
-        styledPath(draw,styledPath69_0,sizeof(styledPath69_0)/sizeof(*styledPath69_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath69_1,sizeof(styledPath69_1)/sizeof(*styledPath69_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath69_2,sizeof(styledPath69_2)/sizeof(*styledPath69_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath69_3,sizeof(styledPath69_3)/sizeof(*styledPath69_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath69_4,sizeof(styledPath69_4)/sizeof(*styledPath69_4),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath69_0,sizeof(styledPath69_0)/sizeof(*styledPath69_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath69_1,sizeof(styledPath69_1)/sizeof(*styledPath69_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath69_2,sizeof(styledPath69_2)/sizeof(*styledPath69_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath69_3,sizeof(styledPath69_3)/sizeof(*styledPath69_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath69_4,sizeof(styledPath69_4)/sizeof(*styledPath69_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 70:
-        styledPath(draw,styledPath70_0,sizeof(styledPath70_0)/sizeof(*styledPath70_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath70_1,sizeof(styledPath70_1)/sizeof(*styledPath70_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath70_2,sizeof(styledPath70_2)/sizeof(*styledPath70_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath70_3,sizeof(styledPath70_3)/sizeof(*styledPath70_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath70_4,sizeof(styledPath70_4)/sizeof(*styledPath70_4),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath70_0,sizeof(styledPath70_0)/sizeof(*styledPath70_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath70_1,sizeof(styledPath70_1)/sizeof(*styledPath70_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath70_2,sizeof(styledPath70_2)/sizeof(*styledPath70_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath70_3,sizeof(styledPath70_3)/sizeof(*styledPath70_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath70_4,sizeof(styledPath70_4)/sizeof(*styledPath70_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 71:
-        styledPath(draw,styledPath71_0,sizeof(styledPath71_0)/sizeof(*styledPath71_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath71_1,sizeof(styledPath71_1)/sizeof(*styledPath71_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath71_0,sizeof(styledPath71_0)/sizeof(*styledPath71_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath71_1,sizeof(styledPath71_1)/sizeof(*styledPath71_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 72:
-        styledPath(draw,styledPath72_0,sizeof(styledPath72_0)/sizeof(*styledPath72_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath72_1,sizeof(styledPath72_1)/sizeof(*styledPath72_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath72_2,sizeof(styledPath72_2)/sizeof(*styledPath72_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath72_0,sizeof(styledPath72_0)/sizeof(*styledPath72_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath72_1,sizeof(styledPath72_1)/sizeof(*styledPath72_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath72_2,sizeof(styledPath72_2)/sizeof(*styledPath72_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 73:
-        styledPath(draw,styledPath73_0,sizeof(styledPath73_0)/sizeof(*styledPath73_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath73_1,sizeof(styledPath73_1)/sizeof(*styledPath73_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath73_2,sizeof(styledPath73_2)/sizeof(*styledPath73_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath73_3,sizeof(styledPath73_3)/sizeof(*styledPath73_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath73_0,sizeof(styledPath73_0)/sizeof(*styledPath73_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath73_1,sizeof(styledPath73_1)/sizeof(*styledPath73_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath73_2,sizeof(styledPath73_2)/sizeof(*styledPath73_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath73_3,sizeof(styledPath73_3)/sizeof(*styledPath73_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 74:
-        styledPath(draw,styledPath74_0,sizeof(styledPath74_0)/sizeof(*styledPath74_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath74_1,sizeof(styledPath74_1)/sizeof(*styledPath74_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath74_2,sizeof(styledPath74_2)/sizeof(*styledPath74_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath74_0,sizeof(styledPath74_0)/sizeof(*styledPath74_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath74_1,sizeof(styledPath74_1)/sizeof(*styledPath74_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath74_2,sizeof(styledPath74_2)/sizeof(*styledPath74_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 75:
-        styledPath(draw,styledPath75_0,sizeof(styledPath75_0)/sizeof(*styledPath75_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath75_1,sizeof(styledPath75_1)/sizeof(*styledPath75_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath75_2,sizeof(styledPath75_2)/sizeof(*styledPath75_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath75_0,sizeof(styledPath75_0)/sizeof(*styledPath75_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath75_1,sizeof(styledPath75_1)/sizeof(*styledPath75_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath75_2,sizeof(styledPath75_2)/sizeof(*styledPath75_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 76:
-        styledPath(draw,styledPath76_0,sizeof(styledPath76_0)/sizeof(*styledPath76_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath76_1,sizeof(styledPath76_1)/sizeof(*styledPath76_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath76_2,sizeof(styledPath76_2)/sizeof(*styledPath76_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath76_3,sizeof(styledPath76_3)/sizeof(*styledPath76_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath76_0,sizeof(styledPath76_0)/sizeof(*styledPath76_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath76_1,sizeof(styledPath76_1)/sizeof(*styledPath76_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath76_2,sizeof(styledPath76_2)/sizeof(*styledPath76_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath76_3,sizeof(styledPath76_3)/sizeof(*styledPath76_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 77:
-        styledPath(draw,styledPath77_0,sizeof(styledPath77_0)/sizeof(*styledPath77_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath77_1,sizeof(styledPath77_1)/sizeof(*styledPath77_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath77_2,sizeof(styledPath77_2)/sizeof(*styledPath77_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath77_3,sizeof(styledPath77_3)/sizeof(*styledPath77_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath77_0,sizeof(styledPath77_0)/sizeof(*styledPath77_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath77_1,sizeof(styledPath77_1)/sizeof(*styledPath77_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath77_2,sizeof(styledPath77_2)/sizeof(*styledPath77_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath77_3,sizeof(styledPath77_3)/sizeof(*styledPath77_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddRectFilled(p(3.00000000f,3.00000000f),p(6.00000000f,6.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(3.50000000f,3.50000000f),p(5.50000000f,5.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(3.50000000f,3.50000000f),p(5.50000000f,5.50000000f),ink,0,0,strokeWidth(1.00000000f));
         break;
     case 78:
         draw->AddRectFilled(p(0.50000000f,1.00000000f),p(8.50000000f,8.00000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.00000000f,1.50000000f),p(8.00000000f,7.50000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(1.00000000f,1.50000000f),p(8.00000000f,7.50000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(6.60000000f,3.00000000f),0.60000000f*unit,color(0.00000000f),32);
-        styledPath(draw,styledPath78_2,sizeof(styledPath78_2)/sizeof(*styledPath78_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath78_2,sizeof(styledPath78_2)/sizeof(*styledPath78_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 79:
         draw->AddRectFilled(p(0.50000000f,0.50000000f),p(8.50000000f,8.50000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.00000000f,1.00000000f),p(8.00000000f,8.00000000f),ink,0,0,1.00000000f*unit);
+        draw->AddRect(p(1.00000000f,1.00000000f),p(8.00000000f,8.00000000f),ink,0,0,strokeWidth(1.00000000f));
         draw->AddRectFilled(p(1.50000000f,1.50000000f),p(4.50000000f,4.50000000f),color(0.00000000f),0.00000000f*unit);
         draw->AddRectFilled(p(4.50000000f,4.50000000f),p(7.50000000f,7.50000000f),color(0.00000000f),0.00000000f*unit);
         break;
     case 80:
-        styledPath(draw,styledPath80_0,sizeof(styledPath80_0)/sizeof(*styledPath80_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath80_1,sizeof(styledPath80_1)/sizeof(*styledPath80_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath80_0,sizeof(styledPath80_0)/sizeof(*styledPath80_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath80_1,sizeof(styledPath80_1)/sizeof(*styledPath80_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 81:
-        styledPath(draw,styledPath81_0,sizeof(styledPath81_0)/sizeof(*styledPath81_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath81_1,sizeof(styledPath81_1)/sizeof(*styledPath81_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath81_2,sizeof(styledPath81_2)/sizeof(*styledPath81_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath81_3,sizeof(styledPath81_3)/sizeof(*styledPath81_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath81_4,sizeof(styledPath81_4)/sizeof(*styledPath81_4),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath81_0,sizeof(styledPath81_0)/sizeof(*styledPath81_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath81_1,sizeof(styledPath81_1)/sizeof(*styledPath81_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath81_2,sizeof(styledPath81_2)/sizeof(*styledPath81_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath81_3,sizeof(styledPath81_3)/sizeof(*styledPath81_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath81_4,sizeof(styledPath81_4)/sizeof(*styledPath81_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 82:
-        styledPath(draw,styledPath82_0,sizeof(styledPath82_0)/sizeof(*styledPath82_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_1,sizeof(styledPath82_1)/sizeof(*styledPath82_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_2,sizeof(styledPath82_2)/sizeof(*styledPath82_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_3,sizeof(styledPath82_3)/sizeof(*styledPath82_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_4,sizeof(styledPath82_4)/sizeof(*styledPath82_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_5,sizeof(styledPath82_5)/sizeof(*styledPath82_5),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_6,sizeof(styledPath82_6)/sizeof(*styledPath82_6),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_7,sizeof(styledPath82_7)/sizeof(*styledPath82_7),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath82_8,sizeof(styledPath82_8)/sizeof(*styledPath82_8),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath82_0,sizeof(styledPath82_0)/sizeof(*styledPath82_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_1,sizeof(styledPath82_1)/sizeof(*styledPath82_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_2,sizeof(styledPath82_2)/sizeof(*styledPath82_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_3,sizeof(styledPath82_3)/sizeof(*styledPath82_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_4,sizeof(styledPath82_4)/sizeof(*styledPath82_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_5,sizeof(styledPath82_5)/sizeof(*styledPath82_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_6,sizeof(styledPath82_6)/sizeof(*styledPath82_6),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_7,sizeof(styledPath82_7)/sizeof(*styledPath82_7),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath82_8,sizeof(styledPath82_8)/sizeof(*styledPath82_8),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 83:
-        styledPath(draw,styledPath83_0,sizeof(styledPath83_0)/sizeof(*styledPath83_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath83_1,sizeof(styledPath83_1)/sizeof(*styledPath83_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath83_2,sizeof(styledPath83_2)/sizeof(*styledPath83_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath83_0,sizeof(styledPath83_0)/sizeof(*styledPath83_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath83_1,sizeof(styledPath83_1)/sizeof(*styledPath83_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath83_2,sizeof(styledPath83_2)/sizeof(*styledPath83_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(1.40000000f,1.60000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.40000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.40000000f,7.40000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 84:
-        styledPath(draw,styledPath84_0,sizeof(styledPath84_0)/sizeof(*styledPath84_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath84_1,sizeof(styledPath84_1)/sizeof(*styledPath84_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath84_2,sizeof(styledPath84_2)/sizeof(*styledPath84_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath84_3,sizeof(styledPath84_3)/sizeof(*styledPath84_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath84_4,sizeof(styledPath84_4)/sizeof(*styledPath84_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath84_5,sizeof(styledPath84_5)/sizeof(*styledPath84_5),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath84_6,sizeof(styledPath84_6)/sizeof(*styledPath84_6),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath84_0,sizeof(styledPath84_0)/sizeof(*styledPath84_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath84_1,sizeof(styledPath84_1)/sizeof(*styledPath84_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath84_2,sizeof(styledPath84_2)/sizeof(*styledPath84_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath84_3,sizeof(styledPath84_3)/sizeof(*styledPath84_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath84_4,sizeof(styledPath84_4)/sizeof(*styledPath84_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath84_5,sizeof(styledPath84_5)/sizeof(*styledPath84_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath84_6,sizeof(styledPath84_6)/sizeof(*styledPath84_6),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 85:
-        styledPath(draw,styledPath85_0,sizeof(styledPath85_0)/sizeof(*styledPath85_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath85_1,sizeof(styledPath85_1)/sizeof(*styledPath85_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath85_2,sizeof(styledPath85_2)/sizeof(*styledPath85_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath85_3,sizeof(styledPath85_3)/sizeof(*styledPath85_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath85_0,sizeof(styledPath85_0)/sizeof(*styledPath85_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath85_1,sizeof(styledPath85_1)/sizeof(*styledPath85_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath85_2,sizeof(styledPath85_2)/sizeof(*styledPath85_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath85_3,sizeof(styledPath85_3)/sizeof(*styledPath85_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(1.50000000f,1.70000000f),0.65000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(1.50000000f,4.50000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 86:
         draw->AddRectFilled(p(0.60000000f,1.20000000f),p(8.40000000f,7.80000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.10000000f,1.70000000f),p(7.90000000f,7.30000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath86_1,sizeof(styledPath86_1)/sizeof(*styledPath86_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath86_2,sizeof(styledPath86_2)/sizeof(*styledPath86_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath86_3,sizeof(styledPath86_3)/sizeof(*styledPath86_3),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(1.10000000f,1.70000000f),p(7.90000000f,7.30000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath86_1,sizeof(styledPath86_1)/sizeof(*styledPath86_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath86_2,sizeof(styledPath86_2)/sizeof(*styledPath86_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath86_3,sizeof(styledPath86_3)/sizeof(*styledPath86_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 87:
-        styledPath(draw,styledPath87_0,sizeof(styledPath87_0)/sizeof(*styledPath87_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath87_1,sizeof(styledPath87_1)/sizeof(*styledPath87_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath87_0,sizeof(styledPath87_0)/sizeof(*styledPath87_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath87_1,sizeof(styledPath87_1)/sizeof(*styledPath87_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 88:
-        styledPath(draw,styledPath88_0,sizeof(styledPath88_0)/sizeof(*styledPath88_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath88_1,sizeof(styledPath88_1)/sizeof(*styledPath88_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath88_0,sizeof(styledPath88_0)/sizeof(*styledPath88_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath88_1,sizeof(styledPath88_1)/sizeof(*styledPath88_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 89:
-        styledPath(draw,styledPath89_0,sizeof(styledPath89_0)/sizeof(*styledPath89_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath89_1,sizeof(styledPath89_1)/sizeof(*styledPath89_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath89_2,sizeof(styledPath89_2)/sizeof(*styledPath89_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath89_3,sizeof(styledPath89_3)/sizeof(*styledPath89_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath89_0,sizeof(styledPath89_0)/sizeof(*styledPath89_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath89_1,sizeof(styledPath89_1)/sizeof(*styledPath89_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath89_2,sizeof(styledPath89_2)/sizeof(*styledPath89_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath89_3,sizeof(styledPath89_3)/sizeof(*styledPath89_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 90:
-        styledPath(draw,styledPath90_0,sizeof(styledPath90_0)/sizeof(*styledPath90_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath90_1,sizeof(styledPath90_1)/sizeof(*styledPath90_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath90_2,sizeof(styledPath90_2)/sizeof(*styledPath90_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath90_0,sizeof(styledPath90_0)/sizeof(*styledPath90_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath90_1,sizeof(styledPath90_1)/sizeof(*styledPath90_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath90_2,sizeof(styledPath90_2)/sizeof(*styledPath90_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 91:
-        styledPath(draw,styledPath91_0,sizeof(styledPath91_0)/sizeof(*styledPath91_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath91_1,sizeof(styledPath91_1)/sizeof(*styledPath91_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath91_0,sizeof(styledPath91_0)/sizeof(*styledPath91_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath91_1,sizeof(styledPath91_1)/sizeof(*styledPath91_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 92:
-        styledPath(draw,styledPath92_0,sizeof(styledPath92_0)/sizeof(*styledPath92_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath92_1,sizeof(styledPath92_1)/sizeof(*styledPath92_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath92_0,sizeof(styledPath92_0)/sizeof(*styledPath92_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath92_1,sizeof(styledPath92_1)/sizeof(*styledPath92_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 93:
-        styledPath(draw,styledPath93_0,sizeof(styledPath93_0)/sizeof(*styledPath93_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath93_1,sizeof(styledPath93_1)/sizeof(*styledPath93_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath93_2,sizeof(styledPath93_2)/sizeof(*styledPath93_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath93_0,sizeof(styledPath93_0)/sizeof(*styledPath93_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath93_1,sizeof(styledPath93_1)/sizeof(*styledPath93_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath93_2,sizeof(styledPath93_2)/sizeof(*styledPath93_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 94:
-        styledPath(draw,styledPath94_0,sizeof(styledPath94_0)/sizeof(*styledPath94_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath94_1,sizeof(styledPath94_1)/sizeof(*styledPath94_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath94_2,sizeof(styledPath94_2)/sizeof(*styledPath94_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath94_0,sizeof(styledPath94_0)/sizeof(*styledPath94_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath94_1,sizeof(styledPath94_1)/sizeof(*styledPath94_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath94_2,sizeof(styledPath94_2)/sizeof(*styledPath94_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(6.80000000f,1.90000000f),0.65000000f*unit,color(0.00000000f),32);
         break;
     case 95:
         draw->AddRectFilled(p(0.70000000f,0.70000000f),p(8.30000000f,6.70000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.20000000f,1.20000000f),p(7.80000000f,6.20000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath95_1,sizeof(styledPath95_1)/sizeof(*styledPath95_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath95_2,sizeof(styledPath95_2)/sizeof(*styledPath95_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath95_3,sizeof(styledPath95_3)/sizeof(*styledPath95_3),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(1.20000000f,1.20000000f),p(7.80000000f,6.20000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath95_1,sizeof(styledPath95_1)/sizeof(*styledPath95_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath95_2,sizeof(styledPath95_2)/sizeof(*styledPath95_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath95_3,sizeof(styledPath95_3)/sizeof(*styledPath95_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 96:
         draw->AddRectFilled(p(0.70000000f,0.70000000f),p(8.30000000f,6.70000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.20000000f,1.20000000f),p(7.80000000f,6.20000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath96_1,sizeof(styledPath96_1)/sizeof(*styledPath96_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath96_2,sizeof(styledPath96_2)/sizeof(*styledPath96_2),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(1.20000000f,1.20000000f),p(7.80000000f,6.20000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath96_1,sizeof(styledPath96_1)/sizeof(*styledPath96_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath96_2,sizeof(styledPath96_2)/sizeof(*styledPath96_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 97:
         draw->AddRectFilled(p(0.70000000f,0.70000000f),p(6.70000000f,8.30000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.20000000f,1.20000000f),p(6.20000000f,7.80000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath97_1,sizeof(styledPath97_1)/sizeof(*styledPath97_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath97_2,sizeof(styledPath97_2)/sizeof(*styledPath97_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath97_3,sizeof(styledPath97_3)/sizeof(*styledPath97_3),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(1.20000000f,1.20000000f),p(6.20000000f,7.80000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath97_1,sizeof(styledPath97_1)/sizeof(*styledPath97_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath97_2,sizeof(styledPath97_2)/sizeof(*styledPath97_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath97_3,sizeof(styledPath97_3)/sizeof(*styledPath97_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 98:
         draw->AddRectFilled(p(0.70000000f,0.70000000f),p(6.70000000f,8.30000000f),color(0.67431195f),0.00000000f*unit);
-        draw->AddRect(p(1.20000000f,1.20000000f),p(6.20000000f,7.80000000f),ink,0,0,1.00000000f*unit);
-        styledPath(draw,styledPath98_1,sizeof(styledPath98_1)/sizeof(*styledPath98_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath98_2,sizeof(styledPath98_2)/sizeof(*styledPath98_2),at,unit,color(0.00000000f),1.00000000f);
+        draw->AddRect(p(1.20000000f,1.20000000f),p(6.20000000f,7.80000000f),ink,0,0,strokeWidth(1.00000000f));
+        styledPath(draw,styledPath98_1,sizeof(styledPath98_1)/sizeof(*styledPath98_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath98_2,sizeof(styledPath98_2)/sizeof(*styledPath98_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 99:
-        styledPath(draw,styledPath99_0,sizeof(styledPath99_0)/sizeof(*styledPath99_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath99_1,sizeof(styledPath99_1)/sizeof(*styledPath99_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath99_2,sizeof(styledPath99_2)/sizeof(*styledPath99_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath99_3,sizeof(styledPath99_3)/sizeof(*styledPath99_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath99_4,sizeof(styledPath99_4)/sizeof(*styledPath99_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath99_5,sizeof(styledPath99_5)/sizeof(*styledPath99_5),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath99_0,sizeof(styledPath99_0)/sizeof(*styledPath99_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath99_1,sizeof(styledPath99_1)/sizeof(*styledPath99_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath99_2,sizeof(styledPath99_2)/sizeof(*styledPath99_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath99_3,sizeof(styledPath99_3)/sizeof(*styledPath99_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath99_4,sizeof(styledPath99_4)/sizeof(*styledPath99_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath99_5,sizeof(styledPath99_5)/sizeof(*styledPath99_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 100:
-        styledPath(draw,styledPath100_0,sizeof(styledPath100_0)/sizeof(*styledPath100_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath100_1,sizeof(styledPath100_1)/sizeof(*styledPath100_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath100_2,sizeof(styledPath100_2)/sizeof(*styledPath100_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath100_3,sizeof(styledPath100_3)/sizeof(*styledPath100_3),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath100_4,sizeof(styledPath100_4)/sizeof(*styledPath100_4),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath100_5,sizeof(styledPath100_5)/sizeof(*styledPath100_5),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath100_0,sizeof(styledPath100_0)/sizeof(*styledPath100_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath100_1,sizeof(styledPath100_1)/sizeof(*styledPath100_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath100_2,sizeof(styledPath100_2)/sizeof(*styledPath100_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath100_3,sizeof(styledPath100_3)/sizeof(*styledPath100_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath100_4,sizeof(styledPath100_4)/sizeof(*styledPath100_4),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath100_5,sizeof(styledPath100_5)/sizeof(*styledPath100_5),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 101:
-        styledPath(draw,styledPath101_0,sizeof(styledPath101_0)/sizeof(*styledPath101_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath101_1,sizeof(styledPath101_1)/sizeof(*styledPath101_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath101_0,sizeof(styledPath101_0)/sizeof(*styledPath101_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath101_1,sizeof(styledPath101_1)/sizeof(*styledPath101_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 102:
-        styledPath(draw,styledPath102_0,sizeof(styledPath102_0)/sizeof(*styledPath102_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath102_1,sizeof(styledPath102_1)/sizeof(*styledPath102_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath102_0,sizeof(styledPath102_0)/sizeof(*styledPath102_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath102_1,sizeof(styledPath102_1)/sizeof(*styledPath102_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         draw->AddCircleFilled(p(6.60000000f,1.50000000f),0.50000000f*unit,color(0.00000000f),32);
         break;
     case 103:
-        styledPath(draw,styledPath103_0,sizeof(styledPath103_0)/sizeof(*styledPath103_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath103_1,sizeof(styledPath103_1)/sizeof(*styledPath103_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath103_2,sizeof(styledPath103_2)/sizeof(*styledPath103_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath103_3,sizeof(styledPath103_3)/sizeof(*styledPath103_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath103_0,sizeof(styledPath103_0)/sizeof(*styledPath103_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath103_1,sizeof(styledPath103_1)/sizeof(*styledPath103_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath103_2,sizeof(styledPath103_2)/sizeof(*styledPath103_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath103_3,sizeof(styledPath103_3)/sizeof(*styledPath103_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 104:
-        styledPath(draw,styledPath104_0,sizeof(styledPath104_0)/sizeof(*styledPath104_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath104_1,sizeof(styledPath104_1)/sizeof(*styledPath104_1),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath104_0,sizeof(styledPath104_0)/sizeof(*styledPath104_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath104_1,sizeof(styledPath104_1)/sizeof(*styledPath104_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 105:
-        styledPath(draw,styledPath105_0,sizeof(styledPath105_0)/sizeof(*styledPath105_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath105_1,sizeof(styledPath105_1)/sizeof(*styledPath105_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath105_2,sizeof(styledPath105_2)/sizeof(*styledPath105_2),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath105_3,sizeof(styledPath105_3)/sizeof(*styledPath105_3),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath105_0,sizeof(styledPath105_0)/sizeof(*styledPath105_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath105_1,sizeof(styledPath105_1)/sizeof(*styledPath105_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath105_2,sizeof(styledPath105_2)/sizeof(*styledPath105_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath105_3,sizeof(styledPath105_3)/sizeof(*styledPath105_3),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 106:
-        styledPath(draw,styledPath106_0,sizeof(styledPath106_0)/sizeof(*styledPath106_0),at,unit,color(0.00000000f),0.00000000f);
+        styledPath(draw,styledPath106_0,sizeof(styledPath106_0)/sizeof(*styledPath106_0),at,unit,color(0.00000000f),strokeWidth(0.00000000f));
         draw->AddCircleFilled(p(1.50000000f,1.50000000f),0.55000000f*unit,color(0.00000000f),32);
         draw->AddCircleFilled(p(7.50000000f,7.50000000f),0.55000000f*unit,color(0.00000000f),32);
         break;
     case 107:
-        styledPath(draw,styledPath107_0,sizeof(styledPath107_0)/sizeof(*styledPath107_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath107_1,sizeof(styledPath107_1)/sizeof(*styledPath107_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath107_2,sizeof(styledPath107_2)/sizeof(*styledPath107_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath107_0,sizeof(styledPath107_0)/sizeof(*styledPath107_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath107_1,sizeof(styledPath107_1)/sizeof(*styledPath107_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath107_2,sizeof(styledPath107_2)/sizeof(*styledPath107_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     case 108:
-        styledPath(draw,styledPath108_0,sizeof(styledPath108_0)/sizeof(*styledPath108_0),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath108_1,sizeof(styledPath108_1)/sizeof(*styledPath108_1),at,unit,color(0.00000000f),1.00000000f);
-        styledPath(draw,styledPath108_2,sizeof(styledPath108_2)/sizeof(*styledPath108_2),at,unit,color(0.00000000f),1.00000000f);
+        styledPath(draw,styledPath108_0,sizeof(styledPath108_0)/sizeof(*styledPath108_0),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath108_1,sizeof(styledPath108_1)/sizeof(*styledPath108_1),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
+        styledPath(draw,styledPath108_2,sizeof(styledPath108_2)/sizeof(*styledPath108_2),at,unit,color(0.00000000f),strokeWidth(1.00000000f));
         break;
     }
 }

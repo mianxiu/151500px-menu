@@ -708,7 +708,7 @@ static bool matches(int i,const std::string& query) {
     while (words>>word) if (haystack.find(normalized(word))==std::string::npos) return false;
     return true;
 }
-static void releaseTarget() { if (target) { target->Release();target=nullptr; } }
+static void releaseTarget() { canvasGlyphTarget.detach();if (target) { target->Release();target=nullptr; } }
 static bool createTarget() {
     ID3D11Texture2D* buffer=nullptr;
     if (FAILED(swapChain->GetBuffer(0,IID_PPV_ARGS(&buffer)))) return false;
@@ -789,6 +789,7 @@ static bool createDevice(HWND hwnd) {
 }
 static void releaseDevice() {
     menuShadow::release();
+    canvasGlyphTarget.reset();
     simpleGradientPreview::release();
     patternThumbnails::clear();
     releaseTarget();
@@ -1533,6 +1534,36 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         }
     }
     if (!gradientWindow && menuTools.windowResizeMessage(hwnd,msg,wp)) return true;
+    if (!gradientWindow && msg==WM_SETCURSOR && LOWORD(lp)==HTCLIENT &&
+        menuToolsVisible() && menuTools.applyCanvasCursor(hwnd))return TRUE;
+    if(!gradientWindow && menuTools.mode=="typeset" && ImGui::GetCurrentContext()){
+        if(msg==WM_SETFOCUS){
+            if(const auto ime=ImmGetContext(hwnd))ImmReleaseContext(hwnd,ime);
+            else ImmAssociateContextEx(hwnd,nullptr,IACE_DEFAULT);
+        }else if(msg==WM_KILLFOCUS || msg==WM_IME_ENDCOMPOSITION)menuTools.imeComposing=false;
+        if(GetFocus()==hwnd && GImGui->PlatformImeData.WantTextInput){
+            if(msg==WM_IME_STARTCOMPOSITION)menuTools.imeComposing=true;
+            if(msg==WM_IME_CHAR && IsWindowUnicode(hwnd)){
+                ImGui::GetIO().AddInputCharacterUTF16(static_cast<ImWchar16>(wp));
+                return 0;
+            }
+            if(msg==WM_IME_COMPOSITION && (lp&GCS_RESULTSTR)){
+                if(const auto ime=ImmGetContext(hwnd)){
+                    const LONG size=ImmGetCompositionStringW(ime,GCS_RESULTSTR,nullptr,0);
+                    std::wstring committed;
+                    if(size>0 && size<=80000 && size%sizeof(wchar_t)==0){
+                        committed.resize(size/sizeof(wchar_t));
+                        if(ImmGetCompositionStringW(ime,GCS_RESULTSTR,committed.data(),size)!=size)committed.clear();
+                    }
+                    ImmReleaseContext(hwnd,ime);
+                    if(!committed.empty()){
+                        for(const auto unit:committed)ImGui::GetIO().AddInputCharacterUTF16(unit);
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
     if (ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp)) return true;
     switch (msg) {
     case WM_SIZE:
@@ -1556,10 +1587,19 @@ static LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     }
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
+static int photoshopThemeIndex() {
+    return uiTheme=="light"?0:uiTheme=="light-gray"?1:uiTheme=="dark-gray"?2:3;
+}
+static ImU32 photoshopPasteboardColor() {
+    // CanvasColor in Photoshop's shipped UIColors.txt.
+    static constexpr int values[]={147,108,40,25};
+    const int gray=values[photoshopThemeIndex()];
+    return IM_COL32(gray,gray,gray,255);
+}
 static void theme() {
     // Photoshop's four brightness presets, lightest to darkest. Widget tones
     // match the shipped UIColors.txt; label colors arrive through cached status.
-    int i=uiTheme=="light"?0:uiTheme=="light-gray"?1:uiTheme=="dark-gray"?2:3;
+    const int i=photoshopThemeIndex();
     auto& style=ImGui::GetStyle();style=ImGuiStyle();
     if (i<2) ImGui::StyleColorsLight();else ImGui::StyleColorsDark();
     auto gray=[](int v){float f=v/255.f;return ImVec4(f,f,f,1);};
@@ -2253,7 +2293,8 @@ static void drawPie() {
             (owner && IsWindowEnabled(owner) && (foreground==owner ||
              (GetAncestor(foreground,GA_ROOTOWNER)==owner && (GradientNavigation::windowClass(foreground,L"OWL.Dock") ||
                 GradientNavigation::windowClass(foreground,L"OWL.DocumentWindow")))));
-        menuTools.draw(scale,pieCenter,localEditing && !busyFeedback && !inputFocused && !maskPreviewStarted,hostForeground);
+        menuTools.draw(scale,pieCenter,localEditing && !busyFeedback && !inputFocused && !maskPreviewStarted,hostForeground,photoshopPasteboardColor());
+        if(!selfTest)menuTools.applyCanvasCursor(window);
         if(menuTools.mode!="typeset")drawFooter({document,menuTools.status(),menuTools.error},pos.y+size.y-60*scale);
         return;
     }
@@ -2809,7 +2850,7 @@ int main() {
     // Photoshop owns its tool cursor. The visible overlay must never replace
     // the desktop cursor during renderer frames/status updates. Our window
     // class supplies its arrow on ordinary client WM_SETCURSOR messages.
-    // Keep this policy identical in production and automated checks.
+    // The standalone typeset editor handles its resize cursor inside its HWND.
     io.ConfigFlags|=ImGuiConfigFlags_NoMouseCursorChange;
     scale=ImGui_ImplWin32_GetDpiScaleForHwnd(window);theme();
     if (!preview.empty() || selfTest) SetWindowPos(window,nullptr,testOrigin.x,testOrigin.y,
@@ -4122,7 +4163,7 @@ int main() {
                     }
                     {
                         MenuToolsPanel editor;editor.active=editor.ready=true;editor.mode="typeset";editor.revision="box";
-                        editor.canvasEditAvailable=editor.canvasTextFrame=editor.canvasWrap=true;
+                        editor.canvasTextFrame=editor.canvasWrap=true;
                         editor.boxShiftSupported=true;
                         editor.sourceStyles=Json{{"size","12"}};editor.extendedTypography=true;
                         editor.advancedTypography=editor.paragraphIndentsSupported=editor.paragraphAlignmentSupported=true;
@@ -4136,33 +4177,49 @@ int main() {
                             io.DeltaTime=1.f/60.f;ImGui::NewFrame();ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
                             ImGui::SetNextWindowPos(ImGui::GetMainViewport()->Pos);ImGui::SetNextWindowSize({windowWidth*scale,420*scale});
                             ImGui::Begin("##resize-text-test",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
-                            editor.draw(scale,{0,0},true,true);ImGui::End();ImGui::Render();finishPlatformFrame();
+                            editor.draw(scale,{0,0},true,true,photoshopPasteboardColor());ImGui::End();ImGui::Render();finishPlatformFrame();
                         };
                         boxFrame();boxFrame();ImGuiWindow* frame=nullptr;ImGuiWindow* body=nullptr;
-                        ImGuiWindow* properties=nullptr;ImGuiWindow* options=nullptr;ImGuiWindow* canvas=nullptr;
+                        ImGuiWindow* properties=nullptr;ImGuiWindow* options=nullptr;ImGuiWindow* canvas=nullptr;ImGuiWindow* toolbar=nullptr;
                         for(auto* child:GImGui->Windows)if(strstr(child->Name,"##resize-text-test/")){
                             if(strstr(child->Name,"##draft"))frame=child;
+                            const auto* name=strrchr(child->Name,'/');
+                            if(name && strncmp(name,"/##caps-tools_",14)==0)toolbar=child;
                             if(strstr(child->Name,"##text-body") && !strstr(child->Name,"##text-options"))body=child;
                             if(strstr(child->Name,"##layout-typography"))properties=child;
                             if(strstr(child->Name,"##text-options"))options=child;
                             if(strstr(child->Name,"##layout-canvas") && !strstr(child->Name,"##draft"))canvas=child;
                         }
-                        if(!frame||!body||!properties||!options||!canvas || properties->ScrollMax.y<=0 || options->Pos.y+options->Size.y>=body->Pos.y+body->Size.y)
+                        if(!frame||!body||!properties||!options||!canvas||!toolbar || properties->ScrollMax.y<=0 || options->Pos.y+options->Size.y>=body->Pos.y+body->Size.y)
                             throw std::runtime_error("Typeset did not leave separate space for the scrollable properties and pinned action");
                         const auto activateIcon=[&](ImGuiWindow* child,const char* group,int index,const char* label){
-                            ImGui::ActivateItemByID(ImHashStr(label,0,ImHashData(&index,sizeof(index),child->GetID(group))));boxFrame();
+                            const ImGuiID groupID=child==toolbar?ImHashStr(group,0,toolbar->GetID("##canvas-toolbar")):child->GetID(group);
+                            ImGui::ActivateItemByID(ImHashStr(label,0,ImHashData(&index,sizeof(index),groupID)));boxFrame();
                         };
-                        activateIcon(canvas,"##canvas-zoom",1,"放大");
+                        activateIcon(toolbar,"##canvas-zoom",1,"放大");
                         if(editor.canvasZoom<=1)throw std::runtime_error("Typeset zoom icon did not activate");
-                        editor.canvasPan={10,20};activateIcon(canvas,"##canvas-zoom",2,"适合窗口");
+                        editor.canvasPan={10,20};activateIcon(toolbar,"##canvas-zoom",2,"适合窗口");
                         if(editor.canvasZoom!=1 || editor.canvasPan.x || editor.canvasPan.y)
                             throw std::runtime_error("Fit icon did not reset the canvas view");
-                        activateIcon(options,"##typeset-tabs",5,"表格");
+                        activateIcon(toolbar,"##canvas-region-zoom",0,"框选放大");
+                        if(!editor.canvasZoomMode)throw std::runtime_error("Canvas region zoom did not activate");
+                        const ImVec2 zoomStart={frame->Pos.x+frame->Size.x-4*scale,frame->Pos.y+frame->Size.y-4*scale};
+                        io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(zoomStart.x,zoomStart.y);boxFrame();
+                        io.AddMouseButtonEvent(0,true);boxFrame();
+                        if(!editor.canvasZoomDragging || editor.resizeHandle || editor.canvasPanning)
+                            throw std::runtime_error("Region zoom did not own the canvas drag");
+                        io.AddMousePosEvent(zoomStart.x-32*scale,zoomStart.y-24*scale);boxFrame();
+                        io.AddMouseButtonEvent(0,false);boxFrame();
+                        if(editor.canvasZoomMode || editor.canvasZoomDragging || editor.canvasZoom<=1 ||
+                           editor.draftBoxSize!=editor.sourceBoxSize || std::string(editor.draft)!="Text frame contents")
+                            throw std::runtime_error("Region zoom did not preserve the draft on reverse drag");
+                        activateIcon(toolbar,"##canvas-zoom",2,"适合窗口");
+                        activateIcon(options,"##typeset-tabs",4,"表格");
                         if(editor.textTab!=6)throw std::runtime_error("Typeset table icon did not open the table tool");
-                        activateIcon(options,"##typeset-tabs",1,"查找替换");
+                        activateIcon(options,"##typeset-tabs",0,"查找替换");
                         if(editor.textTab!=1)throw std::runtime_error("Labeled typeset tool did not open find and replace");
-                        activateIcon(options,"##typeset-tabs",0,"编辑");
-                        if(editor.textTab!=0)throw std::runtime_error("Typeset text icon did not return to editing");
+                        activateIcon(options,"##typeset-tabs",0,"查找替换");
+                        if(editor.textTab!=0)throw std::runtime_error("Clicking the active tool did not return to direct editing");
                         editor.textDirty=false;boxFrame();
                         const ImVec2 corner={frame->Pos.x+frame->Size.x,frame->Pos.y+frame->Size.y};
                         io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(corner.x,corner.y);boxFrame();
@@ -4189,11 +4246,24 @@ int main() {
                         editor.proofAvailable=true;
                         for(int tab:{1,2,4}){
                             editor.textTab=tab;editor.textDirty=false;editor.planId="current-result";editor.resultKind="replace";
-                            editor.resultPreview="Processed result";boxFrame();boxFrame();
-                            bool shown=false;
-                            for(auto* child:GImGui->Windows)
-                                if(child->Active && strstr(child->Name,"##resize-text-test/") && strstr(child->Name,"##text-result"))shown=true;
-                            if(!shown)throw std::runtime_error("A canvas background hid the right-hand result");
+                            editor.resultValue=editor.resultPreview="Processed result";boxFrame();boxFrame();
+                            bool shown=false,duplicated=false;
+                            for(auto* child:GImGui->Windows)if(child->Active && strstr(child->Name,"##resize-text-test/")){
+                                if(strstr(child->Name,"##canvas-processed-text"))shown=true;
+                                if(strstr(child->Name,"##text-result"))duplicated=true;
+                            }
+                            if(!shown || duplicated || std::string(editor.draft)!="Text frame contents")
+                                throw std::runtime_error("Processed canvas did not show the result independently of the draft");
+                            activateIcon(toolbar,"##canvas-text-content",1,"原草稿");
+                            if(editor.showsCanvasResult() || editor.planId!="current-result")
+                                throw std::runtime_error("Showing the source invalidated the current result");
+                            // Let the source input claim its requested focus
+                            // before queuing another navigation activation.
+                            boxFrame();boxFrame();
+                            ImGui::ClearActiveID();
+                            activateIcon(toolbar,"##canvas-text-content",0,"处理结果");
+                            if(!editor.showsCanvasResult())throw std::runtime_error("Processed canvas did not restore: source="+
+                                std::to_string(editor.showCanvasSource)+" plan="+editor.planId+" kind="+editor.resultKind);
                             const auto request=editor.request;
                             ImGui::ActivateItemByID(body->GetID("更新矢量智能对象"));boxFrame();
                             if(!editor.pending || editor.pendingAction!="text.vector" || editor.request!=request+1 ||
@@ -4202,6 +4272,9 @@ int main() {
                                     " request="+std::to_string(editor.request)+" action="+editor.pendingAction);
                             editor.pending=false;
                         }
+                        editor.textTab=3;editor.resultKind="split";editor.resultPreview="1:\nFirst\n\n2:\nSecond";boxFrame();
+                        if(!editor.showsCanvasResult())throw std::runtime_error("Split result did not move to the canvas");
+                        editor.textTab=4;
                         editor.scopedStyles=true;
                         editor.styleAnchor=editor.draft;
                         editor.styleDraft.set("size",{5,10},22);
@@ -4214,7 +4287,11 @@ int main() {
                         editor.restoreDraft(false);
                         if(editor.draftListChanged || std::string(editor.draft)!="Text frame contents" || editor.styleDraft.overrideFor("size",{5,10})!=22)
                             throw std::runtime_error("Undo did not restore the text and list options together");
-                        editor.scopedStyles=false;editor.textDirty=false;boxFrame();
+                        editor.scopedStyles=false;editor.textDirty=false;boxFrame();boxFrame();
+                        frame=nullptr;
+                        for(auto* child:GImGui->Windows)
+                            if(child->Active && strstr(child->Name,"##resize-text-test/") && strstr(child->Name,"##draft"))frame=child;
+                        if(!frame)throw std::runtime_error("Source canvas did not restore its current input frame");
                         const auto right=frame->Pos.x+frame->Size.x;
                         const auto left=frame->Pos.x;
                         const float y=frame->Pos.y+frame->Size.y*.5f;
@@ -4265,16 +4342,106 @@ int main() {
                         editor.restoreDraft(true);
                         if(editor.textParams().at("typography_runs").size()!=2)throw std::runtime_error("Draft redo lost a paragraph edit");
                         windowWidth=780;boxFrame();boxFrame();
-                        const auto styled=editor.localDraft.Get();const auto dimensions=editor.draftBoxSize;
+                        const auto styled=editor.localLayout.empty()?nullptr:editor.localLayout.front().text.Get();
+                        const auto dimensions=editor.draftBoxSize;
                         ImGuiWindow* input=nullptr;
                         for(auto* child:GImGui->Windows)if(child->Active && strstr(child->Name,"##resize-text-test/") && strstr(child->Name,"##draft"))input=child;
                         if(!input)throw std::runtime_error("The current canvas draft input is missing");
                         const ImVec2 inner={input->Pos.x+input->Size.x*.5f,input->Pos.y+input->Size.y*.25f};
                         io.AddMousePosEvent(inner.x,inner.y);boxFrame();io.AddMouseButtonEvent(0,true);boxFrame();
                         io.AddMouseButtonEvent(0,false);boxFrame();
-                        if(!styled || editor.localDraft.Get()!=styled || editor.draftBoxSize!=dimensions || !editor.canvasTextActive)
-                            throw std::runtime_error("Text rendering or width changed when placing the caret: raster="+std::to_string(styled!=nullptr)+
-                                " reused="+std::to_string(styled==editor.localDraft.Get())+" focus="+std::to_string(editor.canvasTextActive));
+                        const auto reused=!editor.localLayout.empty() && editor.localLayout.front().text.Get()==styled;
+                        if(!styled || !reused || editor.draftBoxSize!=dimensions || !editor.canvasTextActive)
+                            throw std::runtime_error("Text layout or width changed when placing the caret: shaped="+std::to_string(styled!=nullptr)+
+                                " reused="+std::to_string(reused)+" focus="+std::to_string(editor.canvasTextActive));
+                        ImGui::ClearActiveID();boxFrame();
+                        editor.autoFocusPending=true;boxFrame();boxFrame();
+                        if(editor.autoFocusPending || !editor.canvasTextActive || editor.canvasZoom<=1 ||
+                           (editor.canvasPan.x==0 && editor.canvasPan.y==0))
+                            throw std::runtime_error("Typeset did not auto-focus the text frame and caret");
+                        activateIcon(toolbar,"##canvas-orientation",2,"右转");
+                        if(editor.canvasAngle!=90.f || editor.localLayout.front().text.Get()!=styled ||
+                           editor.draftBoxSize!=dimensions)
+                            throw std::runtime_error("Rotating the view changed the draft layout or the text box: "+Json{
+                                {"angle",editor.canvasAngle},{"reused",editor.localLayout.front().text.Get()==styled},
+                                {"size",editor.draftBoxSize}}.dump());
+                        const CanvasViewTransform turn({110,87},editor.canvasAngle);
+                        const auto point=turn.unapply(turn.apply({123,211}));
+                        if(std::abs(point.x-123.f)>.01f || std::abs(point.y-211.f)>.01f)
+                            throw std::runtime_error("Rotated canvas pointer did not map back to document coordinates");
+                        activateIcon(toolbar,"##canvas-orientation",3,"聚焦文字");
+                        activateIcon(toolbar,"##canvas-orientation",1,"回正");
+                        if(editor.canvasAngle!=0 || editor.localLayout.front().text.Get()!=styled)
+                            throw std::runtime_error("Focus zoom or rotation reset reshaped the draft");
+                        const CanvasViewTransform upright({},0);
+                        if(upright.resizeCursor(1)!=ImGuiMouseCursor_ResizeEW || upright.resizeCursor(2)!=ImGuiMouseCursor_ResizeNS ||
+                           upright.resizeCursor(3)!=ImGuiMouseCursor_ResizeNWSE || upright.resizeCursor(6)!=ImGuiMouseCursor_ResizeNESW ||
+                           turn.resizeCursor(1)!=ImGuiMouseCursor_ResizeNS || turn.resizeCursor(2)!=ImGuiMouseCursor_ResizeEW ||
+                           turn.resizeCursor(3)!=ImGuiMouseCursor_ResizeNESW || turn.resizeCursor(6)!=ImGuiMouseCursor_ResizeNWSE)
+                            throw std::runtime_error("Text box pointer cursor lost the handle direction");
+                        const auto hoverCorner=ImVec2{input->Pos.x+input->Size.x,input->Pos.y+input->Size.y};
+                        io.AddMousePosEvent(hoverCorner.x,hoverCorner.y);boxFrame();
+                        if(ImGui::GetMouseCursor()!=ImGuiMouseCursor_ResizeNWSE)
+                            throw std::runtime_error("Text input replaced the corner resize cursor");
+                        if(MenuToolsPanel::canvasCursorHandle(editor.canvasCursor)!=LoadCursorW(nullptr,IDC_SIZENWSE) ||
+                           MenuToolsPanel::canvasCursorHandle(ImGuiMouseCursor_ResizeEW)!=LoadCursorW(nullptr,IDC_SIZEWE) ||
+                           MenuToolsPanel::canvasCursorHandle(ImGuiMouseCursor_ResizeNS)!=LoadCursorW(nullptr,IDC_SIZENS) ||
+                           MenuToolsPanel::canvasCursorHandle(ImGuiMouseCursor_ResizeNESW)!=LoadCursorW(nullptr,IDC_SIZENESW))
+                            throw std::runtime_error("Text box cursor did not resolve to its Windows cursor");
+                        if(std::abs(styledIconStroke(1.f,2.f,true)-1.6f)>.001f ||
+                           styledIconStroke(1.f,1.f,true)!=1.f || styledIconStroke(1.f,2.f,false)!=2.f)
+                            throw std::runtime_error("Typeset icon strokes lost their panel weight or minimum width");
+                        editor.managedList=true;
+                        editor.setDraft("9.\tAlpha beta gamma delta epsilon zeta eta theta\n10.\tSecond item");
+                        editor.styleDraft={};editor.sourceStyles=Json{{"size","12"}};
+                        if(!editor.layoutLocalDraft(92,200,12) || editor.localLayout.size()!=2)
+                            throw std::runtime_error("List draft did not shape");
+                        const auto& firstList=editor.localLayout[0];
+                        const auto& secondList=editor.localLayout[1];
+                        DWRITE_TEXT_METRICS listMetrics{};
+                        if(!firstList.marker.text || !secondList.marker.text || firstList.start!=3 ||
+                           firstList.x!=secondList.x || firstList.x<=firstList.marker.x || firstList.x>=32 ||
+                           FAILED(firstList.text->GetMetrics(&listMetrics)) || listMetrics.lineCount<2 ||
+                           editor.canvasByteAt({firstList.marker.x,firstList.marker.y+3})!=0 ||
+                           editor.canvasByteAt({firstList.x+.1f,firstList.y+3})!=3)
+                            throw std::runtime_error("List marker, hanging column or selection hit geometry is invalid");
+                        editor.setDraft("Alpha beta\nSecond");editor.styleDraft={};
+                        editor.styleDraft.set("size",{6,10},22);
+                        editor.textTab=4;editor.planId="canvas-list";editor.resultKind="replace";
+                        editor.resultValue="•\tAlpha beta\n•\tSecond";
+                        editor.resultDraftOrigins={0,0,0,1,2,3,4,5,6,7,8,9,10,11,11,11,12,13,14,15,16,17};
+                        editor.canvasTextActive=editor.imeComposing=true;
+                        if(editor.showsCanvasResult() || editor.planId!="canvas-list")
+                            throw std::runtime_error("A processed result interrupted IME composition in the draft");
+                        editor.canvasTextActive=editor.imeComposing=false;
+                        if(!editor.showsCanvasResult() || !editor.layoutLocalDraft(150,200,12,true) || editor.localLayout.size()!=2)
+                            throw std::runtime_error("The current list result was not shaped on the canvas");
+                        float processedSize=0;
+                        const auto& processed=editor.localLayout[0];
+                        if(!processed.marker.text || processed.start!=2 || FAILED(processed.text->GetFontSize(6,&processedSize)) ||
+                           std::abs(processedSize-22.f)>.01f || editor.styleDraft.overrideFor("size",{6,10})!=22 ||
+                           std::string(editor.draft)!="Alpha beta\nSecond")
+                            throw std::runtime_error("Processed list changed the draft or lost the scoped type style");
+                        const auto processedBody=editor.canvasByteAt({processed.x+.1f,processed.y+3},editor.resultValue);
+                        if(processedBody!=4)throw std::runtime_error("List preview could not locate the editable first character");
+                        editor.continueTextResult(true);
+                        if(editor.textTab!=4 || !editor.editingCanvasResult || !editor.restoreDraftFocus ||
+                           std::string(editor.draft)!="•\tAlpha beta\n•\tSecond" ||
+                           editor.textParams().at("operation")!="list")
+                            throw std::runtime_error("Editing the list result lost the list tool or draft");
+                        editor.restoreDraft(false);
+                        editor.changedText();
+                        if(editor.showsCanvasResult() || !editor.layoutLocalDraft(150,200,12) || editor.localLayout[0].marker.text)
+                            throw std::runtime_error("An expired processed list remained visible");
+                        for(int tool:{1,2}){
+                            editor.setDraft("Alpha");editor.textTab=tool;editor.planId="canvas-edit-result";
+                            editor.resultKind="replace";editor.resultValue="Alpha Alpha";
+                            editor.resultDraftOrigins.clear();
+                            editor.continueTextResult(true);
+                            if(editor.textTab!=tool || editor.showsCanvasResult() ||
+                               std::string(editor.draft)!="Alpha Alpha" || editor.textParams().at("operation")!="edit")
+                                throw std::runtime_error("Editing a result reapplied the processing tool");
+                        }
                         const RECT viewport={100,100,1800,1200},placed={150,150,1150,800};
                         const int edge=MenuToolsPanel::windowEdges(placed,{1149,799},5);
                         const auto bigger=MenuToolsPanel::resizedWindow(placed,viewport,{200,140},edge,{520,360});
@@ -4291,7 +4458,7 @@ int main() {
                             io.DeltaTime=1.f/60.f;ImGui::NewFrame();ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);const auto origin=ImGui::GetMainViewport()->Pos;
                             ImGui::SetNextWindowPos(origin);ImGui::SetNextWindowSize({700*scale,850*scale});
                             ImGui::Begin("##text-pending-test",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
-                            editor.draw(scale,{0,0},true,true);ImGui::End();ImGui::Render();finishPlatformFrame();
+                            editor.draw(scale,{0,0},true,true,photoshopPasteboardColor());ImGui::End();ImGui::Render();finishPlatformFrame();
                         };
                         editorFrame();editorFrame();ImGuiWindow* draftWindow=nullptr;
                         for(auto* child:GImGui->Windows)if(strstr(child->Name,"##text-pending-test/") && strstr(child->Name,"##draft"))draftWindow=child;
