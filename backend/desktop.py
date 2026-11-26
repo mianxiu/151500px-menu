@@ -254,6 +254,13 @@ class Desktop:
         self.photoshop_foreground=False
         self.layer_context={}
         self.menu_layer_context=None
+        self.thumbnail_allowed=None
+        self.thumbnail_window=None
+        self.thumbnail_target=None
+        self.thumbnail_generation=0
+        self.thumbnail_read=None
+        self.thumbnail_source=None
+        self.thumbnail_next_read=0
         self.preview_hint_serial=0
         self.preview_hint_value={'type':'preview.pending','active':False}
         self.preview_hint_at=0
@@ -323,6 +330,8 @@ class Desktop:
             "preview_guard_owner":guard['owner'] if guarded else 0,
             "preview_guard_panel":guard['panel'] if guarded else 0,
             "bindings": {name: list(chord(value)) for name,value in self.settings["shortcuts"].items()}}
+        thumbnail=getattr(self,'thumbnail_target',None) if not self.visible else None
+        value['text_thumbnail']=thumbnail['config'] if thumbnail else [0,0,0,0]
         payload=json.dumps(value)
         with self.native_lock:
             if self.stop.is_set() or not self.native or self.native.poll() is not None:
@@ -469,6 +478,11 @@ class Desktop:
                         self.panel_context.record_click(event['hwnd'], event['root'])
                     if self.input_language:self.input_language.click(event['hwnd'],event['root'])
                     if self.input_focus:self.input_focus.click(event['hwnd'],event['root'],event.get('input_epoch'))
+                elif event.get('type') == 'text.thumbnail':
+                    logging.info('Native text thumbnail consumed: %s',event['identity'])
+                    self.notify({'action':'text.thumbnail','params':event})
+                elif event.get('type') == 'text.thumbnail.trace':
+                    logging.info('Native text thumbnail click: %s',event)
                 elif event.get('type') == 'input.language.protect':
                     if self.input_language:self.input_language.protect()
                     if self.input_focus:self.input_focus.protect(event.get('input_epoch'))
@@ -897,6 +911,7 @@ class Desktop:
                 else:
                     self.layer_context=unavailable()
                     delay=2
+                self._observe_text_thumbnail()
                 isolation=self.layer_context.get('isolation_id')
                 owner=self._workspace_root(self.gui.GetForegroundWindow()) if isolation else 0
                 tip=(owner,isolation) if owner and not self.visible else (0,None)
@@ -911,6 +926,114 @@ class Desktop:
                 logging.exception('Layer cache monitor failed')
             self.layer_wake.wait(delay)
             self.layer_wake.clear()
+
+    @staticmethod
+    def _thumbnail_tick():
+        tick=ctypes.WinDLL('kernel32',use_last_error=True).GetTickCount64
+        tick.restype=ctypes.c_ulonglong
+        return tick()
+
+    def _observe_text_thumbnail(self):
+        previous=self.thumbnail_target
+        try:
+            target=self._text_thumbnail_candidate(previous)
+        except Exception:
+            logging.debug('Native text thumbnail observation unavailable',exc_info=True)
+            target=None
+        if target is None and self.thumbnail_read:
+            request=self.thumbnail_read
+            self.thumbnail_read=None
+            try:self.menu_context_canceller(request)
+            except (OSError,ValueError,RuntimeError):pass
+        self.thumbnail_target=target
+        if (previous and previous['config'])!=(target and target['config']):self._native_config()
+
+    @per_monitor_dpi
+    def _text_thumbnail_candidate(self,previous):
+        if (self.pattern_host_version!='24.0.1' or not self.thumbnail_allowed or not self.thumbnail_allowed() or self.visible or
+                self.preview_input_guard or not self.panel_context or not self.menu_context_requester or self.menu_context_active):
+            return None
+        import win32api
+        owner=self.gui.GetForegroundWindow()
+        if not owner or self._workspace_root(owner)!=owner:return None
+        hovered=self.gui.WindowFromPoint(win32api.GetCursorPos())
+        now=time.monotonic()
+        panel=0
+        cached=self.thumbnail_window
+        if hovered and hovered!=owner and self.gui.GetClassName(hovered)=='PSViewC':
+            if cached and cached[:2]==(owner,hovered) and cached[3]>=now:panel=cached[2]
+            else:
+                panel=self.panel_context.layer_list_window(hovered,owner)
+                self.thumbnail_window=(owner,hovered,panel,now+.5)
+        panel=panel if panel==hovered else 0
+        current=dict(self.layer_context)
+        if (not fresh(current) or current.get('kind')!='smart' or current.get('locked') or len(current.get('layer_ids',[]))!=1):
+            return {'config':[owner,panel,0,0]} if panel else None
+        selection=(current['session'],current['document_id'],current['layer_ids'][0])
+        stamp=self._text_thumbnail_source_stamp(selection,now,refresh=bool(panel))
+        if not panel:return {'config':[0,0,0,0]}
+        age=time.time()*1000-stamp
+        if not 0<=age<=1500:return {'config':[owner,panel,0,0]}
+        config=previous['config'] if previous else []
+        if previous and config[:2]==[owner,panel] and previous.get('selection')==selection:
+            identity=config[2]
+            expires=config[3] if previous.get('stamp')==stamp else None
+        else:
+            self.thumbnail_generation+=1
+            identity=self.thumbnail_generation
+            expires=None
+            logging.info('Native text thumbnail armed: identity=%s document=%s layer=%s',identity,selection[1],selection[2])
+        if expires is None:expires=self._thumbnail_tick()+max(0,int(1500-age))
+        return {'config':[owner,panel,identity,expires],'selection':selection,'stamp':stamp}
+
+    def _text_thumbnail_source_stamp(self,selection,now,*,refresh):
+        """Use the existing read-only UXP menu mailbox while no menu owns it."""
+        request=self.thumbnail_read
+        if request and request['selection']!=selection:
+            self.menu_context_canceller(request)
+            self.thumbnail_read=request=None
+            self.thumbnail_next_read=0
+        if request:
+            try:
+                from .layer_context import validate
+                path=request['folder']/'menu-context-result.json'
+                if path.stat().st_size>8*1024*1024:raise ValueError('Text source exceeds read limit')
+                snapshot=json.loads(path.read_text('utf-8-sig'))
+                if snapshot.get('menu_request_id')==request['id'] and snapshot.get('menu_phase')=='completed':
+                    self.thumbnail_read=None
+                    context=validate(snapshot,request['session'])
+                    matches=(context.get('session'),context.get('document_id'),context.get('layer_ids'))==(
+                        selection[0],selection[1],[selection[2]])
+                    stamp=context['plugin_time_ms'] if matches and context.get('text_source') is True else 0
+                    self.thumbnail_source=(selection,stamp)
+                    self.thumbnail_next_read=now+(0.8 if stamp else 2)
+            except (OSError,ValueError,AttributeError,TypeError):pass
+            if self.thumbnail_read and now>request['deadline']:
+                self.menu_context_canceller(request)
+                self.thumbnail_read=None
+                self.thumbnail_next_read=now+2
+        elif not self.thumbnail_source or self.thumbnail_source[0]!=selection or refresh and now>=self.thumbnail_next_read:
+            self.thumbnail_next_read=now+.8
+            if not self.thumbnail_source or self.thumbnail_source[0]!=selection:self.thumbnail_source=(selection,0)
+            request=self.menu_context_requester(0)
+            if request:self.thumbnail_read={**request,'selection':selection}
+        observed=self.thumbnail_source
+        return observed[1] if observed and observed[0]==selection else 0
+
+    @window_transition
+    def require_text_thumbnail(self,event):
+        candidate=self.thumbnail_target
+        now=self._thumbnail_tick()
+        if (not self.thumbnail_allowed or not self.thumbnail_allowed() or not candidate or self.visible or self.preview_input_guard or
+                any(type(event.get(key)) is not int for key in ('root','hwnd','identity','tick')) or not event['identity'] or
+                candidate['config'][:3]!=[event['root'],event['hwnd'],event['identity']] or
+                not 0<=now-event['tick']<=400 or now>candidate['config'][3] or self.gui.GetForegroundWindow()!=event['root']):return None
+        value=dict(self.layer_context)
+        if (not fresh(value) or value.get('locked') or value.get('kind')!='smart' or
+                len(value.get('layer_ids',[]))!=1 or (value.get('session'),value.get('document_id'),value['layer_ids'][0])!=candidate.get('selection')):
+            return None
+        self.require_action_focus()
+        return {**value,'text_source':True}
 
     def _monitor(self):
         next_icon_refresh = 0

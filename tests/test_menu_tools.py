@@ -254,6 +254,30 @@ class MenuToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('error',result)
         self.app.desktop.open_menu_tools.assert_not_called()
 
+    async def test_native_thumbnail_uses_the_prevalidated_target_after_fresh_text_read(self):
+        target={'session':'s','document_id':2,'layer_ids':[3]}
+        context={**target,'text_source':True}
+        self.app.desktop.require_text_thumbnail=Mock(return_value=context)
+        self.tools._open=AsyncMock(return_value={'epoch':8})
+        event={'identity':1}
+        reader=AsyncMock(return_value={'target':target,'vector_object':True})
+        with patch('backend.menu_tools.TextTools',return_value=SimpleNamespace(read=reader)):
+            self.assertEqual(await self.tools.open_text_thumbnail(event),{'epoch':8})
+        reader.assert_awaited_once_with({},fast=True)
+        self.tools._open.assert_awaited_once_with('typeset',None,selected_text=context)
+        self.assertEqual(self.app.desktop.require_text_thumbnail.call_count,2)
+
+    async def test_native_thumbnail_drops_a_selection_that_changes_during_read(self):
+        expected={'session':'s','document_id':2,'layer_ids':[3]}
+        changed={**expected,'layer_ids':[4]}
+        self.app.desktop.require_text_thumbnail=Mock(side_effect=[expected,changed])
+        self.tools._open=AsyncMock()
+        reader=AsyncMock(return_value={'target':expected,'vector_object':True})
+        with patch('backend.menu_tools.TextTools',return_value=SimpleNamespace(read=reader)):
+            self.assertIsNone(await self.tools.open_text_thumbnail({'identity':1}))
+        self.tools._open.assert_not_called()
+        self.assertFalse(self.tools.pending)
+
     async def test_pending_request_is_rejected_without_queue(self):
         self.tools.pending=True;self.tools.search.search=AsyncMock()
         await self.tools.request(self.request())

@@ -52,6 +52,24 @@ class MenuTools:
             self.app.desktop.event(event)
         return {'message':'Caps工具已打开','epoch':epoch}
 
+    async def open_text_thumbnail(self,event):
+        require_available(self.app)
+        desktop=self.app.desktop
+        context=await asyncio.to_thread(desktop.require_text_thumbnail,event)
+        if context is None or self.pending or self.app.panel_lock.locked():return
+        self.pending=True
+        try:
+            # This read recalculates the real Photoshop target and validates the
+            # XMP. The native pixels alone never authorize opening or writing.
+            verified=await TextTools(self.app).read({},fast=True)
+            current=await asyncio.to_thread(desktop.require_text_thumbnail,event)
+            keys=('session','document_id','layer_ids')
+            if current is None or not verified.get('vector_object') or any(
+                    verified['target'].get(key)!=context.get(key) or current.get(key)!=context.get(key) for key in keys):return
+            return await self._open('typeset',None,selected_text=current)
+        finally:
+            self.pending=False
+
     async def preferences(self,args):
         epoch=args.get('menu_epoch');value=args.get('params')
         if (type(epoch) is not int or epoch!=self.epoch or

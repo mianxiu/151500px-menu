@@ -1,5 +1,6 @@
 // Win32 hooks: no allocation, pipe I/O or PS calls; transitions use one bounded decision.
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -15,11 +16,14 @@
 #include "ScreenSample.h"
 #include "FrameKeyProtocol.h"
 #include "GradientNavigation.h"
+#include "TextThumbnailObserver.h"
 
-enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers, FrameCommit, FrameRestore, CycleScreenMode };
-static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame", "layer.frame.commit", "layer.frame.restore", "view.screenMode"};
+enum Action { None, Toggle, Hide, Select, Color, Top, Bottom, Context, Dismiss, Ready, Error, Configured, PanelClick, HoldBegin, HoldRelease, HoldCancel, HoldPin, CapsTrace, HookHealth, CapsState, ActivationTrace, SelectAbove, SelectBelow, MoveUp, MoveDown, CopyStyle, PasteStyle, EditStyle, TriggerTrace, ExtendAbove, ExtendBelow, ConvertSmartObject, HoldReveal, SearchLayers, LanguageProtect, LanguageActivity, LanguageEditEnd, SearchTrace, FrameLayers, FrameCommit, FrameRestore, CycleScreenMode, TextThumbnail, TextThumbnailTrace };
+static const char* names[] = {"", "toggle", "hide", "select", "color", "moveToTop", "moveToBottom", "context", "dismiss", "hooks", "configuration", "settings", "panel.click", "hold_begin", "hold_release", "hold_cancel", "hold_pin", "caps.trace", "hook.health", "caps.state", "activation.trace", "selectAbove", "selectBelow", "moveUp", "moveDown", "copyStyle", "pasteStyle", "editStyle", "trigger.trace", "extendAbove", "extendBelow", "convertSmartObject", "hold_reveal", "tools.search", "input.language.protect", "input.language.activity", "input.language.edit_end", "search.trace", "layer.frame", "layer.frame.commit", "layer.frame.restore", "view.screenMode", "text.thumbnail", "text.thumbnail.trace"};
 struct Binding { Action action=None; std::array<int,6> keys{}; int count=0; };
-struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false,typesetOpen=false; HWND overlay=nullptr,gradient=nullptr,gradientOwner=nullptr,textToolOwner=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; };
+struct Config { bool enabled=false, textInput=false,colorEditor=false,diagnostic=false,remoteCompatibility=false,searchAllowed=false,editorInput=false,imeReady=false,typesetOpen=false; HWND overlay=nullptr,gradient=nullptr,gradientOwner=nullptr,textToolOwner=nullptr,guardOwner=nullptr,guardPanel=nullptr,searchRoot=nullptr,searchFocus=nullptr,imeRoot=nullptr,imeFocus=nullptr; ULONGLONG sequence=0,searchEpoch=0,imeEpoch=0; std::array<Binding,16> bindings{}; bool evidenceFresh=true,frameThread=false; TextThumbnailObserver::Request thumbnail{}; };
+static TextThumbnailGesture::Clicks thumbnailClicks;
+static TextThumbnailObserver::Observer thumbnailObserver;
 // Opt-in remote clicks qualify only on a matching release in the same verified
 // PS workspace. No hover, taskbar or injected Alt+Tab activation is added.
 struct RemoteClickIntent {
@@ -344,6 +348,7 @@ static void emit(Action action,HWND hwnd=nullptr,HWND root=nullptr,bool nativeFr
     queue[head.load(std::memory_order_relaxed)].guardAllowed=nativeFrame;
     if(action==FrameLayers && frameEndpoint){SetPropW(frameEndpoint,frameActiveProp,reinterpret_cast<HANDLE>(keys.frameId));SetPropW(frameEndpoint,frameActiveRootProp,root);}
     if(action==Configured)queue[head.load(std::memory_order_relaxed)].gapMs=config.sequence;
+    if(action==TextThumbnail)queue[head.load(std::memory_order_relaxed)].gapMs=GetTickCount64();
     if(action==HoldBegin){queue[head.load(std::memory_order_relaxed)].gapMs=GetTickCount64();GetCursorPos(&intentOrigin);queue[head.load(std::memory_order_relaxed)].cursor=intentOrigin;intentRevealed=false;}
     head.store(next,std::memory_order_release); SetEvent(available);
 }
@@ -768,6 +773,7 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
         HWND foreground=GetForegroundWindow();
         bool processScope=photoshopKeyScope(foreground);
         const bool down=message==WM_KEYDOWN || message==WM_SYSKEYDOWN;
+        if(down && thumbnailClicks.tracking())thumbnailClicks.cancel();
         if(!down && logical==VK_SHIFT && keys.frameSolo && keys.framePhase==0 &&
            !(GetAsyncKeyState(input.vkCode==VK_LSHIFT?VK_RSHIFT:VK_LSHIFT)&0x8000)){
             keys.framePhase=processScope && GetTickCount64()-keys.frameStart<250?1:2;emit(keys.framePhase==1?FrameCommit:FrameRestore);finishNativeFrame();
@@ -924,6 +930,20 @@ static LRESULT CALLBACK keyboard(int code,WPARAM message,LPARAM data) {
 #endif
     return timing.next(code,message,data);
 }
+static bool thumbnailFocusReady(HWND owner,HWND panel,bool release) {
+    // The first click invalidates the keyboard sample even when the Layers
+    // view keeps native focus. Read the exact Photoshop GUI thread here.
+    GUITHREADINFO info{};info.cbSize=sizeof(info);
+    const auto thread=GetWindowThreadProcessId(owner,nullptr);
+    if(!thread || !GetGUIThreadInfo(thread,&info) || !info.hwndFocus || info.hwndCaret ||
+       (info.hwndCapture && (!release || info.hwndCapture!=panel)) ||
+       info.hwndMenuOwner || info.hwndMoveSize || (info.flags&(GUI_INMENUMODE|GUI_INMOVESIZE|GUI_SYSTEMMENUMODE|GUI_POPUPMENUMODE)) ||
+       GetAncestor(info.hwndFocus,GA_ROOTOWNER)!=owner)return false;
+    wchar_t name[32]{};
+    return GetClassNameW(info.hwndFocus,name,32)>0 &&
+        (wcscmp(name,L"Photoshop")==0 || wcscmp(name,L"PSViewC")==0 || wcscmp(name,L"OWL.Palette")==0);
+}
+
 static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
     CallbackTiming timing{pointerPeakUs};
     if (code>=0) {
@@ -935,6 +955,41 @@ static LRESULT CALLBACK pointer(int code,WPARAM message,LPARAM data) {
                   message==WM_MBUTTONUP || message==WM_MBUTTONDOWN?2:-1;
         bool up=message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP;
         const auto& mouse=*reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        if(config.thumbnail.panel || thumbnailClicks.ownsSecondClick()) {
+            const auto& request=config.thumbnail;
+            const TextThumbnailGesture::Point point{static_cast<int>(mouse.pt.x),static_cast<int>(mouse.pt.y)};
+            if(message==WM_MOUSEMOVE) {
+                if(thumbnailClicks.tracking())thumbnailClicks.move(point,GetSystemMetrics(SM_CXDOUBLECLK)/2,GetSystemMetrics(SM_CYDOUBLECLK)/2);
+            } else if(index==0 && !(mouse.flags&LLMHF_INJECTED)) {
+                const bool scoped=config.enabled && !config.editorInput && !keys.modified() && !config.guardPanel &&
+                    foreground==request.owner && request.panel && !IsWindowVisible(config.overlay) &&
+                    !IsWindowVisible(config.gradient) && WindowFromPoint(mouse.pt)==request.panel &&
+                    thumbnailFocusReady(request.owner,request.panel,up);
+                const auto panel=scoped?reinterpret_cast<std::uintptr_t>(request.panel):0;
+                const auto target=scoped?thumbnailObserver.current(request,lastInputTick):TextThumbnailGesture::Target{};
+                const auto timeout=GetDoubleClickTime();
+                if(foreground==request.owner && WindowFromPoint(mouse.pt)==request.panel) {
+                    const auto next=(head.load(std::memory_order_relaxed)+1)%queue.size();
+                    if(next!=tail.load(std::memory_order_acquire)) {
+                        HookEvent event{};event.action=TextThumbnailTrace;event.hwnd=request.panel;event.cursor=mouse.pt;
+                        event.frameId=request.identity;event.guardAllowed=scoped;event.command=target.contains(point);
+                        event.repeat=thumbnailClicks.tracking();event.key=config.textInput;event.owned=up;
+                        queue[head.load(std::memory_order_relaxed)]=event;head.store(next,std::memory_order_release);SetEvent(available);
+                    }
+                }
+                if(up) {
+                    std::uint64_t identity=0;
+                    if(thumbnailClicks.up(panel,target,point,lastInputTick,timeout,identity)) {
+                        if(identity)emit(TextThumbnail,request.panel,request.owner,false,identity);
+                        return 1;
+                    }
+                } else {
+                    const auto next=(head.load(std::memory_order_relaxed)+1)%queue.size();
+                    if(thumbnailClicks.down(panel,target,point,lastInputTick,timeout,GetSystemMetrics(SM_CXDOUBLECLK)/2,
+                        GetSystemMetrics(SM_CYDOUBLECLK)/2,next!=tail.load(std::memory_order_acquire)))return 1;
+                }
+            } else if(message==WM_MOUSEWHEEL || message==WM_MOUSEHWHEEL || index>=0)thumbnailClicks.cancel();
+        }
         static HWND gradientCanvasClick=nullptr;
         if(message==WM_LBUTTONUP && gradientCanvasClick){
             const HWND target=gradientCanvasClick;
@@ -1075,6 +1130,9 @@ static Config parse(const std::string& line) {
         return match[1].str();
     };
     next.enabled=field("enabled","(true|false)")=="true";
+    if(std::regex_search(line,match,std::regex(R"cfg("text_thumbnail"\s*:\s*\[\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*\])cfg")))
+        next.thumbnail={reinterpret_cast<HWND>(std::stoull(match[1])),reinterpret_cast<HWND>(std::stoull(match[2])),
+            std::stoull(match[3]),std::stoull(match[4])};
     if (std::regex_search(line,match,std::regex("\"text_input\"\\s*:\\s*(true|false)"))) next.textInput=match[1]=="true";
     if (std::regex_search(line,match,std::regex("\"search_non_input\"\\s*:\\s*(true|false)"))) next.searchAllowed=match[1]=="true";
     if (std::regex_search(line,match,std::regex("\"editor_input\"\\s*:\\s*(true|false)"))) next.editorInput=match[1]=="true";
@@ -1227,6 +1285,13 @@ static void writeActions() {
             else if (action==LanguageActivity) line="{\"type\":\"input.language.activity\",\"input_epoch\":"+std::to_string(event.inputEpoch)+",\"hwnd\":"+std::to_string(reinterpret_cast<uintptr_t>(event.hwnd))+"}\n";
             else if (action==LanguageEditEnd) line="{\"type\":\"input.language.edit_end\",\"input_epoch\":"+std::to_string(event.inputEpoch)+"}\n";
             else if (action==PanelClick) line="{\"type\":\"panel.click\",\"input_epoch\":"+std::to_string(event.inputEpoch)+",\"hwnd\":"+std::to_string(reinterpret_cast<uintptr_t>(event.hwnd))+",\"root\":"+std::to_string(reinterpret_cast<uintptr_t>(event.root))+"}\n";
+            else if(action==TextThumbnail)line="{\"type\":\"text.thumbnail\",\"identity\":"+std::to_string(event.frameId)+
+                ",\"hwnd\":"+std::to_string(reinterpret_cast<std::uintptr_t>(event.hwnd))+",\"root\":"+std::to_string(reinterpret_cast<std::uintptr_t>(event.root))+
+                ",\"tick\":"+std::to_string(event.gapMs)+"}\n";
+            else if(action==TextThumbnailTrace)line="{\"type\":\"text.thumbnail.trace\",\"identity\":"+std::to_string(event.frameId)+
+                ",\"scope\":"+(event.guardAllowed?"true":"false")+",\"hit\":"+(event.command?"true":"false")+
+                ",\"up\":"+(event.owned?"true":"false")+",\"tracking\":"+(event.repeat?"true":"false")+
+                ",\"keyboard_gate\":"+(event.key?"true":"false")+"}\n";
             else {
                 line=std::string("{\"type\":\"")+type+"\",\"action\":\""+names[action]+"\"";
                 if(action==Configured)line+=",\"configuration_sequence\":"+std::to_string(event.gapMs);
@@ -1332,6 +1397,24 @@ static int selfTest() {
     }
     check(!screenSampleCaptured(nullptr,GetForegroundWindow()));
     std::cout<<"Screen sample hook routing passed: captured clicks bypass outside/right dismiss, lost capture and right-cancel releases consumed, ordinary outside unchanged\n";
+    {
+        using namespace TextThumbnailGesture;
+        Clicks clicks;std::uint64_t identity=0;
+        const Target source{7,120,20,30,60,70},another{8,120,20,30,60,70},unknown{};
+        const Point thumb{30,40},name{73,40};
+        const auto down=[&](const Target& target,Point pt,std::uint64_t time){return clicks.down(120,target,pt,time,500,4,4,true);};
+        const auto up=[&](std::uintptr_t panel,const Target& target,Point pt,std::uint64_t time){return clicks.up(panel,target,pt,time,500,identity);};
+        check(!down(unknown,thumb,10) && !up(120,source,thumb,20));
+        check(down(source,thumb,60) && up(120,source,thumb,80) && identity==7);
+        check(!down(source,thumb,100) && !up(120,source,thumb,120));
+        check(!down(another,thumb,150) && !up(120,another,thumb,170));
+        check(down(another,thumb,200) && up(0,unknown,thumb,220) && identity==0);
+        check(!down(source,name,300) && !up(120,source,name,320));
+        check(!down(source,thumb,340) && !up(120,source,thumb,360));
+        check(!down(source,thumb,900) && !up(120,source,thumb,930));
+        check(down(source,thumb,990));clicks.move(name,4,4);
+        check(up(120,source,name,1000) && identity==0 && !clicks.tracking());
+    }
     {
         Config text;const auto owner=reinterpret_cast<HWND>(1),foreign=reinterpret_cast<HWND>(2);
         text.enabled=true;check(!textToolAllowsClick(text,0,owner));
@@ -2063,6 +2146,7 @@ int main(int argc,char** argv) {
     HWINEVENTHOOK languageForeground=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,languageFocusEvent,0,0,WINEVENT_OUTOFCONTEXT|WINEVENT_SKIPOWNPROCESS);
     HWINEVENTHOOK languageFocus=SetWinEventHook(EVENT_OBJECT_FOCUS,EVENT_OBJECT_FOCUS,nullptr,languageFocusEvent,0,0,WINEVENT_OUTOFCONTEXT|WINEVENT_SKIPOWNPROCESS);
     std::thread(readSettings).detach();
+    thumbnailObserver.start();
     if (parent) std::thread([parent]{
         HANDLE process=OpenProcess(SYNCHRONIZE,FALSE,parent);
         if (process) { WaitForSingleObject(process,INFINITE); CloseHandle(process); }
@@ -2098,7 +2182,8 @@ int main(int argc,char** argv) {
         } else if (message.message==WM_TIMER && message.wParam==renewal) {
             auto now=GetTickCount64(),started=microseconds();
             if(now-lastInputTick>=250)keys.reconcileModifiers(physicalModifiers());
-            bool mouseHeld=sampleClicks.held[0] || sampleClicks.held[1];for (bool held:mouseConsumed) mouseHeld=mouseHeld || held;
+            bool mouseHeld=sampleClicks.held[0] || sampleClicks.held[1] || thumbnailClicks.ownsSecondClick();
+            for (bool held:mouseConsumed) mouseHeld=mouseHeld || held;
             bool attempted=renewalAllowed(now,lastInputTick,keys.physical[VK_CAPITAL] || keys.physical['F'] || keys.modified(),winRight.physical,mouseHeld);
             // Unhooking while Windows has pending hook calls can lose an
             // event. Keep the same hook throughout holds and rapid input.
@@ -2134,6 +2219,7 @@ int main(int argc,char** argv) {
             const bool beginDiagnostic=next->diagnostic && !config.diagnostic;
             if(!next->enabled || !next->remoteCompatibility)remoteClick.workspace=0;
             config=*next;
+            thumbnailObserver.update(config.thumbnail);
             if(beginDiagnostic)diagnosticUntil=GetTickCount64()+35000;
             else if(!config.diagnostic)diagnosticUntil=0;
             if (!IsWindowVisible(config.overlay)) dismissPending=false;
@@ -2151,6 +2237,7 @@ int main(int argc,char** argv) {
     if (languageFocus) UnhookWinEvent(languageFocus);
     closing.store(true);
     UnhookWindowsHookEx(keyHook); UnhookWindowsHookEx(mouseHook);
+    thumbnailObserver.stop();
     if (rightInjected) injectRight(MOUSEEVENTF_RIGHTUP);
     for (auto& p:photoshopProcesses) if (p.handle) CloseHandle(p.handle);
     closing.store(true); SetEvent(available); writer.join();

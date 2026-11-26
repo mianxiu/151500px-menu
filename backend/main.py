@@ -837,6 +837,12 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_c
             mapping['tools.search']='menu.tools.open'
             mapping.update({name:name for name in ('menu.tools.open','menu.tools.request','menu.tools.preview','menu.tools.preferences')})
             mapping['document.new'] = 'document.new'
+            if action=='text.thumbnail':
+                if not getattr(app,'menu_tools',None):
+                    from .menu_tools import MenuTools
+                    app.menu_tools=MenuTools(app)
+                await app.menu_tools.open_text_thumbnail(event_args['params'])
+                return
             if action=='isolation.exit':
                 await app.dispatch('action.execute',{'name':'layer.frame','exit_isolation':event_args['params']['id']})
                 return
@@ -902,6 +908,8 @@ async def run(port=15151, headless=False, no_desktop=False, runtime=None, open_c
             if isinstance(app.bridge,UxpBridge):
                 app.desktop.layer_context_provider=app.bridge.read_layer_context
                 app.desktop.input_language_busy=lambda:app.bridge.busy or app.operation_lock.locked() or app.photoshop_launcher.active
+                app.desktop.thumbnail_allowed=lambda:app.uxp.enabled and not app.updating and not app.bridge.busy and not (
+                    app.operation_lock.locked() or app.panel_lock.locked() or app.stability.active or app.photoshop_launcher.active)
                 from .input_tool import ToolObservation
                 tool_observer=ToolObservation(app.bridge.transport)
                 app.desktop.input_language_tool=tool_observer.read
