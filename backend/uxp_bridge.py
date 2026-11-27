@@ -711,7 +711,10 @@ class UxpBridge(PhotoshopBridge):
         from .text_tools import replace_parameters
         from . import text_object
         params=dict(params);existing=params.pop('object_source',None);render=params.pop('object_render',None)
-        if set(params)=={'revision','cells'} and isinstance(params['revision'],str):text_object.table_cells(params['cells'])
+        if {'revision','cells'}<=set(params)<={'revision','cells','position','layout'} and isinstance(params['revision'],str):
+            text_object.table_cells(params['cells'])
+            if 'position' in params:text_object.table_position(params['position'])
+            if 'layout' in params:text_object.table_layout(params['layout'])
         else:params=replace_parameters(params,allow_xmp=True)
         if existing is not None:
             import re
@@ -733,7 +736,16 @@ class UxpBridge(PhotoshopBridge):
                 from .settings import atomic_json
                 from .text_object_native import invoke
                 try:
-                    model=ready['prepared']['source'];encoded=text_object.source(model)
+                    prepared=ready['prepared'];model=prepared['source'];encoded=text_object.source(model)
+                    if model['schema']==3:
+                        layout=params.get('layout',{})
+                        if ('position' in params and prepared.get('table_position')!=params['position'] or
+                                'align' in layout and model.get('align','left')!=layout['align'] or
+                                any(key in layout and model['canvas'][key]!=layout[key] for key in ('width','height'))):
+                            raise ValueError('请更新 Photoshop UXP 插件再保存表格布局')
+                        if existing and existing['schema']==3:
+                            canvas=existing['canvas']
+                            prepared['before_pdf_bounds']=[0,0,canvas['width'],canvas['height']]
                     xml=text_object.write('' if ready['prepared']['kind']=='new-table' else ready['prepared']['before_xmp'],model)
                     edit={key:params[key] for key in ('origins','typography','typography_runs','list_layout') if key in params}
                     if existing and existing['schema']==1:

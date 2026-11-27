@@ -21,11 +21,25 @@ def table_cells(rows):
     return rows
 
 
+def table_position(value):
+    if not isinstance(value,list) or len(value)!=2 or any(type(n) not in (int,float) or not 0<=n<=1 for n in value):
+        raise ValueError('表格位置超出画布')
+    return value
+
+
+def table_layout(value):
+    if (not isinstance(value,dict) or not value or set(value)-{'width','height','align'} or
+            any(type(value[k]) is not int or not 1<=value[k]<=30000 for k in ('width','height') if k in value) or
+            value.get('align','left') not in ('left','center','right')):
+        raise ValueError('表格宽高或对齐方式无效')
+    return value
+
+
 def source(value):
     if (not isinstance(value,dict) or type(value.get('schema')) is not int or
             not (value['schema']==1 and set(value)=={'schema','canvas','layer'} or
                  value['schema']==2 and set(value)=={'schema','canvas','layer','renderer'} and value['renderer']=='list-v1' or
-                 value['schema']==3 and set(value)=={'schema','canvas','table'})):
+                 value['schema']==3 and set(value) in ({'schema','canvas','table'},{'schema','canvas','table','align'}))):
         raise ValueError('不支持的文字对象源版本')
     canvas=value['canvas']
     if not isinstance(canvas,dict) or set(canvas)!={'width','height','resolution','mode','depth','profile'}:
@@ -38,6 +52,7 @@ def source(value):
     if not isinstance(canvas['profile'],str) or len(canvas['profile'])>1000 or '\0' in canvas['profile']:raise ValueError('文字对象色彩配置无效')
     if value['schema']==3:
         table_cells(value['table'])
+        if 'align' in value:table_layout({'align':value['align']})
         return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')
     layer=value['layer']
     if not isinstance(layer,dict) or set(layer)!={'name','text','xmp'} or not isinstance(layer['name'],str) or len(layer['name'])>2000 or '\0' in layer['name']:

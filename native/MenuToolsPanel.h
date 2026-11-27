@@ -64,7 +64,13 @@ struct MenuToolsPanel {
     double canvasInteraction=0;
     bool tableObject=false;
     std::vector<std::vector<std::string>> cells;
-    std::vector<std::vector<std::string>> savedCells;
+    std::array<float,3> tableCanvas{};
+    ImVec2 tablePosition{.5f,.5f};
+    char tableWidth[7]{},tableHeight[7]{};
+    int tableAlign=0,tableCell=-1,tableLayoutGeneration=-1;
+    bool tablePlaced=false,tableFocus=false,tableEditing=false;
+    std::vector<FontSampleRaster::DraftLayout> tableGlyphs;
+    inline static constexpr const char* tableAlignKeys[]={"left","center","right"};
     float canvasZoom=1,canvasAngle=0;
     ImVec2 canvasPan{},panGestureStart{},panBefore{};
     bool canvasZoomMode=false,canvasZoomDragging=false;
@@ -777,37 +783,16 @@ struct MenuToolsPanel {
         return int(byte-text.data());
     }
     int canvasByteAt(ImVec2 point)const{return canvasByteAt(point,draft);}
-    void drawCanvasSelection(ImDrawList& draw,const CanvasViewTransform& view,ImVec2 at,ImVec2 factor,ImU32 ink,bool focus){
-        const UINT32 lo=draftUnits(std::min(selectionStart,selectionEnd)),hi=draftUnits(std::max(selectionStart,selectionEnd));
-        const auto transform=[&](float x,float y){return ImVec2{at.x+x*factor.x,at.y+y*factor.y};};
-        if(focus && hi>lo){
-            const auto background=ImGui::GetColorU32(ImGuiCol_TextSelectedBg);
-            for(const auto& para:localLayout)for(const auto* fragment:{
-                static_cast<const FontSampleRaster::DraftFragment*>(&para),&para.marker}){
-                const auto& span=*fragment;
-                const UINT32 first=std::max(lo,span.start),last=std::min(hi,span.start+span.length);
-                if(first>=last)continue;
-                UINT32 count=0;
-                span.text->HitTestTextRange(first-span.start,last-first,span.x,span.y,nullptr,0,&count);
-                std::vector<DWRITE_HIT_TEST_METRICS> boxes(count);
-                if(SUCCEEDED(span.text->HitTestTextRange(first-span.start,last-first,span.x,span.y,boxes.data(),count,&count)))
-                    for(const auto& box:boxes){
-                        const ImRect clipped({std::max(0.f,box.left),std::max(0.f,box.top)},
-                            {std::min(localDraftWidth,box.left+box.width),std::min(localDraftHeight,box.top+box.height)});
-                        if(clipped.Min.x>=clipped.Max.x || clipped.Min.y>=clipped.Max.y)continue;
-                        const auto points=view.quad(transform(clipped.Min.x,clipped.Min.y),transform(clipped.Max.x,clipped.Max.y));
-                        draw.AddQuadFilled(points[0],points[1],points[2],points[3],background);
-                    }
-            }
-        }
+    static void drawGlyphs(ImDrawList& draw,const CanvasViewTransform& view,ImVec2 at,ImVec2 factor,
+                           float width,float height,const std::vector<FontSampleRaster::DraftLayout>& layout){
         struct GlyphDraw {
             const std::vector<FontSampleRaster::DraftLayout>* paragraphs;
             ImVec2 at,right,down;
             float width,height;
         };
         const auto origin=view.apply(at),right=view.apply({at.x+factor.x,at.y}),down=view.apply({at.x,at.y+factor.y});
-        GlyphDraw glyphs{&localLayout,origin,{right.x-origin.x,right.y-origin.y},{down.x-origin.x,down.y-origin.y},
-            localDraftWidth,localDraftHeight};
+        GlyphDraw glyphs{&layout,origin,{right.x-origin.x,right.y-origin.y},{down.x-origin.x,down.y-origin.y},
+            width,height};
         draw.AddCallback([](const ImDrawList*,const ImDrawCmd* command){
             const auto& glyphs=*static_cast<const GlyphDraw*>(command->UserCallbackData);
             const auto& data=*ImGui::GetDrawData();
@@ -847,6 +832,31 @@ struct MenuToolsPanel {
             gpu->OMSetRenderTargets(1,view.GetAddressOf(),nullptr);
         },&glyphs,sizeof(glyphs));
         draw.AddCallback(ImDrawCallback_ResetRenderState,nullptr);
+    }
+    void drawCanvasSelection(ImDrawList& draw,const CanvasViewTransform& view,ImVec2 at,ImVec2 factor,ImU32 ink,bool focus){
+        const UINT32 lo=draftUnits(std::min(selectionStart,selectionEnd)),hi=draftUnits(std::max(selectionStart,selectionEnd));
+        const auto transform=[&](float x,float y){return ImVec2{at.x+x*factor.x,at.y+y*factor.y};};
+        if(focus && hi>lo){
+            const auto background=ImGui::GetColorU32(ImGuiCol_TextSelectedBg);
+            for(const auto& para:localLayout)for(const auto* fragment:{
+                static_cast<const FontSampleRaster::DraftFragment*>(&para),&para.marker}){
+                const auto& span=*fragment;
+                const UINT32 first=std::max(lo,span.start),last=std::min(hi,span.start+span.length);
+                if(first>=last)continue;
+                UINT32 count=0;
+                span.text->HitTestTextRange(first-span.start,last-first,span.x,span.y,nullptr,0,&count);
+                std::vector<DWRITE_HIT_TEST_METRICS> boxes(count);
+                if(SUCCEEDED(span.text->HitTestTextRange(first-span.start,last-first,span.x,span.y,boxes.data(),count,&count)))
+                    for(const auto& box:boxes){
+                        const ImRect clipped({std::max(0.f,box.left),std::max(0.f,box.top)},
+                            {std::min(localDraftWidth,box.left+box.width),std::min(localDraftHeight,box.top+box.height)});
+                        if(clipped.Min.x>=clipped.Max.x || clipped.Min.y>=clipped.Max.y)continue;
+                        const auto points=view.quad(transform(clipped.Min.x,clipped.Min.y),transform(clipped.Max.x,clipped.Max.y));
+                        draw.AddQuadFilled(points[0],points[1],points[2],points[3],background);
+                    }
+            }
+        }
+        drawGlyphs(draw,view,at,factor,localDraftWidth,localDraftHeight,localLayout);
         if(!focus)return;
         const UINT32 unit=draftUnits(cursorPos);
         const auto row=std::lower_bound(localLayout.begin(),localLayout.end(),unit,
@@ -1159,6 +1169,12 @@ struct MenuToolsPanel {
             boxShiftSupported=result.value("box_shift_supported",false);
             objectTextFrame=result.value("object_text_frame",Json(nullptr));resizeHandle=0;
             tableObject=result.contains("table");
+            tableCanvas=result.value(tableObject?"table_canvas":"table_document",std::array<float,3>{});
+            tableAlign=0;
+            const auto align=result.value("table_align",std::string());
+            for(int index=1;index<IM_ARRAYSIZE(tableAlignKeys);++index)if(align==tableAlignKeys[index])tableAlign=index;
+            tableWidth[0]=tableHeight[0]=0;
+            tablePosition={.5f,.5f};tablePlaced=tableObject;tableFocus=tableEditing=false;tableCell=-1;tableLayoutGeneration=-1;
             if(tableObject)autoFocusPending=false;
             if(tableObject){
                 cells=result.at("table").get<decltype(cells)>();
@@ -1168,7 +1184,6 @@ struct MenuToolsPanel {
                 cells.assign(2,std::vector<std::string>(2));
                 if(textTab==6)textTab=0;
             }
-            savedCells=cells;
             sourceStyles=result.value("styles",Json(nullptr));std::memset(styleValues,0,sizeof(styleValues));
             styleBytes={-1,-1};styleEndOfText=false;styleAnchor.clear();
             fontFilter.Clear();fontsAvailable=result.value("fonts_available",false);fontsRequested=false;
@@ -1221,6 +1236,7 @@ struct MenuToolsPanel {
                 canvasState=CanvasState::ready;canvasMessage.clear();traceTypeset("background-received");
                 canvasSourceWidth=result.value("source_width",0.f);
                 canvasSourceHeight=result.value("source_height",0.f);
+                tableLayoutGeneration=-1;
                 const auto frame=objectTextFrame.is_object()?objectTextFrame:result.value("text_frame",Json(nullptr));
                 canvasTextFrame=frame.is_object();
                 if(canvasTextFrame){
@@ -1275,34 +1291,235 @@ struct MenuToolsPanel {
             else send("hide");
         } else if(action=="text.split" || action=="text.apply" || action=="text.write" || action=="text.vector") {source.clear();revision.clear();clearPreview();clearProof();changedText();}
     }
+    static int tableDimension(const char* field){
+        if(!field[0])return 0;
+        char* end=nullptr;
+        const long value=std::strtol(field,&end,10);
+        return end!=field && !*end && value>=1 && value<=30000?int(value):-1;
+    }
+    void editTableCell(size_t row,size_t column){
+        char value[513];
+        auto& cell=cells[row][column];
+        std::snprintf(value,sizeof(value),"%s",cell.c_str());
+        MenuControls::input("##cell","",value,sizeof(value));
+        if(ImGui::IsItemEdited()){
+            const char* end=value+std::strlen(value);
+            const char* limit=value;
+            for(int count=0;limit<end && count<128;++count){
+                unsigned codepoint=0;
+                limit+=ImTextCharFromUtf8(&codepoint,limit,end);
+            }
+            cell.assign(value,size_t(limit-value));requireText(cell);changedText();
+        }
+    }
+    void selectTableCell(int index,bool edit){
+        tableCell=index;tableFocus=tableEditing=edit;
+    }
+    static ImVec2 tableDropPosition(ImVec2 pointer,ImVec2 origin,ImVec2 travel,float fit){
+        return {travel.x>0?std::clamp((pointer.x-origin.x)/fit/travel.x,0.f,1.f):0.f,
+                travel.y>0?std::clamp((pointer.y-origin.y)/fit/travel.y,0.f,1.f):0.f};
+    }
     void drawTable(float scale){
         if(cells.empty() || cells.front().empty())return;
         const int cols=int(cells.front().size());
+        const int rows=int(cells.size());
+        const int selectedRow=tableCell<0?rows-1:std::min(tableCell/8,rows-1);
+        const int selectedCol=tableCell<0?cols-1:std::min(tableCell%8,cols-1);
         ImGui::BeginDisabled(pending && pendingAction!="text.proof");
-        ImGui::BeginDisabled(cells.size()>=12);
-        if(MenuControls::iconButton("添加行",95,scale)){cells.emplace_back(cols);changedText();}
-        ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(cells.size()==1);
-        if(MenuControls::iconButton("移除末行",96,scale)){cells.pop_back();changedText();}
+        if(!tableObject){
+            ImGui::BeginDisabled(tableCanvas[0]<=0 || tableCanvas[1]<=0);
+            const char* label=tablePlaced?"拖动表格":"拖放表格";
+            if(MenuControls::button(label,scale) && !tablePlaced){
+                tablePlaced=true;tablePosition={.5f,.5f};selectTableCell(0,true);
+            }
+            if(ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoDisableHover)){
+                ImGui::SetDragDropPayload("TYPESET_TABLE",nullptr,0);
+                MenuTextStyle text(MenuTextRole::Control);
+                ImGui::TextUnformatted("拖到画布放置表格");
+                ImGui::EndDragDropSource();
+            }
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))MenuControls::tip("拖到画布放置表格",scale);
+            ImGui::EndDisabled();
+            if(tableCanvas[0]<=0 || tableCanvas[1]<=0){
+                MenuTextStyle text(MenuTextRole::Secondary);
+                ImGui::TextWrapped("表格需要 RGB 8 位文档和最新的 Photoshop 插件。");
+                ImGui::EndDisabled();return;
+            }
+        }
+        ImGui::BeginDisabled(rows>=12);
+        if(MenuControls::iconButton("在下方添加行",95,scale)){
+            cells.emplace(cells.begin()+selectedRow+1,cols);
+            selectTableCell((selectedRow+1)*8+selectedCol,false);changedText();
+        }
+        ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(rows==1);
+        if(MenuControls::iconButton("删除行",96,scale)){
+            cells.erase(cells.begin()+selectedRow);
+            selectTableCell(std::min(selectedRow,rows-2)*8+selectedCol,false);changedText();
+        }
         ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(cols>=8);
-        if(MenuControls::iconButton("添加列",97,scale)){for(auto& row:cells)row.emplace_back();changedText();}
+        if(MenuControls::iconButton("在右侧添加列",97,scale)){
+            for(auto& row:cells)row.emplace(row.begin()+selectedCol+1);
+            selectTableCell(selectedRow*8+selectedCol+1,false);changedText();
+        }
         ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(cols==1);
-        if(MenuControls::iconButton("移除末列",98,scale)){for(auto& row:cells)row.pop_back();changedText();}
+        if(MenuControls::iconButton("删除列",98,scale)){
+            for(auto& row:cells)row.erase(row.begin()+selectedCol);
+            selectTableCell(selectedRow*8+std::min(selectedCol,cols-2),false);changedText();
+        }
         ImGui::EndDisabled();
+        const auto dimensions=tableSize();
+        const auto widthHint="宽度 · "+std::to_string(std::lround(dimensions.x))+" px";
+        const auto heightHint="高度 · "+std::to_string(std::lround(dimensions.y))+" px";
+        MenuControls::input("##table-width",widthHint.c_str(),tableWidth,sizeof(tableWidth));
+        if(ImGui::IsItemEdited())changedText();
+        MenuControls::input("##table-height",heightHint.c_str(),tableHeight,sizeof(tableHeight));
+        if(ImGui::IsItemEdited())changedText();
+        const char* align[]={"左对齐","居中","右对齐"};
+        if(MenuControls::segments("##table-align",align,tableAlign,scale))changedText();
         if(ImGui::BeginTable("##table-cells",int(cells.front().size()),ImGuiTableFlags_ScrollX|ImGuiTableFlags_SizingFixedFit)){
             for(size_t i=0;i<cells.front().size();++i)ImGui::TableSetupColumn("",ImGuiTableColumnFlags_WidthFixed,100*scale);
             for(size_t y=0;y<cells.size();++y){
                 ImGui::TableNextRow();
                 for(size_t x=0;x<cells[y].size();++x){
                     ImGui::TableSetColumnIndex(int(x));ImGui::PushID(int(y*8+x));
-                    char value[513];auto& cell=cells[y][x];std::snprintf(value,sizeof(value),"%s",cell.c_str());
-                    MenuControls::input("##cell","",value,sizeof(value));
-                    if(ImGui::IsItemEdited()){cell=value;requireText(cell);changedText();}
+                    editTableCell(y,x);
+                    if(ImGui::IsItemActivated())selectTableCell(int(y)*8+int(x),false);
                     ImGui::PopID();
                 }
             }
             ImGui::EndTable();
         }
         ImGui::EndDisabled();
+    }
+    ImVec2 tableSize()const{
+        const float density=tableCanvas[2]>0?tableCanvas[2]/72.f:1.f;
+        const float width=tableObject?tableCanvas[0]:std::round(cells.front().size()*110*density);
+        const float height=tableObject?tableCanvas[1]:std::round(cells.size()*32*density);
+        const auto dimension=[&](const char* field,float automatic,float limit){
+            const int specified=tableDimension(field);
+            const float requested=std::max(1.f,specified>0?float(specified):automatic);
+            return !tableObject && limit>0?std::min(limit,requested):requested;
+        };
+        return {dimension(tableWidth,width,tableCanvas[0]),dimension(tableHeight,height,tableCanvas[1])};
+    }
+    void drawTableCanvas(float scale,ImU32 pasteboard,bool available){
+        if(cells.empty() || cells.front().empty() || tableCanvas[0]<=0 || tableCanvas[1]<=0)return;
+        const auto p=ImGui::GetCursorScreenPos(),extent=ImGui::GetContentRegionAvail();
+        if(extent.x<=1 || extent.y<=1)return;
+        const ImVec2 end={p.x+extent.x,p.y+extent.y},size=tableSize();
+        const ImVec2 document=tableObject?size:ImVec2{tableCanvas[0],tableCanvas[1]};
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##table-canvas",extent);
+        const auto& io=ImGui::GetIO();
+        const bool over=ImGui::IsItemHovered();
+        if(over && available && io.MouseWheel){
+            ImGui::SetKeyOwner(ImGuiKey_MouseWheelY,ImGui::GetCurrentWindow()->ID);
+            const float zoom=std::clamp(canvasZoom*std::pow(1.2f,io.MouseWheel),.25f,8.f);
+            const float shift=1.f-zoom/canvasZoom;
+            canvasPan.x+=(io.MousePos.x-p.x-extent.x*.5f-canvasPan.x)*shift;
+            canvasPan.y+=(io.MousePos.y-p.y-extent.y*.5f-canvasPan.y)*shift;
+            canvasZoom=zoom;changedView();
+        }
+        if(over && available && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)){
+            canvasPanning=true;panGestureStart=io.MousePos;panBefore=canvasPan;
+        }
+        if(!ImGui::IsMouseDown(ImGuiMouseButton_Middle))canvasPanning=false;
+        if(canvasPanning)canvasPan={panBefore.x+io.MousePos.x-panGestureStart.x,panBefore.y+io.MousePos.y-panGestureStart.y};
+        const float fit=std::min(extent.x/document.x,extent.y/document.y)*canvasZoom;
+        const ImVec2 top={p.x+(extent.x-document.x*fit)*.5f+canvasPan.x,p.y+(extent.y-document.y*fit)*.5f+canvasPan.y};
+        const ImVec2 documentEnd={top.x+document.x*fit,top.y+document.y*fit};
+        const ImVec2 travel={document.x-size.x,document.y-size.y};
+        auto previewPosition=tablePosition;
+        bool draggingTable=false;
+        if(!tableObject && available && ImRect(top,documentEnd).Contains(io.MousePos) && ImGui::BeginDragDropTarget()){
+            if(const auto* payload=ImGui::AcceptDragDropPayload("TYPESET_TABLE",ImGuiDragDropFlags_AcceptPeekOnly)){
+                previewPosition=tableDropPosition(io.MousePos,top,travel,fit);
+                draggingTable=!payload->IsDelivery();
+                if(payload->IsDelivery()){
+                    tablePosition=previewPosition;tablePlaced=true;selectTableCell(0,true);
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        auto& draw=*ImGui::GetWindowDrawList();
+        draw.PushClipRect(p,end,true);
+        draw.AddRectFilled(p,end,pasteboard);
+        const CanvasViewTransform upright({},0);
+        const auto page=upright.quad(top,documentEnd);
+        transparency.draw(draw,page,device,[&](const ImU32* pixels,ID3D11ShaderResourceView** image){
+            return loadPixels(2,2,pixels,image);
+        });
+        if(thumbnail && !tableObject)draw.AddImage((ImTextureID)(intptr_t)thumbnail,top,documentEnd);
+        if(!tablePlaced && !draggingTable){draw.PopClipRect();return;}
+        const ImVec2 origin={top.x+previewPosition.x*travel.x*fit,top.y+previewPosition.y*travel.y*fit};
+        const ImVec2 cell={size.x/float(cells.front().size()),size.y/float(cells.size())};
+        const float density=tableCanvas[2]>0?tableCanvas[2]/72.f:1.f;
+        const float rule=std::max(.5f,std::min({density,cell.x/12,cell.y/12}));
+        const float inset=std::max(rule,std::min({4*density,cell.x/8,cell.y/8}));
+        const auto ink=ImGui::ColorConvertFloat4ToU32({.125f,.125f,.125f,1});
+        for(size_t i=0;i<=cells.front().size();++i){
+            const float x=origin.x+std::min(i*cell.x,size.x-rule)*fit;
+            draw.AddRectFilled({x,origin.y},{x+rule*fit,origin.y+size.y*fit},ink);
+        }
+        for(size_t i=0;i<=cells.size();++i){
+            const float y=origin.y+std::min(i*cell.y,size.y-rule)*fit;
+            draw.AddRectFilled({origin.x,y},{origin.x+size.x*fit,y+rule*fit},ink);
+        }
+        if(draggingTable){
+            draw.AddRect(origin,{origin.x+size.x*fit,origin.y+size.y*fit},ImGui::GetColorU32(ImGuiCol_NavCursor),
+                0,0,menuControlBorder*scale);
+        }else if(tableCell>=0){
+            const ImVec2 selected={origin.x+(tableCell%8)*cell.x*fit,origin.y+(tableCell/8)*cell.y*fit};
+            draw.AddRect(selected,{selected.x+cell.x*fit,selected.y+cell.y*fit},ImGui::GetColorU32(ImGuiCol_NavCursor),
+                0,0,menuControlBorder*scale);
+        }
+        if(auto* painter=canvasGlyphTarget.prepare(device)){
+            if(tableLayoutGeneration!=draftGeneration){
+                tableLayoutGeneration=draftGeneration;tableGlyphs.clear();
+                const float em=std::min(12*density,cell.y*.55f);
+                for(size_t y=0;y<cells.size();++y)for(size_t x=0;x<cells[y].size();++x){
+                    const auto& text=cells[y][x];
+                    if(text.empty() || cell.x<=2*inset || cell.y<=2*inset)continue;
+                    FontSampleRaster::DraftParagraph para;para.text=wideText(text);
+                    para.runs.push_back({{0,UINT32(para.text.size())},L"MicrosoftYaHei",em,0,{.125f,.125f,.125f},false,false,false,false,{}});
+                    std::vector<FontSampleRaster::DraftLayout> lines;
+                    const auto layout=[&]{return fontRaster.layoutDraft({para},cell.x,cell.y,em,false,*painter,lines);};
+                    DWRITE_TEXT_METRICS metrics{};
+                    if(!layout() || FAILED(lines.front().text->GetMetrics(&metrics)))continue;
+                    const float shrink=std::min({1.f,(cell.x-2*inset)/std::max(1.f,metrics.width),
+                        (cell.y-2*inset)/std::max(1.f,metrics.height)});
+                    if(shrink<1){
+                        para.runs.front().em*=shrink*.98f;
+                        if(!layout() || FAILED(lines.front().text->GetMetrics(&metrics)))continue;
+                    }
+                    auto& line=lines.front();
+                    line.x=x*cell.x+(tableAlign==1?(cell.x-metrics.width)*.5f:tableAlign==2?cell.x-inset-metrics.width:inset);
+                    line.y=y*cell.y+(cell.y-metrics.height)*.5f;
+                    tableGlyphs.push_back(std::move(line));
+                }
+            }
+            if(!tableGlyphs.empty())drawGlyphs(draw,upright,origin,{fit,fit},size.x,size.y,tableGlyphs);
+        }
+        draw.PopClipRect();
+        if(draggingTable)return;
+        if(over && available && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+            const auto mouse=io.MousePos;
+            if(mouse.x>=origin.x && mouse.x<origin.x+size.x*fit && mouse.y>=origin.y && mouse.y<origin.y+size.y*fit){
+                selectTableCell(int((mouse.y-origin.y)/(cell.y*fit))*8+int((mouse.x-origin.x)/(cell.x*fit)),true);
+            }else selectTableCell(-1,false);
+        }
+        if(tableEditing && tableCell>=0 && size_t(tableCell/8)<cells.size() &&
+           size_t(tableCell%8)<cells.front().size() && cell.x*fit>=menuControlHeight*scale){
+            ImGui::PushClipRect(p,end,true);
+            const float x=origin.x+(tableCell%8)*cell.x*fit;
+            const float y=origin.y+(tableCell/8+.5f)*cell.y*fit-ImGui::GetFrameHeight()*.5f;
+            ImGui::SetCursorScreenPos({x,y});ImGui::PushID(tableCell);
+            ImGui::BeginDisabled(!available);
+            if(tableFocus){ImGui::SetKeyboardFocusHere();tableFocus=false;}
+            ImGui::SetNextItemWidth(cell.x*fit);editTableCell(tableCell/8,tableCell%8);
+            if(ImGui::IsItemDeactivated())tableEditing=false;
+            ImGui::EndDisabled();ImGui::PopID();ImGui::PopClipRect();
+        }
     }
     void requestCanvas(){
         if(pending || revision.empty() || canvasState==CanvasState::stale)return;
@@ -1812,10 +2029,13 @@ struct MenuToolsPanel {
         if(fontSampleFrame!=ImGui::GetFrameCount())closeFontSamples();
     }
     bool canWriteTable(bool available)const{
-        return available && canvasState!=CanvasState::stale && (tableObject || (draft==sourceDisplay && !hasStyles() && !draftListChanged));
-    }
-    bool needsTableProof()const{
-        return mode=="typeset" && objectProofAvailable && (!tableObject || cells!=savedCells || wantedProofScale>1 || backgroundMode);
+        if(!available || canvasState==CanvasState::stale || !tablePlaced || cells.empty() || cells.front().empty() ||
+           tableCanvas[0]<=0 || tableCanvas[1]<=0)return false;
+        const int width=tableDimension(tableWidth),height=tableDimension(tableHeight);
+        const auto size=tableSize();
+        return width>=0 && height>=0 && (!width || width<=size.x) && (!height || height<=size.y) &&
+            size.x<=30000.f && size.y<=30000.f && size.x*size.y<=64000000.f &&
+            (tableObject || (draft==sourceDisplay && !hasStyles() && !draftListChanged));
     }
     bool usesCanvasResult()const{return mode=="typeset" && textTab>=1 && textTab<=4;}
     bool showsCanvasResult()const{return usesCanvasResult() && !showCanvasSource && !editingCanvasResult && !planId.empty() &&
@@ -1864,7 +2084,14 @@ struct MenuToolsPanel {
         }
         ImGui::BeginDisabled(!eligible);
         if(MenuControls::button(label,scale)){
-            if(table)submit("text.table",Json{{"revision",revision},{"cells",cells}});
+            if(table){
+                Json layout={{"align",tableAlignKeys[tableAlign]}};
+                if(const int width=tableDimension(tableWidth);width>0)layout["width"]=width;
+                if(const int height=tableDimension(tableHeight);height>0)layout["height"]=height;
+                Json args={{"revision",revision},{"cells",cells},{"layout",layout}};
+                if(!tableObject)args["position"]={tablePosition.x,tablePosition.y};
+                submit("text.table",std::move(args));
+            }
             else submit(split?"text.apply":"text.vector",Json{{"revision",revision},{"plan_id",planId}});
         }
         ImGui::EndDisabled();
@@ -2224,7 +2451,10 @@ struct MenuToolsPanel {
                         focusText=canIsolate;
                     }
                 }
-                if(processedCanvas && !shapedResult){
+                if(textTab==6){
+                    canvasTextActive=fallbackDraftActive=false;
+                    drawTableCanvas(scale,pasteboardColor,available && hostForeground && !pending);
+                }else if(processedCanvas && !shapedResult){
                     canvasTextActive=fallbackDraftActive=false;
                     MenuControls::textPreview("##canvas-processed-text",resultPreview.c_str(),std::max(h,extent.y-gap),
                         {},textTab==4 && listMode!=2);

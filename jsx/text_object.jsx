@@ -339,9 +339,14 @@
             var factor=Math.min(1,(cw-2*padding)/Math.max(1,ww),(rh-2*padding)/Math.max(1,hh));
             if(factor<1)ti.size=UnitValue(ti.size.as('pt')*factor*.98,'pt');
             b=l.bounds;
-            l.translate(UnitValue(x*cw+padding-b[0].as('px'),'px'),UnitValue(y*rh+(rh-(b[3].as('px')-b[1].as('px')))/2-b[1].as('px'),'px'));
+            var inkWidth=b[2].as('px')-b[0].as('px');
+            var aligned=source.align==='center'?(cw-inkWidth)/2:source.align==='right'?cw-padding-inkWidth:padding;
+            var left=x*cw+aligned,top=y*rh+(rh-(b[3].as('px')-b[1].as('px')))/2;
+            l.translate(UnitValue(left-b[0].as('px'),'px'),UnitValue(top-b[1].as('px'),'px'));
             b=l.bounds;
-            if(ti.contents!==value||b[0].as('px')<x*cw-.5||b[2].as('px')>(x+1)*cw+.5||b[1].as('px')<y*rh-.5||b[3].as('px')>(y+1)*rh+.5)throw Error('Cell text does not fit at row '+(y+1)+', column '+(x+1));
+            if(ti.contents!==value||Math.abs(b[0].as('px')-left)>1.01||Math.abs(b[1].as('px')-top)>1.01||
+               b[0].as('px')<x*cw-.5||b[2].as('px')>(x+1)*cw+.5||b[1].as('px')<y*rh-.5||b[3].as('px')>(y+1)*rh+.5)
+                throw Error('Cell text does not fit or align at row '+(y+1)+', column '+(x+1));
             outline(ti);l.remove();
         }
         var stream=commands.join('\n')+'\n';
@@ -365,7 +370,7 @@
         return id;
     }
     function canUpdateOriginal(){
-        if(proof||prepared.kind!=='smart-object'||source.schema!==1||app.version!=='24.0.1')return false;
+        if(proof||prepared.kind!=='smart-object'||(source.schema!==1&&source.schema!==3)||app.version!=='24.0.1')return false;
         try{
             var placed=object(property('smartObject')).smartObject;
             if(placed.linked!==false||placed.placed._value!=='vectorData')return false;
@@ -541,6 +546,8 @@
             if(beforeFrame&&(pdfBounds||prepared.before_pdf_bounds))transformPdf(beforeFrame,expected,100,100);
             replaceContents();
         }else{
+            if(prepared.kind==='new-table'&&(right>doc.width.as('px')+.01||bottom>doc.height.as('px')+.01))
+                throw Error('表格宽高超过 Photoshop 画布');
             var a=new ActionDescriptor();a.putPath(c('null'),pdf);a.putEnumerated(c('FTcs'),c('QCSt'),c('Qcsa'));a.putInteger(s('crop'),2);executeAction(c('Plc '),a,DialogModes.NO);
         }
         var created=doc.activeLayer;
@@ -552,7 +559,15 @@
             // Photoshop snaps each edge of a newly centred placement to a pixel.
             var fw=frame[2]-frame[0],fh=frame[5]-frame[1],px=source.canvas.resolution*factor/72;
             if(!more.size||Math.abs(more.size.width*px-w)>.01||Math.abs(more.size.height*px-h)>.01||fw<=0||fh<=0||Math.abs(fw-w)>1.01||Math.abs(fh-h)>1.01)throw Error('Table intrinsic size or placement mismatch');
-            expected=[frame[0],frame[1],frame[0]+fw,frame[1],frame[0]+fw,frame[1]+fh,frame[0],frame[1]+fh];
+            var x=frame[0],y=frame[1],position=prepared.table_position;
+            if(position){
+                x=Math.round(position[0]*Math.max(0,doc.width.as('px')-fw));
+                y=Math.round(position[1]*Math.max(0,doc.height.as('px')-fh));
+                var dx=x-frame[0],dy=y-frame[1];
+                if(Math.round(dx)||Math.round(dy))movePdf(Math.round(dx),Math.round(dy));
+                frame=object(property('smartObjectMore')).smartObjectMore.transform;
+            }
+            expected=[x,y,x+fw,y,x+fw,y+fh,x,y+fh];
         }
         var pixelSnapped=false;
         if(prepared.kind==='text'){

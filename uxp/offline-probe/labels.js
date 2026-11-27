@@ -2933,6 +2933,8 @@ function createTextTools(ps,session,capture,readTree,options={}) {
     if(trace)Object.assign(trace,{source_width:doc.width,source_height:doc.height,characters:row.textKey?.textKey?.length??0});
     const capabilities={advanced_typography:true,typography_runs_supported:true,opentype_supported:true,kerning_supported:row.layerKind===5||canKern(row.textKey),
       east_asian_paragraph_supported:supportsEastAsianParagraph,
+      ...(doc.mode===ps.constants.DocumentMode.RGB && doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT
+        ?{table_document:[doc.width,doc.height,doc.resolution]}:{}),
       box_shift_supported:row.layerKind===5||row.textKey.textClickPoint?.horizontal?._unit==='percentUnit',text_rgb:doc.mode===ps.constants.DocumentMode.RGB &&
       doc.bitsPerChannel===ps.constants.BitsPerChannelType.EIGHT && doc.colorProfileName==='sRGB IEC61966-2.1',
       ...(fast?{canvas_history:stamp.history,fonts_available:true,...(fontCatalog?{fonts:fontCatalog}:{})}:
@@ -2977,8 +2979,21 @@ function createTextTools(ps,session,capture,readTree,options={}) {
       if(doc.mode!==ps.constants.DocumentMode.RGB||doc.bitsPerChannel!==ps.constants.BitsPerChannelType.EIGHT)throw Error('表格需要 RGB 8 位文档');
       if(existing&&(!params.object_source||!/^[0-9a-f]{64}$/.test(params.object_render)))throw Error('对象源身份不完整');
       const updating=existing&&params.object_source.schema===3;
-      const canvas=updating?params.object_source.canvas:{width:Math.min(doc.width,Math.max(1,Math.round(cells[0].length*110*doc.resolution/72))),height:Math.min(doc.height,Math.max(1,Math.round(cells.length*32*doc.resolution/72))),resolution:doc.resolution,mode:'RGB',depth:8,profile:doc.colorProfileName};
-      return {kind:updating?'smart-object':'new-table',row,proofBefore,before_xmp:row.XMPMetadataAsUTF8,...(existing?{before_render:params.object_render,transform:row.smartObjectMore?.transform}:{before_text:row.textKey}),source:{schema:3,canvas,table:cells}};
+      const layout=params.layout,position=params.position;
+      if(layout!==undefined && (!layout||typeof layout!=='object'||Array.isArray(layout)||!Object.keys(layout).length||
+          Object.keys(layout).some(k=>!['width','height','align'].includes(k))||
+          ['width','height'].some(k=>k in layout && (!Number.isInteger(layout[k])||layout[k]<1||layout[k]>30000))||
+          ('align' in layout&&!['left','center','right'].includes(layout.align))))throw Error('表格宽高或对齐方式无效');
+      if(position!==undefined && (updating||!Array.isArray(position)||position.length!==2||
+          position.some(x=>!Number.isFinite(x)||x<0||x>1)))throw Error('表格放置位置无效');
+      const canvas=updating?{...params.object_source.canvas}:{width:Math.min(doc.width,Math.max(1,Math.round(cells[0].length*110*doc.resolution/72))),height:Math.min(doc.height,Math.max(1,Math.round(cells.length*32*doc.resolution/72))),resolution:doc.resolution,mode:'RGB',depth:8,profile:doc.colorProfileName};
+      if(layout?.width!==undefined)canvas.width=layout.width;
+      if(layout?.height!==undefined)canvas.height=layout.height;
+      if(!updating&&(canvas.width>doc.width||canvas.height>doc.height))throw Error('表格宽高超过 Photoshop 画布');
+      const align=layout?.align||(updating?params.object_source.align:undefined)||'left';
+      return {kind:updating?'smart-object':'new-table',row,proofBefore,before_xmp:row.XMPMetadataAsUTF8,
+        ...(existing?{before_render:params.object_render,transform:row.smartObjectMore?.transform}:{before_text:row.textKey}),
+        ...(position?{table_position:position}:{}),source:{schema:3,canvas,table:cells,...(align==='left'?{}:{align})}};
     }
     if(!raw||existing&&(!params.object_source||!/^[0-9a-f]{64}$/.test(params.object_render)))throw Error('文字对象源或显示校验缺失');
     if(existing&&plannedStyles(params).length&&params.object_source.schema!==1)throw Error('此历史文字对象暂不支持排版修改');

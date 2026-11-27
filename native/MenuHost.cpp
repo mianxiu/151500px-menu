@@ -4173,10 +4173,14 @@ int main() {
                         const std::array<unsigned char,16> tex={255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255};
                         if(!editor.loadPixels(2,2,tex.data()))throw std::runtime_error("Text frame fixture texture failed");
                         float windowWidth=780;
+                        bool tableDragFixture=false;
                         auto boxFrame=[&](){
                             io.DeltaTime=1.f/60.f;ImGui::NewFrame();ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
                             ImGui::SetNextWindowPos(ImGui::GetMainViewport()->Pos);ImGui::SetNextWindowSize({windowWidth*scale,420*scale});
                             ImGui::Begin("##resize-text-test",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoSavedSettings);
+                            if(tableDragFixture && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceExtern|ImGuiDragDropFlags_SourceNoPreviewTooltip)){
+                                ImGui::SetDragDropPayload("TYPESET_TABLE",nullptr,0);ImGui::EndDragDropSource();
+                            }
                             editor.draw(scale,{0,0},true,true,photoshopPasteboardColor());ImGui::End();ImGui::Render();finishPlatformFrame();
                         };
                         boxFrame();boxFrame();ImGuiWindow* frame=nullptr;ImGuiWindow* body=nullptr;
@@ -4214,8 +4218,43 @@ int main() {
                            editor.draftBoxSize!=editor.sourceBoxSize || std::string(editor.draft)!="Text frame contents")
                             throw std::runtime_error("Region zoom did not preserve the draft on reverse drag");
                         activateIcon(toolbar,"##canvas-zoom",2,"适合窗口");
+                        editor.tableCanvas={480,320,72};editor.cells={{"first","second"},{"third","fourth"}};
                         activateIcon(options,"##typeset-tabs",4,"表格");
                         if(editor.textTab!=6)throw std::runtime_error("Typeset table icon did not open the table tool");
+                        if(editor.tablePlaced || editor.canWriteTable(true))
+                            throw std::runtime_error("Unplaced table was eligible for writing");
+                        const auto drop=MenuToolsPanel::tableDropPosition({390,173},{50,45},{260,256},.5f);
+                        if(drop.x!=1 || drop.y!=1)throw std::runtime_error("Table drop escaped the document");
+                        ImGui::ActivateItemByID(options->GetID("拖放表格"));boxFrame();boxFrame();
+                        if(!editor.tablePlaced || editor.tableCell!=0 || (editor.tableSize().x!=220 || editor.tableSize().y!=64))
+                            throw std::runtime_error("Table placement did not expose the first cell");
+                        ImGui::ClearActiveID();editor.selectTableCell(0,false);boxFrame();
+                        ImGui::ActivateItemByID(options->GetID("在下方添加行"));boxFrame();
+                        if(editor.cells.size()!=3 || !editor.cells[1][0].empty() || editor.cells[2][0]!="third")
+                            throw std::runtime_error("Insert row did not preserve neighboring cells: "+Json(editor.cells).dump());
+                        ImGui::ActivateItemByID(options->GetID("删除行"));boxFrame();
+                        if(editor.cells.size()!=2 || editor.cells[1][0]!="third")
+                            throw std::runtime_error("Delete row removed the wrong cells");
+                        editor.selectTableCell(0,false);
+                        ImGui::ActivateItemByID(options->GetID("在右侧添加列"));boxFrame();
+                        if(editor.cells[0]!=std::vector<std::string>{"first","","second"})
+                            throw std::runtime_error("Insert column did not preserve neighboring cells");
+                        ImGui::ActivateItemByID(options->GetID("删除列"));boxFrame();
+                        if(editor.cells[0]!=std::vector<std::string>{"first","second"})
+                            throw std::runtime_error("Delete column removed the wrong cells");
+                        std::strcpy(editor.tableWidth,"300");std::strcpy(editor.tableHeight,"90");
+                        activateIcon(options,"##table-align",2,"右对齐");boxFrame();
+                        if(editor.tableSize().x!=300 || editor.tableSize().y!=90 || editor.tableAlign!=2 || editor.tableGlyphs.empty())
+                            throw std::runtime_error("Table canvas did not render the new size and alignment");
+                        editor.tablePlaced=false;
+                        const auto target=canvas->InnerRect.GetCenter();
+                        io.AddMouseViewportEvent(ImGui::GetMainViewport()->ID);io.AddMousePosEvent(target.x,target.y);boxFrame();
+                        io.AddMouseButtonEvent(0,true);tableDragFixture=true;boxFrame();boxFrame();
+                        if(editor.tablePlaced)throw std::runtime_error("Table drag committed before mouse release");
+                        io.AddMouseButtonEvent(0,false);tableDragFixture=false;boxFrame();boxFrame();
+                        if(!editor.tablePlaced || editor.tableCell!=0 || editor.tablePosition.x<=.5f)
+                            throw std::runtime_error("Table drag did not place at the canvas drop position");
+                        ImGui::ClearActiveID();editor.selectTableCell(0,false);boxFrame();
                         activateIcon(options,"##typeset-tabs",0,"查找替换");
                         if(editor.textTab!=1)throw std::runtime_error("Labeled typeset tool did not open find and replace");
                         activateIcon(options,"##typeset-tabs",0,"查找替换");

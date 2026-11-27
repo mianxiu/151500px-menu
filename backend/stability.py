@@ -27,6 +27,7 @@ STAGE_LABELS={'fixture':'正在创建隔离临时文档','idle-read':'正在检�
     'text-object-fixture':'正在创建隔离文字文档','text-object-create':'正在生成矢量文字对象',
     'text-object-unsaved-create':'正在验证未保存文档的原位导出','text-object-unsaved-undo':'正在核对未保存文档的文字撤销',
     'text-object-scale':'正在缩放独立测试副本','text-object-update':'正在更新测试文字源',
+    'text-table-place':'正在核对表格放置坐标','text-table-update':'正在核对表格宽高与对齐',
     'text-object-undo-save-close':'正在核验撤销、保存重开和文档收尾',
     'fixed-layer-label':'正在反复修改固定图层的标签','fixed-layer-read':'正在读取固定图层',
     'preview-commit-undo':'正在核验颜色／羽化确认与一次撤销','preview-cancel':'正在核验预览取消恢复',

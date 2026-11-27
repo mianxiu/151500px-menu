@@ -127,9 +127,20 @@ class TextObjectTests(unittest.TestCase):
     def test_table_source_round_trip_and_cell_bounds(self):
         model={'schema':3,'canvas':SOURCE['canvas'],'table':[['项目','单价'],['A&B','']]}
         self.assertEqual(text_object.read(text_object.write('',model)),model)
+        for align in ('center','right'):
+            styled={**model,'align':align}
+            self.assertEqual(text_object.read(text_object.write('',styled)),styled)
         for cells in ([],[[]],[['a'],[]],[['x']*9],[['']]*13,[['a\nb']],[['a'*129]],[[False]]):
             with self.subTest(cells=cells), self.assertRaises(ValueError):
                 text_object.source({**model,'table':cells})
+        for position in ([0,1],[.34,.82]):
+            self.assertEqual(text_object.table_position(position),position)
+        for position in ([0],[.5,True],[-.1,0],[0,1.001],[float('nan'),0]):
+            with self.subTest(position=position),self.assertRaises(ValueError):
+                text_object.table_position(position)
+        for layout in ({},{'width':0},{'height':10.2},{'align':'justify'},{'other':10}):
+            with self.subTest(layout=layout),self.assertRaises(ValueError):
+                text_object.table_layout(layout)
 
     def test_single_packet_roundtrip_preserves_full_styles_list_data_and_foreign_metadata(self):
         value=copy.deepcopy(SOURCE);value['layer']['xmp']=text_list.write(FOREIGN,OPTIONS)

@@ -382,7 +382,9 @@ class TextTools:
             snapshot=result.get('text')
             if isinstance(snapshot,dict) and 'object_xmp' in snapshot:
                 model=text_object.read(snapshot['object_xmp'])
-                snapshot={**snapshot,**({'text':'','table':model['table'],'typography_supported':False} if model['schema']==3 else {'text':model['layer']['text']['textKey'],'list_xmp':model['layer']['xmp']}),'object_source':model,'object_render':text_object.render_hash(snapshot['object_xmp']),'vector_object':True}
+                table={'text':'','table':model['table'],'table_canvas':[model['canvas'][key] for key in ('width','height','resolution')],
+                       'table_align':model.get('align','left'),'typography_supported':False} if model['schema']==3 else None
+                snapshot={**snapshot,**(table if table is not None else {'text':model['layer']['text']['textKey'],'list_xmp':model['layer']['xmp']}),'object_source':model,'object_render':text_object.render_hash(snapshot['object_xmp']),'vector_object':True}
                 canvas=model['canvas']
                 eligible=(snapshot.get('object_proof') is True and model['schema'] in (1,3) and canvas['profile']=='sRGB IEC61966-2.1'
                           and snapshot.get('proof_resolution')==canvas['resolution']
@@ -456,14 +458,19 @@ class TextTools:
         return await self.apply({'revision':args['revision'],'plan_id':result['plan_id']},menu_guard)
 
     async def table(self,args,menu_guard=None):
-        if not isinstance(args,dict) or set(args)!={'revision','cells'}:raise ValueError('表格参数无效')
+        if not isinstance(args,dict) or not {'revision','cells'}<=set(args)<={'revision','cells','position','layout'}:raise ValueError('表格参数无效')
         params={'revision':args['revision'],'cells':text_object.table_cells(args['cells'])}
+        if 'position' in args:
+            if self.snapshot and 'table' in self.snapshot:raise ValueError('已有表格的位置由 Photoshop 图层控制')
+            params['position']=text_object.table_position(args['position'])
+        if 'layout' in args:params['layout']=text_object.table_layout(args['layout'])
         key=self.table_proof_key(params)
         return await self._apply(params,'text.object',menu_guard,proof_history=self.proved[1] if self.proved and self.proved[0]==key else None)
 
     @staticmethod
     def table_proof_key(params):
-        return (params['revision'],tuple(tuple(row) for row in params['cells']))
+        return (params['revision'],tuple(tuple(row) for row in params['cells']),
+                tuple(params.get('position',())),tuple(sorted(params.get('layout',{}).items())))
     async def vector(self,args,menu_guard=None):
         history=None
         if isinstance(args,dict) and set(args)=={'revision','plan_id'}:

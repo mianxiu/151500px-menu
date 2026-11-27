@@ -157,14 +157,11 @@ async def run(test):
         test.check()
         return (await test.test_read(text_inspect=True))['text']
 
-    async def write(snapshot,draft,style=None):
-        model=text_object.read(snapshot['object_xmp']) if 'object_xmp' in snapshot else None
-        original=model['layer']['text']['textKey'] if model else snapshot['text']
-        plan=compute(original,{'revision':snapshot['revision'],'draft':draft,'operation':'edit'})
-        params={k:plan[k] for k in ('value','origins','count')}
-        params['revision']=snapshot['revision']
-        if style:params['typography']=style
-        if model:params.update(object_source=model,object_render=text_object.render_hash(snapshot['object_xmp']))
+    async def place(snapshot,params,*,fixture_name=None):
+        params={'revision':snapshot['revision'],**params}
+        if 'object_xmp' in snapshot:
+            xmp=snapshot['object_xmp']
+            params.update(object_source=text_object.read(xmp),object_render=text_object.render_hash(xmp))
         target=snapshot['target']
         def verify_fixture():
             test.check()
@@ -172,12 +169,74 @@ async def run(test):
                     target['session']!=test.report['versions']['session']):
                 raise RuntimeError('隔离文字目标或 Photoshop 会话已变化')
         value=await bridge.execute_text_object(target,params,before_dispatch=test.before_dispatch,_fixture_guard=verify_fixture,
-                                               **({'in_place_fixture':name} if in_place else {}))
+                                               **({'in_place_fixture':fixture_name} if fixture_name else {}))
         receipt=json.loads(value['result'])
         if receipt.get('verified') is not True:raise RuntimeError('文字对象生成核验失败')
+        return value,receipt
+
+    async def write(snapshot,draft,style=None):
+        model=text_object.read(snapshot['object_xmp']) if 'object_xmp' in snapshot else None
+        original=model['layer']['text']['textKey'] if model else snapshot['text']
+        plan=compute(original,{'revision':snapshot['revision'],'draft':draft,'operation':'edit'})
+        params={k:plan[k] for k in ('value','origins','count')}
+        if style:params['typography']=style
+        value,receipt=await place(snapshot,params,fixture_name=name if in_place else None)
         if receipt.get('source_workspace')!='in-place' or not receipt.get('retained_history_count'):
             raise RuntimeError('原位导出或历史凭据缺失')
         return value
+
+    async def check_table(snapshot,baseline,owned,dpi):
+        cells=[['中文','Alpha'],['Beta','第二行']]
+        first={'cells':cells,'layout':{'width':401,'height':186,'align':'center'},'position':[.23,.64]}
+        async def write_table(source,params):
+            value,_=await place(source,params)
+            return value
+        await test.step('text-table-place',lambda:write_table(snapshot,first))
+        table=await read()
+        xml=table['object_xmp'];frame=object_frame(table)
+        model=text_object.read(xml)
+        if model['schema']!=3 or model['table']!=cells or model['align']!='center':
+            raise RuntimeError('表格内容或对齐方式缺失')
+        if [model['canvas'][key] for key in ('width','height','resolution')]!=[401,186,dpi]:
+            raise RuntimeError('表格画布尺寸未写入')
+        w,h=frame[2]-frame[0],frame[7]-frame[1]
+        x,y=math.floor(.23*(1500-w)+.5),math.floor(.64*(1200-h)+.5)
+        check_frame(frame,[x,y,x+w,y,x+w,y+h,x,y+h])
+        table_state=await native(test,owned+FIXTURE_LAYER_STATE+'return fixtureState(d);')
+        table_id=table['target']['active_layer_id']
+        edited=[['中文','替换','New'],['Added','末行','尾']]
+        update={'cells':edited,'layout':{'width':438,'height':213,'align':'right'}}
+        response=await test.step('text-table-update',lambda:write_table(table,update))
+        latest=await read()
+        updated=text_object.read(latest['object_xmp'])
+        if (latest['target']!=table['target'] or updated['table']!=edited or updated['align']!='right' or
+                [updated['canvas'][key] for key in ('width','height')]!=[438,213]):
+            raise RuntimeError('更新后表格内容、图层或宽高不一致')
+        w,h=438*w/401,213*h/186
+        expected=[x,y,x+w,y,x+w,y+h,x,y+h]
+        if json.loads(response['result']).get('placement_pixel_snap'):
+            expected=[math.floor(n+.5) for n in expected]
+        check_frame(object_frame(latest),expected)
+        # Check Photoshop's Undo immediately, before a save or document switch.
+        await test.step('text-table-update-undo',lambda:native(test,undo_fixture(owned,table_state,table_id)))
+        restored=await read()
+        if restored['object_xmp']!=xml or restored['target']!=table['target']:raise RuntimeError('表格撤销未恢复可编辑源')
+        check_frame(object_frame(restored),frame)
+        # A second consecutive scripted Undo is not available in some Photoshop
+        # histories. Remove the verified test table and establish the vector-test baseline.
+        return await test.step('text-table-cleanup',lambda:native(test,owned+FIXTURE_LAYER_STATE+f'''
+            var source=null,before={json.dumps(baseline)};
+            if(d.activeLayer.id!=={table_id}||d.activeLayer.kind!==LayerKind.SMARTOBJECT)
+                throw Error('Table cleanup target changed');
+            for(var i=0;i<d.layers.length;i++)if(d.layers[i].id===before.layer)source=d.layers[i];
+            if(!source||source.kind!==LayerKind.TEXT)throw Error('Original fixture text missing');
+            d.activeLayer.remove();d.activeLayer=source;
+            if(fixtureLayers(d)!==before.layers)throw Error('Table cleanup changed other fixture layers');
+            var dialogs=app.displayDialogs;
+            try{{app.displayDialogs=DialogModes.NO;d.save();}}finally{{app.displayDialogs=dialogs;}}
+            if(!d.saved)throw Error('Unable to save the vector-test baseline');
+            return fixtureState(d);
+        '''))
 
     for index,dpi in enumerate((72,300),1):
         test.report['round']=index
@@ -227,6 +286,9 @@ async def run(test):
         '''))
         snap=await read()
         if snap['target']['document_id']!=fixture['document_id']:raise RuntimeError('隔离文字目标不一致')
+        if not in_place and snap.get('table_document'):
+            baseline=await check_table(snap,baseline,owned,dpi)
+            snap=await read()
         await test.step('text-object-create',lambda:write(snap,snap['text'],{'tracking':35}))
         created=await read();model=text_object.read(created['object_xmp'])
         if model['schema']!=1 or model['layer']['text']['textKey']!=snap['text'] or any(row['textStyle'].get('tracking')!=35 for row in model['layer']['text']['textStyleRange']):raise RuntimeError('PS原生文字源或字距不一致')
